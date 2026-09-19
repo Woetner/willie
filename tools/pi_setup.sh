@@ -50,32 +50,41 @@ fi
 
 say "5/8 pigpio (daemon runs with -t 0 so it does not steal the I2S clock)"
 if ! command -v pigpiod >/dev/null; then
-  if apt-cache show pigpio >/dev/null 2>&1; then
+  # `apt-cache show` also succeeds for a name that is only referenced (trixie) -> check for a real candidate
+  if apt-cache policy pigpio 2>/dev/null | grep -q 'Candidate: [0-9]'; then
     sudo apt-get -y install pigpio python3-pigpio
   else
     echo "pigpio is not packaged for this OS release -> building from source"
     tmp=$(mktemp -d); cd "$tmp"
     wget -q https://github.com/joan2937/pigpio/archive/refs/heads/master.zip -O pigpio.zip
     unzip -q pigpio.zip && cd pigpio-master
-    make -j2 && sudo make install
-    sudo ldconfig
+    make -j2
+    # install ends with `python3 setup.py`, which needs distutils (gone in Python 3.13);
+    # the C library + pigpiod are installed before that, and pigpio.py comes from pip in the venv
+    sudo make install || command -v pigpiod >/dev/null
     cd / && rm -rf "$tmp"
   fi
 fi
+sudo ldconfig   # outside the if: a half-finished earlier run may have installed libpigpio without it
 PIGPIOD=$(command -v pigpiod)
 sed "s#@PIGPIOD@#$PIGPIOD#" "$REPO/systemd/pigpiod.service" | sudo tee /etc/systemd/system/pigpiod.service >/dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable pigpiod
+sudo systemctl restart pigpiod   # fail here, not silently at the next boot
 
-say "6/8 swap in RAM (zram) for installs"
-if swapon --show=NAME --noheadings | grep -q zram; then
-  echo "zram swap already active"
-else
+say "6/8 swap in RAM (zram, 1 GB) for installs"
+if dpkg -s rpi-swap >/dev/null 2>&1; then
+  # Pi OS trixie+ already runs zram swap via rpi-swap (default = RAM size); just raise it. Active after reboot.
+  sudo mkdir -p /etc/rpi/swap.conf.d
+  printf '[Zram]\nFixedSizeMiB=1024\n' | sudo tee /etc/rpi/swap.conf.d/50-willie.conf >/dev/null
+  # zram-tools (older runs of this script) fights rpi-swap over /dev/zram0
+  if dpkg -s zram-tools >/dev/null 2>&1; then sudo apt-get -y purge zram-tools; fi
+elif ! grep -q zram /proc/swaps; then
   sudo apt-get -y install zram-tools
   printf 'ALGO=zstd\nSIZE=1024\nPRIORITY=100\n' | sudo tee /etc/default/zramswap >/dev/null
   sudo systemctl restart zramswap || true
 fi
-swapon --show
+cat /proc/swaps
 
 say "7/8 Python venv + requirements"
 cd "$REPO"

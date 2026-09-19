@@ -1,5 +1,5 @@
 # WILL-E — run these on the Mac, inside the willie/ folder.
-# Override on the command line if needed:  make deploy PI=wouter@willie.local
+# Override on the command line if needed:  make deploy PI=woetner@willie.local
 PI      ?= willie.local
 PI_DIR  ?= willie
 RSYNC   := rsync -az --delete \
