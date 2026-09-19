@@ -1,0 +1,16 @@
+# secrets — never in git
+.env
+*.env
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# runtime
+*.log
+logs/
+.DS_Store
+.local/

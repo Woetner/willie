@@ -1,0 +1,5 @@
+# Keep this list short: the Pi 3 A+ has 512 MB RAM.
+fastapi>=0.110
+uvicorn>=0.29
+pyyaml>=6.0
+psutil>=5.9

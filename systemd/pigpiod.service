@@ -1,0 +1,19 @@
+# pigpio daemon for WILL-E.
+# -t 0 : use the PWM peripheral for DMA timing, NOT the PCM one.
+#        The PCM peripheral is the I2S bus (mics + amp). With pigpio's default (-t 1)
+#        audio breaks as soon as pigpiod starts.
+#        Side effect: no hardware PWM on GPIO12/13 -> motors use pigpio's DMA PWM
+#        (set_PWM_dutycycle), which is fine for TT motors.
+# -l   : only accept local connections.
+[Unit]
+Description=pigpio daemon (WILL-E, PWM clock)
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/run/pigpio.pid
+ExecStart=@PIGPIOD@ -l -t 0
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

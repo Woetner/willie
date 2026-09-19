@@ -1,0 +1,18 @@
+# Installed by tools/install_service.sh (@USER@ / @HOME@ are filled in there).
+[Unit]
+Description=WILL-E robot
+After=network-online.target pigpiod.service
+Wants=network-online.target pigpiod.service
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@HOME@/willie
+EnvironmentFile=-@HOME@/willie/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@HOME@/willie/.venv/bin/python -m willie
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

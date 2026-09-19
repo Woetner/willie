@@ -1,0 +1,58 @@
+# WILL-E default settings (committed). Live copy on the Pi: ~/.config/willie/willie.yaml
+drive:
+  max_speed: 0.25
+  accel: 0.5
+  pwm_cap: 50
+  pid_kp: 1.0
+  pid_ki: 0.2
+  pid_kd: 0.0
+  wheel_diameter: 100.0
+  track_width: 170.0
+  encoder_cpr: 960
+safety:
+  tof_stop_mm: 120
+  cliff_threshold: 1
+  bumper_reverse_mm: 50
+  battery_warn_v: 10.5
+  battery_cutoff_v: 9.9
+  watchdog_ms: 200
+  tilt_stop_deg: 25
+head:
+  pan_min_deg: -90
+  pan_max_deg: 90
+  tilt_min_deg: -30
+  tilt_max_deg: 45
+  pan_trim_us: 0
+  tilt_trim_us: 0
+  speed_dps: 120
+face:
+  eye_style: round
+  eye_color: '#39d0ff'
+  bg_color: '#000000'
+  brightness: 80
+  blink_rate: 4.0
+mood:
+  energy_base: 0.6
+  curiosity_base: 0.7
+  social_base: 0.6
+  drift_rate: 0.02
+behavior:
+  wander: false
+  quiet_start: '23:00'
+  quiet_end: 07:30
+  patrol_list: printer, garage door, kitchen
+  follow_distance: 600
+voice:
+  adapter: gemini_live
+  model: ''
+  voice_name: ''
+  speed: 1.0
+  robot_filter: 0.3
+  wake_sensitivity: 0.5
+  language: auto
+privacy:
+  mute: false
+  camera_allowed: true
+dashboard:
+  port: 8080
+  log_lines: 300

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WILL-E dashboard</title>
+<style>
+  :root { --bg:#111418; --panel:#1b2027; --line:#2c333d; --text:#e6e9ee; --dim:#8b95a3;
+          --accent:#f2b705; --ok:#3ecf8e; --warn:#f5a623; --bad:#ff5d5d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:16px; padding:12px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  header h1 span { color:var(--accent); }
+  nav button { background:none; border:0; color:var(--dim); font:inherit; padding:6px 10px; border-radius:6px; cursor:pointer; }
+  nav button.on { color:var(--text); background:var(--panel); }
+  #conn { margin-left:auto; font-size:12px; color:var(--dim); }
+  main { padding:16px; max-width:1000px; margin:0 auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px; }
+  .tile { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .tile .k { color:var(--dim); font-size:12px; }
+  .tile .v { font-size:22px; font-variant-numeric:tabular-nums; margin-top:2px; }
+  .tile .s { color:var(--dim); font-size:12px; }
+  pre#log { background:#0b0d10; border:1px solid var(--line); border-radius:10px; padding:10px; height:65vh;
+            overflow:auto; font:12px/1.4 ui-monospace,Menlo,monospace; white-space:pre-wrap; margin:0; }
+  .lvl-WARNING { color:var(--warn); } .lvl-ERROR, .lvl-CRITICAL { color:var(--bad); }
+  fieldset { border:1px solid var(--line); border-radius:10px; margin:0 0 14px; padding:10px 14px; background:var(--panel); }
+  legend { color:var(--accent); padding:0 6px; font-weight:600; }
+  .row { display:grid; grid-template-columns:minmax(120px,190px) 1fr; gap:10px; align-items:center; padding:5px 0; border-top:1px solid var(--line); }
+  .row:first-of-type { border-top:0; }
+  .row label { font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+  .row .help { color:var(--dim); font-size:12px; }
+  .row .err { color:var(--bad); font-size:12px; }
+  .row.dirty label { color:var(--accent); }
+  input, select { background:#0b0d10; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 8px; font:inherit; width:100%; max-width:220px; }
+  input[type=checkbox] { width:auto; }
+  .bar { position:sticky; bottom:0; background:var(--bg); padding:10px 0; display:flex; gap:10px; align-items:center; border-top:1px solid var(--line); }
+  .btn { background:var(--accent); color:#111; border:0; border-radius:6px; padding:7px 14px; font-weight:600; cursor:pointer; }
+  .btn.ghost { background:none; color:var(--text); border:1px solid var(--line); }
+  #msg { color:var(--dim); font-size:13px; }
+  .hidden { display:none; }
+  @media (max-width:560px) { .row { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>WILL<span>-E</span></h1>
+  <nav>
+    <button data-tab="status" class="on">Status</button>
+    <button data-tab="logs">Logs</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+  <div id="conn">connecting…</div>
+</header>
+<main>
+  <section id="tab-status"><div class="grid" id="tiles"></div></section>
+  <section id="tab-logs" class="hidden">
+    <label style="color:var(--dim);font-size:12px"><input type="checkbox" id="follow" checked> follow</label>
+    <pre id="log"></pre>
+  </section>
+  <section id="tab-settings" class="hidden">
+    <p id="cfgpath" style="color:var(--dim);font-size:12px;margin-top:0"></p>
+    <form id="form"></form>
+    <div class="bar">
+      <button class="btn" id="save">Save</button>
+      <button class="btn ghost" id="revert">Revert</button>
+      <span id="msg"></span>
+    </div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let tab = "status", schema = null, saved = null;
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "tab-" + tab));
+  refresh();
+});
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(r.statusText), { body });
+  return body;
+}
+
+// ---------- status ----------
+const dur = s => { const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  return (d ? d + "d " : "") + h + "h " + m + "m"; };
+function tile(k, v, s = "") { return `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`; }
+async function loadStatus() {
+  const st = await api("/api/status");
+  const w = st.wifi || {};
+  const thr = st.throttled == null ? "n/a" : st.throttled;
+  $("#tiles").innerHTML =
+    tile("CPU", st.cpu_percent.toFixed(0) + " %", "load " + st.load.join(" · ")) +
+    tile("RAM free", st.ram_available_mb + " MB", "of " + st.ram_total_mb + " MB · WILL-E " + st.willie_rss_mb + " MB") +
+    tile("Temperature", st.temp_c == null ? "n/a" : st.temp_c + " °C", "throttled: " + thr) +
+    tile("Wi-Fi", w.signal_dbm == null ? "n/a" : w.signal_dbm + " dBm", (w.ssid || "") + (w.iface ? " · " + w.iface : "")) +
+    tile("Uptime", dur(st.uptime_s), "WILL-E " + dur(st.willie_uptime_s)) +
+    tile("Version", st.version, st.host);
+}
+
+// ---------- logs ----------
+const esc = s => s.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+async function loadLogs() {
+  const { lines } = await api("/api/logs");
+  const el = $("#log");
+  el.innerHTML = lines.map(l => { const m = l.match(/ (DEBUG|INFO|WARNING|ERROR|CRITICAL) /);
+    return `<span class="lvl-${m ? m[1] : ""}">${esc(l)}</span>`; }).join("\n");
+  if ($("#follow").checked) el.scrollTop = el.scrollHeight;
+}
+
+// ---------- settings (form generated from schema) ----------
+function input(sec, key, spec, val) {
+  const id = `f-${sec}-${key}`;
+  if (spec.type === "bool") return `<input type="checkbox" id="${id}" ${val ? "checked" : ""}>`;
+  if (spec.type === "choice") return `<select id="${id}">${spec.options.map(o =>
+      `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  if (spec.type === "int" || spec.type === "float") {
+    const step = spec.type === "int" ? 1 : "any";
+    return `<input type="number" id="${id}" step="${step}" ${"min" in spec ? `min="${spec.min}"` : ""} ${"max" in spec ? `max="${spec.max}"` : ""} value="${val}">`;
+  }
+  if (spec.type === "time") return `<input type="time" id="${id}" value="${val}">`;
+  return `<input type="text" id="${id}" value="${esc(String(val ?? ""))}">`;
+}
+function readField(sec, key, spec) {
+  const el = document.getElementById(`f-${sec}-${key}`);
+  if (spec.type === "bool") return el.checked;
+  if (spec.type === "int" || spec.type === "float") return el.value === "" ? null : Number(el.value);
+  return el.value;
+}
+function renderForm() {
+  let html = "";
+  for (const [sec, items] of Object.entries(schema)) {
+    html += `<fieldset><legend>${items._label || sec}</legend>`;
+    for (const [key, spec] of Object.entries(items)) {
+      if (key.startsWith("_")) continue;
+      const lim = "min" in spec ? ` [${spec.min} … ${spec.max}]` : "";
+      const help = [spec.help, spec.unit ? "unit: " + spec.unit : "", lim, spec.restart ? "needs restart" : ""].filter(Boolean).join(" · ");
+      html += `<div class="row" id="r-${sec}-${key}"><label for="f-${sec}-${key}">${key}</label>
+        <div>${input(sec, key, spec, saved[sec][key])}<div class="help">${help}</div><div class="err"></div></div></div>`;
+    }
+    html += `</fieldset>`;
+  }
+  $("#form").innerHTML = html;
+}
+function changes() {
+  const out = {};
+  for (const [sec, items] of Object.entries(schema))
+    for (const [key, spec] of Object.entries(items)) {
+      if (key.startsWith("_")) continue;
+      const v = readField(sec, key, spec);
+      const dirty = v !== saved[sec][key];
+      document.getElementById(`r-${sec}-${key}`).classList.toggle("dirty", dirty);
+      if (dirty) (out[sec] ||= {})[key] = v;
+    }
+  return out;
+}
+async function loadSettings() {
+  schema = schema || await api("/api/schema");
+  const cfg = await api("/api/config");
+  saved = cfg.values;
+  $("#cfgpath").textContent = "File on the robot: " + cfg.path;
+  renderForm();
+}
+$("#form").addEventListener("input", () => { const n = Object.values(changes()).reduce((a, s) => a + Object.keys(s).length, 0);
+  $("#msg").textContent = n ? n + " unsaved change(s)" : ""; });
+$("#form").addEventListener("submit", e => e.preventDefault());
+$("#revert").onclick = () => { renderForm(); $("#msg").textContent = "reverted"; };
+$("#save").onclick = async () => {
+  document.querySelectorAll(".row .err").forEach(e => e.textContent = "");
+  const ch = changes();
+  if (!Object.keys(ch).length) { $("#msg").textContent = "nothing to save"; return; }
+  try {
+    saved = (await api("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ch) })).values;
+    renderForm(); $("#msg").textContent = "saved ✓";
+  } catch (e) {
+    const errs = (e.body && e.body.detail) || {};
+    for (const [k, m] of Object.entries(errs)) {
+      const [sec, key] = k.split(".");
+      const row = document.getElementById(`r-${sec}-${key}`);
+      if (row) row.querySelector(".err").textContent = m;
+    }
+    $("#msg").textContent = "not saved — fix the red fields";
+  }
+};
+
+// ---------- loop ----------
+async function refresh() {
+  try {
+    if (tab === "status") await loadStatus();
+    else if (tab === "logs") await loadLogs();
+    else if (tab === "settings" && !saved) await loadSettings();
+    $("#conn").textContent = "online · " + new Date().toLocaleTimeString();
+    $("#conn").style.color = "var(--ok)";
+  } catch (e) {
+    $("#conn").textContent = "offline"; $("#conn").style.color = "var(--bad)";
+  }
+}
+refresh();
+setInterval(() => { if (tab !== "settings") refresh(); }, 2000);
+</script>
+</body>
+</html>
