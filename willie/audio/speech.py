@@ -37,12 +37,13 @@ TTS_MODEL = os.environ.get("WILLIE_TTS_MODEL", "gemini-3.1-flash-tts-preview")
 TTS_FALLBACK_MODEL = "gemini-2.5-flash-preview-tts"
 # Prebuilt voices are multilingual. Puck is bright and young, which suits him.
 TTS_VOICE = os.environ.get("WILLIE_TTS_VOICE", "Puck")
-TTS_STYLE = "Spreek als een vriendelijke, nieuwsgierige werkplaatsrobot. Rustig tempo, duidelijk articuleren:"
+# Matches config/persona.md: direct, quick, no announcer warmth.
+TTS_STYLE = "Zeg dit vlot en zakelijk, in een stevig tempo, zonder opgewekte ondertoon:"
 TTS_RATE = 24_000  # what the model returns: 16-bit mono PCM
 
 # --- espeak-ng fallback --------------------------------------------------
 VOICE = "nl"
-SPEED = 165
+SPEED = 185
 PITCH = 40
 AMPLITUDE = 150
 

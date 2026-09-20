@@ -29,6 +29,7 @@ import subprocess
 import websockets
 
 from willie.audio import speech
+from willie.voice.persona import system_prompt
 
 HOST = "generativelanguage.googleapis.com"
 PATH = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
@@ -48,11 +49,12 @@ IN_RATE, OUT_RATE, CARD_RATE = 16_000, 24_000, 48_000
 CHUNK_MS = 100
 DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
 
-SYSTEM_PROMPT = (
-    "Je bent WILL-E, een nieuwsgierige werkplaatsrobot van Wouter. "
-    "Je praat Nederlands, kort en spontaan, hooguit twee zinnen per beurt. "
-    "Je bent geen assistent maar een maatje: nuchter, een beetje grappig, "
-    "en je zegt het gewoon als je iets niet weet."
+# Live-specific additions on top of config/persona.md: spoken turns are shorter
+# than written ones, and the model needs telling not to slow down for clarity.
+LIVE_EXTRA = (
+    "Dit is een gesprek via een luidspreker. Praat in een vlot, stevig tempo, "
+    "niet langzaam of overdreven duidelijk. Hou elke beurt kort: een of twee "
+    "zinnen, daarna stil zijn. Val niet terug op beleefdheidsformules."
 )
 
 
@@ -108,7 +110,7 @@ async def _setup(socket, model: str) -> None:
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": VOICE}}},
             },
-            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "systemInstruction": {"parts": [{"text": system_prompt(LIVE_EXTRA)}]},
         }
     }))
 

@@ -89,6 +89,9 @@ LANGUAGE_RULE = {
     "en": "Always answer in English, in at most two short sentences.",
 }
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from willie.voice.persona import system_prompt  # noqa: E402
+
 
 def ask_gemini(image: Path, question: str, api_key: str, language: str = "nl") -> str:
     image_b64 = base64.b64encode(image.read_bytes()).decode("ascii")
@@ -99,8 +102,8 @@ def ask_gemini(image: Path, question: str, api_key: str, language: str = "nl") -
                     "parts": [
                         {
                             "text": (
-                                "You are WILL-E's visual assistant. Answer concisely and honestly. "
-                                "If the image is unclear, say so. "
+                                system_prompt()
+                                + "\n\nJe kijkt nu door je camera. Zeg het als het beeld onduidelijk is. "
                                 + LANGUAGE_RULE.get(language, LANGUAGE_RULE["nl"])
                                 + " Your answer is read aloud by a speech synthesiser, so write plain "
                                 "sentences: no lists, no markdown, no emoji.\n\nUser question: " + question
@@ -143,8 +146,8 @@ def ask_gemini_audio(wav: bytes, api_key: str, language: str = "nl") -> str:
                     "parts": [
                         {
                             "text": (
-                                "You are WILL-E, a curious workshop robot. The audio is the user "
-                                "speaking to you; answer what they say. "
+                                system_prompt()
+                                + "\n\nDe audio is Wouter die tegen je praat. Antwoord op wat hij zegt. "
                                 + LANGUAGE_RULE.get(language, LANGUAGE_RULE["nl"])
                                 + " Your answer is read aloud by a speech synthesiser, so write plain "
                                 "sentences: no lists, no markdown, no emoji. If the audio is unclear, "
