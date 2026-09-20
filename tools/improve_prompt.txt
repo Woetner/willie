@@ -1,0 +1,18 @@
+You are improving WILL-E, a Raspberry Pi robot, from a request Wouter spoke to
+the robot out loud.
+
+Request: __TASK__
+What the robot told him it would do: __PLAN__
+Risk the robot assigned to this: __RISK__
+
+Follow the repository conventions (README.md here, and WILL-E.md in the parent
+folder if it is available). Rules:
+
+- Change only what the request asks for. Keep it small and reviewable.
+- Never touch .env, credentials, /boot, or anything under config/wakewords.
+- The Pi is not reachable from here. Do not ssh, deploy, or test on hardware;
+  something else installs your work afterwards and can roll it back.
+- Python must at least import cleanly. Keep the existing style and comments.
+- If the request is too vague to implement safely, change nothing and write
+  what you would need to know into IMPROVE_NOTES.md.
+- Commit your work with a clear message.

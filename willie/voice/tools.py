@@ -59,10 +59,10 @@ DECLARATIONS = [
     {
         "name": "verbeter_jezelf",
         "description": (
-            "Zet een verbetering aan je eigen code in de wachtrij. Gebruik dit als Wouter "
-            "zegt dat iets anders moet aan hoe jij werkt: een bug, een instelling, een "
-            "functie die ontbreekt. Je verandert niets zelf - een agent op zijn laptop "
-            "maakt er een branch van die hij daarna nakijkt."
+            "Voer een verbetering aan je eigen code door. Roep dit ALLEEN aan nadat je "
+            "hardop hebt verteld wat je gaat doen en Wouter ja heeft gezegd. Bij risico "
+            "'hoog' vraag je het een tweede keer voordat je dit aanroept. Claude Code op "
+            "zijn laptop schrijft de code, test hem en zet hem daarna op jou."
         ),
         "parameters": {
             "type": "object",
@@ -70,13 +70,38 @@ DECLARATIONS = [
                 "opdracht": {
                     "type": "string",
                     "description": (
-                        "Wat er moet veranderen, concreet en op zichzelf te begrijpen. "
-                        "Noem het bestand of de functie als je die weet."
+                        "Wat er moet veranderen, concreet en op zichzelf te begrijpen door "
+                        "iemand die dit gesprek niet gehoord heeft. Noem het bestand of de "
+                        "functie als je die weet."
                     ),
-                }
+                },
+                "plan": {
+                    "type": "string",
+                    "description": "Wat je Wouter net hardop hebt verteld dat je gaat doen.",
+                },
+                "risico": {
+                    "type": "string",
+                    "enum": ["laag", "hoog"],
+                    "description": (
+                        "'hoog' bij alles wat je kapot kan maken: opstarten, systemd, "
+                        "config.txt, audio- of scherminstellingen, netwerk. Anders 'laag'."
+                    ),
+                },
+                "bevestigd": {
+                    "type": "boolean",
+                    "description": "True alleen als Wouter hardop ja heeft gezegd. Bij 'hoog': twee keer.",
+                },
             },
-            "required": ["opdracht"],
+            "required": ["opdracht", "plan", "risico", "bevestigd"],
         },
+    },
+    {
+        "name": "verbeteringen_status",
+        "description": (
+            "Kijk hoe het met je eigen verbeteringen staat: wat er loopt, wat er klaar is, "
+            "wat er mislukt is. Gebruik dit als Wouter vraagt of het al gelukt is."
+        ),
+        "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "status",
@@ -131,23 +156,49 @@ def onthoud(notitie: str) -> dict:
 QUEUE_FILE = Path(os.environ.get("WILLIE_IMPROVE_QUEUE", REPO / ".local" / "improve_queue.jsonl"))
 
 
-def verbeter_jezelf(opdracht: str) -> dict:
-    """Queue a code change. Nothing here runs it - see tools/improve_worker.sh.
+RESULT_FILE = Path(os.environ.get("WILLIE_IMPROVE_RESULTS", REPO / ".local" / "improve_results.jsonl"))
 
-    The robot cannot change itself: it writes a line to a file. A worker on the
-    Mac picks it up, works in a git worktree on a branch and pushes. Deploying
-    stays a human decision, which is the whole point of the split.
+
+def verbeter_jezelf(opdracht: str, plan: str = "", risico: str = "laag", bevestigd: bool = False) -> dict:
+    """Queue an approved code change for the worker on the Mac.
+
+    The robot still cannot edit itself: this appends one line to a file. What
+    changed from the first version is that the approval is spoken, so `bevestigd`
+    is the model's word for "he said yes". That is a soft gate, not a hard one -
+    the hard gates are on the worker side: a branch, tests, a health check and
+    an automatic rollback.
     """
     opdracht = " ".join(opdracht.split())
     if len(opdracht) < 10:
         return {"fout": "te vaag, zeg concreter wat er moet veranderen"}
+    if not bevestigd:
+        return {"fout": "niet bevestigd - vertel eerst wat je gaat doen en vraag of het mag"}
     QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
     from datetime import datetime
 
-    entry = {"gevraagd": datetime.now().isoformat(timespec="seconds"), "opdracht": opdracht, "status": "nieuw"}
+    entry = {
+        "gevraagd": datetime.now().isoformat(timespec="seconds"),
+        "opdracht": opdracht,
+        "plan": " ".join(plan.split()),
+        "risico": "hoog" if risico == "hoog" else "laag",
+    }
     with QUEUE_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return {"ok": True, "in_wachtrij": opdracht}
+    return {"ok": True, "opgepakt": opdracht, "opmerking": "duurt een paar minuten"}
+
+
+def verbeteringen_status() -> dict:
+    wachtrij = 0
+    if QUEUE_FILE.exists():
+        wachtrij = sum(1 for line in QUEUE_FILE.read_text(encoding="utf-8").splitlines() if line.strip())
+    klaar = []
+    if RESULT_FILE.exists():
+        for line in RESULT_FILE.read_text(encoding="utf-8").splitlines()[-3:]:
+            try:
+                klaar.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return {"in_wachtrij": wachtrij, "laatste": klaar or "nog niets afgerond"}
 
 
 def status() -> dict:
@@ -182,6 +233,7 @@ HANDLERS = {
     "status": status,
     "zet_volume": zet_volume,
     "verbeter_jezelf": verbeter_jezelf,
+    "verbeteringen_status": verbeteringen_status,
 }
 
 
