@@ -1,8 +1,8 @@
-"""Run the dashboard as its own, short-lived process (D20).
+"""Run the dashboard as its own process (D20).
 
-On the Pi, systemd owns port 8080 (willie-dashboard.socket) and starts this with --fd 3
-on the first connection. It exits after `dashboard.idle_minutes` without requests;
-the next browser visit starts it again (takes a few seconds on the Pi 3 A+).
+On the Pi, systemd owns port 8080 (willie-dashboard.socket) and starts this at boot with
+--fd 3 --always-on. Without --always-on it exits after `dashboard.idle_minutes` without
+requests and the next browser visit starts it again (a few seconds on the Pi 3 A+).
 
 On the Mac:  python -m willie.dashboard --port 8080
 """
@@ -35,14 +35,16 @@ async def amain(args):
     kw = {"fd": args.fd} if args.fd is not None else {"host": args.host, "port": args.port}
     server = uvicorn.Server(uvicorn.Config(
         appmod.create_app(cfg), log_config=None, access_log=False, **kw))
-    watcher = asyncio.create_task(idle_exit(server, cfg))
+    watcher = None if args.always_on else asyncio.create_task(idle_exit(server, cfg))
     await server.serve()
-    watcher.cancel()
+    if watcher:
+        watcher.cancel()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fd", type=int, help="listening socket passed by systemd")
+    ap.add_argument("--always-on", action="store_true", help="never exit when idle")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
     args = ap.parse_args()

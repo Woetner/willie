@@ -1,5 +1,5 @@
-# On-demand dashboard (D20): systemd holds port 8080 and starts the dashboard
-# on the first browser connection. The dashboard exits by itself when idle.
+# systemd holds port 8080 and passes it to willie-dashboard.service (fd 3). If the
+# service is ever stopped, the next browser connection starts it again.
 [Unit]
 Description=WILL-E dashboard socket
 

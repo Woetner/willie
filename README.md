@@ -10,7 +10,7 @@ willie/              Python package (asyncio)
   config/            settings loader (schema + live YAML, hot reload)
   hal/proto.py       Pi <-> MCU line protocol (CRC-8 per line)
   hal/link.py        MCU serial link: ping/pong round-trip, stats (A9)
-  dashboard/         FastAPI + static web UI, its own ON-DEMAND process (D20)
+  dashboard/         FastAPI + static web UI, its own process, started at boot
   hello.py           deploy-loop test (A5)
 config/
   schema.yaml        every setting: type, default, limits, unit, help
@@ -34,8 +34,10 @@ tools/               pi_setup.sh (A4), os_diet.sh + ram.sh (A8), fake_mcu.py, in
 
 ## Processes on the Pi
 - `willie.service` — the core, always on, `MemoryMax=128M`.
-- `willie-dashboard.socket` — systemd holds port 8080; the first browser visit starts
-  `willie-dashboard.service`, which exits after `dashboard.idle_minutes` without requests.
+- `willie-dashboard.service` — started at boot with `--always-on` (no idle exit, `MemoryMax=64M`).
+  `willie-dashboard.socket` holds port 8080 so restarts never refuse a browser; if the service
+  is stopped, the next visit starts it again. `dashboard.idle_minutes` now only applies
+  without `--always-on`; the systemd unit sets it, so on the Pi the setting has no effect.
   The two talk through files only: live settings YAML, `~/.local/share/willie/willie.log`, `state.json`.
 
 ## Settings

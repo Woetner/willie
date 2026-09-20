@@ -76,7 +76,7 @@ privacy:
 
 dashboard:
   _label: Dashboard
-  idle_minutes:    {type: int, default: 5, min: 1, max: 120, unit: min, help: Dashboard process exits after this long without a browser (D20); port 8080 stays open via systemd}
+  idle_minutes:    {type: int, default: 5, min: 1, max: 120, unit: min, help: Dashboard exits after this long without a browser; unused on the Pi, where the service runs with --always-on}
   log_lines:       {type: int, default: 300, min: 50, max: 2000, help: Lines shown in the log viewer}
 
 link:

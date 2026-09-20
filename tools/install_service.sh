@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs willie.service + the on-demand dashboard socket for the user that owns the repo. Run with sudo.
+# Installs willie.service + the always-on dashboard (socket + service) for the user that owns the repo. Run with sudo.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 U=$(stat -c %U "$REPO")
@@ -12,14 +12,15 @@ done
 
 # let `make deploy` restart services over ssh without a password prompt
 cat > /etc/sudoers.d/willie <<SUDO
-$U ALL=(root) NOPASSWD: /usr/bin/systemctl restart willie, /usr/bin/systemctl stop willie, /usr/bin/systemctl start willie, /usr/bin/systemctl stop willie-dashboard, /usr/bin/systemctl restart willie-dashboard.socket
+$U ALL=(root) NOPASSWD: /usr/bin/systemctl restart willie, /usr/bin/systemctl stop willie, /usr/bin/systemctl start willie, /usr/bin/systemctl stop willie-dashboard, /usr/bin/systemctl restart willie-dashboard, /usr/bin/systemctl restart willie-dashboard.socket
 SUDO
 chmod 440 /etc/sudoers.d/willie
 visudo -cf /etc/sudoers.d/willie >/dev/null
 
 systemctl daemon-reload
-systemctl enable willie willie-dashboard.socket
+systemctl enable willie willie-dashboard.socket willie-dashboard.service
 systemctl stop willie-dashboard.service 2>/dev/null || true
 systemctl restart willie                    # first: an old core may still hold port 8080
 systemctl restart willie-dashboard.socket
-echo "willie.service + willie-dashboard.socket installed for $U"
+systemctl restart willie-dashboard.service
+echo "willie.service + willie-dashboard installed for $U"

@@ -75,7 +75,7 @@ cd "$REPO"
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
-say "7/7 services (willie + on-demand dashboard)"
+say "7/7 services (willie + dashboard)"
 sudo bash "$REPO/tools/install_service.sh"
 
 cat <<'EOF'

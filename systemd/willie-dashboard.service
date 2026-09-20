@@ -1,6 +1,7 @@
-# Started by willie-dashboard.socket; exits after dashboard.idle_minutes without requests.
+# Started at boot (multi-user.target) and kept running (--always-on: no idle exit).
+# willie-dashboard.socket still holds port 8080, so a restart never drops a browser.
 [Unit]
-Description=WILL-E dashboard (on demand)
+Description=WILL-E dashboard
 Requires=willie-dashboard.socket
 
 [Service]
@@ -8,8 +9,11 @@ Type=simple
 User=@USER@
 WorkingDirectory=@HOME@/willie
 Environment=PYTHONUNBUFFERED=1
-ExecStart=@HOME@/willie/.venv/bin/python -m willie.dashboard --fd 3
+ExecStart=@HOME@/willie/.venv/bin/python -m willie.dashboard --fd 3 --always-on
 NonBlocking=yes
-# RAM budget (§5.5): dashboard <= 35 MB target, hard stop at 64 MB
+# RAM budget (§5.5): dashboard <= 35 MB target, hard stop at 64 MB. Now resident all the time.
 MemoryMax=64M
 Restart=no
+
+[Install]
+WantedBy=multi-user.target

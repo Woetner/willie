@@ -77,7 +77,7 @@ RuntimeMaxFileSize=1M
 EOF
 sudo systemctl restart systemd-journald
 
-say "7/7 service units (MemoryMax + on-demand dashboard)"
+say "7/7 service units (MemoryMax + always-on dashboard)"
 sudo bash "$REPO/tools/install_service.sh"
 sudo systemctl daemon-reload
 
