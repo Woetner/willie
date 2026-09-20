@@ -158,7 +158,7 @@ SPEECH_FS = 0.05
 # through, which is what makes barge-in still possible.
 BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "0.35"))
 # Keep the gate shut a moment after the audio ends, for the tail out of the cone.
-BARGE_IN_TAIL = 0.4
+BARGE_IN_TAIL = 0.5
 
 
 async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=None, activity=None,
