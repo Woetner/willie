@@ -104,6 +104,45 @@ DECLARATIONS = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "lees_code",
+        "description": (
+            "Lees een bestand uit je eigen code. Gebruik dit voordat je iets zegt over hoe "
+            "je werkt, en altijd voordat je een verbetering voorstelt: kijk eerst wat er nu "
+            "staat. Wouter hoeft je geen code voor te lezen."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pad": {
+                    "type": "string",
+                    "description": "Pad binnen je repository, bijvoorbeeld willie/audio/speech.py of config/persona.md.",
+                },
+                "vanaf_regel": {"type": "integer", "description": "Optioneel: begin hier (1 is het begin)."},
+            },
+            "required": ["pad"],
+        },
+    },
+    {
+        "name": "zoek_in_code",
+        "description": (
+            "Zoek een woord of stukje tekst in je eigen code en krijg de bestanden en "
+            "regelnummers terug. Gebruik dit als je niet weet waar iets staat."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"term": {"type": "string", "description": "Waar je op zoekt."}},
+            "required": ["term"],
+        },
+    },
+    {
+        "name": "lijst_code",
+        "description": "Kijk welke bestanden er in een map van je code staan.",
+        "parameters": {
+            "type": "object",
+            "properties": {"map": {"type": "string", "description": "Bijvoorbeeld willie/voice of tools. Leeg = de hoofdmap."}},
+        },
+    },
+    {
         "name": "status",
         "description": "Lees de toestand van de Pi: temperatuur, vrij geheugen, voeding, uptime.",
         "parameters": {"type": "object", "properties": {}},
@@ -201,6 +240,88 @@ def verbeteringen_status() -> dict:
     return {"in_wachtrij": wachtrij, "laatste": klaar or "nog niets afgerond"}
 
 
+# Read-only, and never these: the API keys live in .env, and the wake-word and
+# model files are third-party binaries that say nothing useful out loud.
+FORBIDDEN = (".env", "config/wakewords", ".local", ".git")
+READABLE_SUFFIXES = (".py", ".md", ".sh", ".yaml", ".yml", ".txt", ".toml", ".cfg", ".ini", ".service", "Makefile")
+MAX_CHARS = 3000        # about a minute of speech; more is useless in a conversation
+
+
+def _safe_path(pad: str) -> Path | None:
+    """Resolve inside the repository, or return None. Blocks ../ and secrets."""
+    try:
+        target = (REPO / pad.strip().lstrip("/")).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not str(target).startswith(str(REPO.resolve())):
+        return None
+    relative = str(target.relative_to(REPO.resolve()))
+    if any(relative == f or relative.startswith(f + "/") for f in FORBIDDEN):
+        return None
+    return target
+
+
+def lees_code(pad: str, vanaf_regel: int = 1) -> dict:
+    target = _safe_path(pad)
+    if target is None:
+        return {"fout": "dat pad mag ik niet lezen"}
+    if not target.is_file():
+        return {"fout": f"{pad} bestaat niet"}
+    if target.suffix and target.suffix not in READABLE_SUFFIXES and target.name != "Makefile":
+        return {"fout": f"{target.suffix} is geen tekstbestand"}
+    try:
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return {"fout": str(exc)}
+    start = max(1, int(vanaf_regel or 1))
+    body = "\n".join(f"{n}: {line}" for n, line in enumerate(lines[start - 1:], start))
+    truncated = len(body) > MAX_CHARS
+    return {
+        "pad": pad,
+        "regels_totaal": len(lines),
+        "inhoud": body[:MAX_CHARS],
+        "afgekapt": truncated,
+    }
+
+
+def zoek_in_code(term: str) -> dict:
+    term = term.strip()
+    if len(term) < 2:
+        return {"fout": "te kort om op te zoeken"}
+    try:
+        found = subprocess.run(
+            ["grep", "-rn", "--include=*.py", "--include=*.md", "--include=*.sh", "--include=*.yaml",
+             "--exclude-dir=.git", "--exclude-dir=.local", "--exclude-dir=.venv", "--exclude-dir=wakewords",
+             "-i", term, "."],
+            cwd=REPO, capture_output=True, text=True, timeout=15,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"fout": str(exc)}
+    # Filter on the file the hit is in, not on the text: a plain ".env" substring
+    # test also throws away every line that mentions os.environ.
+    hits = []
+    for line in found.splitlines():
+        path = line.split(":", 1)[0].lstrip("./")
+        if any(path == f or path.startswith(f + "/") for f in FORBIDDEN):
+            continue
+        hits.append(line[:160])
+        if len(hits) >= 20:
+            break
+    return {"treffers": hits or "niets gevonden", "aantal": len(hits)}
+
+
+def lijst_code(map: str = "") -> dict:
+    target = _safe_path(map or ".")
+    if target is None or not target.is_dir():
+        return {"fout": "die map mag ik niet bekijken"}
+    entries = []
+    for item in sorted(target.iterdir()):
+        if item.name.startswith(".") or item.name in ("__pycache__", "wakewords"):
+            continue
+        entries.append(item.name + ("/" if item.is_dir() else ""))
+    return {"map": map or ".", "bestanden": entries[:40]}
+
+
 def status() -> dict:
     def shell(command: str) -> str:
         try:
@@ -229,6 +350,9 @@ def zet_volume(niveau: float) -> dict:
 
 HANDLERS = {
     "kijk": kijk,
+    "lees_code": lees_code,
+    "zoek_in_code": zoek_in_code,
+    "lijst_code": lijst_code,
     "onthoud": onthoud,
     "status": status,
     "zet_volume": zet_volume,
