@@ -70,18 +70,29 @@ image and question to Gemini, and prints the answer. The image is deleted afterw
 Use `--save ~/picture.jpg` to keep it. This is an on-demand tool: no camera or AI
 process remains running afterwards.
 
-## Face console (bench prototype)
-From the Pi's attached keyboard, run:
+## Voice + face console (bench prototype)
+On the Pi, run:
 
 ```bash
 cd ~/willie
 .venv/bin/python tools/willie_console.py
 ```
 
-The face renders directly to every available `/dev/fb*` device; typed characters,
-camera capture, Gemini thinking, and the answer all appear on the face rather than
-the terminal. Press `Enter` to ask, type again for a new question, and use `Ctrl+C`
-to exit. It is on-demand and has no third-party Python dependency.
+The face renders directly to every available `/dev/fb*` device and listens through
+the I2S microphone. Say **“Hey Willie”** followed by a question, or say the wake
+phrase by itself and wait for the `YES?` face before asking. Gemini answers through
+the speaker. Ordinary questions use audio only; a photo is captured only for a
+request such as “look at this” or “what is in front of you.” Use `Ctrl+C` to exit.
+
+This temporary bench wake detector routes speech clips through Gemini while the
+console is visibly listening. It is not the final always-on wake path: B13 keeps
+“Hey Willie” local on the ESP32, so idle room audio never goes to the cloud.
+
+The older typed camera console is still available with:
+
+```bash
+.venv/bin/python tools/willie_console.py --keyboard
+```
 
 Install the short launch command once from the Mac with `make face-install`; then
 the Pi keyboard needs only `willie` and Enter.
@@ -95,9 +106,9 @@ make voice
 ```
 
 Press Enter to start recording, Enter again to stop. The WAV is piped over SSH to
-`tools/ask_voice.py` on the Pi, which captures one still and sends audio + image to
-Gemini in a single request; the answer is printed and read aloud by the built-in
-`say` command.
+`tools/ask_voice.py` on the Pi. Gemini answers audio-only questions directly and
+asks the Pi for one camera still only when the question needs vision; the answer is
+printed and read aloud by the built-in `say` command.
 
 The split is deliberate: the Mac only records and speaks, so the **API key never
 leaves the Pi**. `sounddevice` is installed from `requirements-mac.txt` into the

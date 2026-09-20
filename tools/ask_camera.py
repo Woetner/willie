@@ -134,6 +134,50 @@ def ask_gemini(image: Path, question: str, api_key: str, language: str = "nl") -
         raise RuntimeError("Gemini returned no text response: " + json.dumps(payload)) from exc
 
 
+def ask_gemini_audio(wav: bytes, api_key: str, language: str = "nl") -> str:
+    """Send spoken audio as the whole prompt - no picture, no typing."""
+    body = json.dumps(
+        {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": (
+                                "You are WILL-E, a curious workshop robot. The audio is the user "
+                                "speaking to you; answer what they say. "
+                                + LANGUAGE_RULE.get(language, LANGUAGE_RULE["nl"])
+                                + " Your answer is read aloud by a speech synthesiser, so write plain "
+                                "sentences: no lists, no markdown, no emoji. If the audio is unclear, "
+                                "say so and ask them to repeat it."
+                            )
+                        },
+                        {"inline_data": {"mime_type": "audio/wav", "data": base64.b64encode(wav).decode("ascii")}},
+                    ]
+                }
+            ],
+            "generationConfig": {"maxOutputTokens": 200, "temperature": 0.4},
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        API_URL,
+        data=body,
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach Gemini: {exc.reason}") from exc
+    try:
+        return "".join(part["text"] for part in payload["candidates"][0]["content"]["parts"] if "text" in part).strip()
+    except (IndexError, KeyError, TypeError) as exc:
+        raise RuntimeError("Gemini returned no text response: " + json.dumps(payload)) from exc
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Take one picture and ask Gemini about it.")
     parser.add_argument("--question", help="Question to ask. Prompts at the keyboard when omitted.")

@@ -9,8 +9,9 @@ adapter chosen at Gate G1 (D9).
     make voice
 
 Press Enter to start recording, Enter again to stop. The recording is piped over
-SSH to tools/ask_voice.py on the Pi, which captures one still and asks Gemini.
-The answer is printed and read aloud with the built-in `say` command.
+SSH to tools/ask_voice.py on the Pi. Gemini answers directly unless the spoken
+request needs vision; only then does the Pi capture a still. The answer is
+printed and read aloud with the built-in `say` command.
 
 Requires `sounddevice` on the Mac (its wheel bundles PortAudio, so no Homebrew).
 The first run makes macOS ask for microphone permission for your terminal.
@@ -86,7 +87,7 @@ def main() -> int:
     parser.add_argument("--host", default="willie.local")
     parser.add_argument("--pi-dir", default="willie")
     parser.add_argument("--voice", default=None, help="A `say` voice name, e.g. Daniel.")
-    parser.add_argument("--no-camera", action="store_true", help="Answer from the audio alone.")
+    parser.add_argument("--no-camera", action="store_true", help="Never use the camera (default: automatic).")
     parser.add_argument("--once", action="store_true", help="Ask one question and exit.")
     args = parser.parse_args()
 

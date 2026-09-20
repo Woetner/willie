@@ -19,7 +19,7 @@ help:
 	@echo "  make deploy       sync code + restart WILL-E (A5)"
 	@echo "  make ram          RAM table from the Pi (A8, D21)"
 	@echo "  make ask-camera   take one photo and ask Gemini about it (bench prototype)"
-	@echo "  make face         fullscreen face + typed camera questions on the Pi"
+	@echo "  make face         say 'Hey Willie' and talk; camera is automatic (bench prototype)"
 	@echo "  make face-install install the short 'willie' face-console command on the Pi"
 	@echo "  make voice        talk to WILL-E with the MacBook mic + speakers (temporary bridge)"
 	@echo "  make link-test    200 pings Pi -> MCU, prints round-trip times (A9)"
@@ -79,7 +79,8 @@ ram:
 ask-camera: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/ask_camera.py'
 
-# On-demand physical UI. Run from the Pi's console for its attached keyboard.
+# On-demand physical UI: Pi mic + speaker + face, with a cloud-routed temporary
+# wake detector. The final local wake detector remains B13 on the MCU.
 face: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/willie_console.py'
 

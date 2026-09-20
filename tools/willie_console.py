@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""A fullscreen, keyboard-driven camera question console for WILL-E's face.
+"""A fullscreen voice console for WILL-E's face.
 
 Runs on demand on the Pi. It writes the face directly to every available Linux
-framebuffer and reads a USB keyboard from its current terminal without echoing
-typed characters there.
+framebuffer, listens for "Hey Willie", and answers through Gemini. Camera use is
+automatic: ordinary questions stay audio-only, while "look at this" captures a
+still. Pass --keyboard to retain the earlier typed camera-question mode.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import tempfile
@@ -21,7 +23,9 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from ask_camera import ask_gemini, capture, load_env
-from willie.audio import speech
+from ask_voice import answer as answer_voice
+from ask_voice import understand
+from willie.audio import record, speech
 from willie.face.framebuffer import Framebuffer, open_all
 
 
@@ -122,6 +126,11 @@ class Face:
         self.text(question[-68:] or "ENTER TO LOOK", 12, self.displays[0].height * 80 // 100, 2, CYAN)
         self.text("ENTER = CAMERA  CTRL-C = QUIT", 12, self.displays[0].height * 92 // 100, 1, DIM)
 
+    def waiting(self) -> None:
+        self.base()
+        self.text("SAY HEY WILLIE", 12, self.displays[0].height * 72 // 100, 3, CYAN)
+        self.text("CTRL-C = QUIT", 12, self.displays[0].height * 92 // 100, 1, DIM)
+
     def status(self, label: str, colour=AMBER) -> None:
         self.base(eye_colour=colour)
         self.text(label, 12, self.displays[0].height * 72 // 100, 3, colour)
@@ -166,7 +175,98 @@ def quiet_keyboard():
         sys.stdout.flush()
 
 
+def keyboard_loop(face: Face, api_key: str) -> int:
+    question = ""
+    showed_answer = False
+    with quiet_keyboard() as interactive:
+        if not interactive:
+            raise RuntimeError("Run keyboard mode from the Pi's attached keyboard, not a pipe.")
+        face.idle()
+        while True:
+            char = os.read(sys.stdin.fileno(), 1)
+            if char == b"\x03":  # Ctrl-C
+                return 0
+            if char in (b"\r", b"\n"):
+                if not question:
+                    continue
+                try:
+                    face.status("SEEING", CYAN)
+                    with tempfile.TemporaryDirectory(prefix="willie-camera-") as temp_dir:
+                        image = Path(temp_dir) / "view.jpg"
+                        capture(image, quiet=True)
+                        face.status("THINKING", AMBER)
+                        answer = ask_gemini(image, question, api_key)
+                    face.answer(answer, talking=True)
+                    speech.speak(answer, api_key=api_key)
+                    face.answer(answer)
+                    question = ""
+                    showed_answer = True
+                except RuntimeError as exc:
+                    face.error(str(exc))
+                    speech.speak("Sorry, dat ging mis.", api_key=api_key)
+                    question = ""
+                    showed_answer = True
+                continue
+            if char in (b"\x7f", b"\x08"):
+                question = question[:-1]
+            elif 32 <= char[0] <= 126:
+                if showed_answer:
+                    question, showed_answer = "", False
+                if len(question) < 180:
+                    question += char.decode("ascii")
+            if not showed_answer:
+                face.idle(question)
+
+
+def _listen(face: Face, label: str, *, wait_for_speech: float) -> bytes:
+    face.status(label, CYAN)
+    audio, _seconds = record.listen(
+        max_seconds=max(15.0, wait_for_speech),
+        lead_in_seconds=wait_for_speech,
+    )
+    return audio
+
+
+def voice_loop(face: Face, api_key: str) -> int:
+    """Cloud-routed bench wake loop; the production wake detector is B13 on the MCU."""
+    while True:
+        try:
+            face.waiting()
+            audio = _listen(face, "LISTENING", wait_for_speech=12.0)
+            if not audio:
+                continue
+            face.status("HEARING", AMBER)
+            decision = understand(audio, api_key, wake_required=True)
+            if not decision.wake_detected:
+                continue
+            if not decision.has_question:
+                face.status("YES?", CYAN)
+                speech.espeak("Ja?")
+                audio = _listen(face, "LISTENING", wait_for_speech=8.0)
+                if not audio:
+                    continue
+                face.status("THINKING", AMBER)
+                decision = understand(audio, api_key, wake_required=False)
+            if decision.needs_camera:
+                face.status("SEEING", CYAN)
+            else:
+                face.status("THINKING", AMBER)
+            response, _used_camera = answer_voice(audio, api_key, decision=decision)
+            face.answer(response, talking=True)
+            speech.speak(response, api_key=api_key)
+            face.answer(response)
+        except KeyboardInterrupt:
+            return 0
+        except RuntimeError as exc:
+            face.error(str(exc))
+            speech.espeak("Sorry, dat ging mis.")
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="WILL-E face and voice console.")
+    parser.add_argument("--keyboard", action="store_true", help="Use the old typed camera-question mode.")
+    args = parser.parse_args()
+
     load_env(REPO / ".env")
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -174,50 +274,8 @@ def main() -> int:
         return 2
     displays = open_all()
     face = Face(displays)
-    question = ""
-    showed_answer = False
     try:
-        with quiet_keyboard() as interactive:
-            if not interactive:
-                raise RuntimeError("Run this from the Pi's attached keyboard, not a pipe.")
-            face.idle()
-            while True:
-                char = os.read(sys.stdin.fileno(), 1)
-                if char == b"\x03":  # Ctrl-C
-                    return 0
-                if char in (b"\r", b"\n"):
-                    if not question:
-                        continue
-                    try:
-                        face.status("SEEING", CYAN)
-                        with tempfile.TemporaryDirectory(prefix="willie-camera-") as temp_dir:
-                            image = Path(temp_dir) / "view.jpg"
-                            capture(image, quiet=True)
-                            face.status("THINKING", AMBER)
-                            answer = ask_gemini(image, question, api_key)
-                        # Say it first with the talking face up, then settle back
-                        # to the normal answer screen. The text is on the screen
-                        # either way, so a missing espeak-ng is not an error.
-                        face.answer(answer, talking=True)
-                        speech.speak(answer)
-                        face.answer(answer)
-                        question = ""
-                        showed_answer = True
-                    except RuntimeError as exc:
-                        face.error(str(exc))
-                        speech.speak("Sorry, dat ging mis.")
-                        question = ""
-                        showed_answer = True
-                    continue
-                if char in (b"\x7f", b"\x08"):
-                    question = question[:-1]
-                elif 32 <= char[0] <= 126:
-                    if showed_answer:
-                        question, showed_answer = "", False
-                    if len(question) < 180:
-                        question += char.decode("ascii")
-                if not showed_answer:
-                    face.idle(question)
+        return keyboard_loop(face, api_key) if args.keyboard else voice_loop(face, api_key)
     finally:
         face.close()
 

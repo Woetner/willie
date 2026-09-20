@@ -14,6 +14,7 @@ streams audio inside a live session instead of asking for a whole sentence.
 
 from __future__ import annotations
 
+import array
 import base64
 import json
 import os
@@ -27,7 +28,8 @@ import urllib.request
 # The amp is the only card once dtparam=audio=off is set, but name it anyway so
 # a plugged-in USB sound card cannot steal the speech. plughw lets ALSA resample
 # whatever rate the backend produces to what the I2S block wants.
-DEVICE = "plughw:CARD=MAX98357A,DEV=0"
+# The googlevoicehat overlay (B7: amp + mic on one card) names the card this.
+DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
 
 # --- Gemini backend ------------------------------------------------------
 # Listed on the key 20 Sep; the 2.5 preview is the documented older name.
@@ -56,7 +58,30 @@ def to_display(text: str) -> str:
     return "".join(c for c in stripped if not unicodedata.combining(c))
 
 
+# Measured on the bench 20 Sep: this card plays 48 kHz fine and is silent at
+# 16 kHz, whatever plughw claims to convert. So everything is upsampled to
+# 48 kHz here instead of being handed to ALSA at its native rate.
+CARD_RATE = 48_000
+
+
+def _upsample(pcm: bytes, rate: int) -> bytes:
+    """Repeat each sample to reach CARD_RATE. Rates that do not divide evenly
+    are rounded up, which shifts the pitch slightly but keeps speech clear."""
+    if rate >= CARD_RATE:
+        return pcm
+    factor = -(-CARD_RATE // rate)
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) // 2 * 2])
+    out = array.array("h")
+    for value in samples:
+        for _ in range(factor):
+            out.append(value)
+    return out.tobytes()
+
+
 def _play_pcm(pcm: bytes, rate: int, channels: int = 1) -> None:
+    if channels == 1 and rate < CARD_RATE:
+        pcm, rate = _upsample(pcm, rate), CARD_RATE
     subprocess.run(
         ["aplay", "-q", "-D", DEVICE, "-f", "S16_LE", "-r", str(rate), "-c", str(channels), "-t", "raw"],
         input=pcm, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
@@ -96,20 +121,18 @@ def gemini_pcm(text: str, api_key: str, model: str = TTS_MODEL, timeout: float =
 
 
 def espeak(text: str, voice: str = VOICE) -> None:
+    """Offline fallback. espeak-ng speaks at 22.05 kHz, which this card will not
+    play, so the WAV header is stripped and the samples go through _play_pcm."""
     if not shutil.which("espeak-ng"):
         return
-    speech = subprocess.Popen(
+    result = subprocess.run(
         ["espeak-ng", "-v", voice, "-s", str(SPEED), "-p", str(PITCH), "-a", str(AMPLITUDE), "--stdout", text],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        capture_output=True, check=False,
     )
-    player = subprocess.Popen(
-        ["aplay", "-q", "-D", DEVICE], stdin=speech.stdout,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    if speech.stdout:
-        speech.stdout.close()
-    player.wait()
-    speech.wait()
+    wav = result.stdout
+    if len(wav) < 44:
+        return
+    _play_pcm(wav[44:], 22_050)
 
 
 def speak(text: str, voice: str = VOICE, api_key: str | None = None) -> str:
