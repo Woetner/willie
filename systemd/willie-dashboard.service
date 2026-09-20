@@ -1,0 +1,15 @@
+# Started by willie-dashboard.socket; exits after dashboard.idle_minutes without requests.
+[Unit]
+Description=WILL-E dashboard (on demand)
+Requires=willie-dashboard.socket
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@HOME@/willie
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@HOME@/willie/.venv/bin/python -m willie.dashboard --fd 3
+NonBlocking=yes
+# RAM budget (§5.5): dashboard <= 35 MB target, hard stop at 64 MB
+MemoryMax=64M
+Restart=no

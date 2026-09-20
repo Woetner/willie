@@ -146,7 +146,9 @@ class Config:
         with self._lock:
             old, self.values, self._mtime = self.values, merged, mtime
         if not force:
-            log.info("settings reloaded from disk")
+            changed = [f"{sec}.{k}: {old[sec][k]!r} -> {v!r}"
+                       for sec, items in merged.items() for k, v in items.items() if old[sec][k] != v]
+            log.info("settings reloaded from disk%s", (": " + ", ".join(changed)) if changed else " (no changes)")
         self._notify(old)
         return True
 

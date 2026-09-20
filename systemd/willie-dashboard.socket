@@ -1,0 +1,11 @@
+# On-demand dashboard (D20): systemd holds port 8080 and starts the dashboard
+# on the first browser connection. The dashboard exits by itself when idle.
+[Unit]
+Description=WILL-E dashboard socket
+
+[Socket]
+ListenStream=8080
+Accept=no
+
+[Install]
+WantedBy=sockets.target

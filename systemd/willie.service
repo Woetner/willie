@@ -1,8 +1,9 @@
 # Installed by tools/install_service.sh (@USER@ / @HOME@ are filled in there).
+# The always-on core: event bus, config, MCU link (later: mood, behaviour, face).
 [Unit]
-Description=WILL-E robot
-After=network-online.target pigpiod.service
-Wants=network-online.target pigpiod.service
+Description=WILL-E robot (core)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -13,6 +14,11 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=@HOME@/willie/.venv/bin/python -m willie
 Restart=always
 RestartSec=2
+# RAM budget (D21, §5.5): core 35 + face 15 + voice session 45 = 95 MB.
+# Above MemoryHigh the kernel reclaims hard; at MemoryMax a leak restarts the
+# service instead of starving ssh.
+MemoryHigh=110M
+MemoryMax=128M
 
 [Install]
 WantedBy=multi-user.target

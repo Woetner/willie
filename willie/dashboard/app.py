@@ -1,6 +1,12 @@
-"""A6 dashboard skeleton: status, log viewer, settings editor generated from the schema."""
+"""Dashboard (A6, on demand since A8/D20): status, log viewer, settings editor generated from the schema.
+
+Runs as its own process (`python -m willie.dashboard`). It talks to the core only through files:
+settings YAML (read/write, the core hot-reloads it), the core's log file and state.json.
+"""
 from __future__ import annotations
 
+import collections
+import json
 import os
 import shutil
 import socket
@@ -17,7 +23,26 @@ from willie import log as wlog
 from willie.config import Config, ConfigError
 
 STATIC = Path(__file__).parent / "static"
-_BOOT = time.time()
+STATE_FILE = wlog.DATA_DIR / "state.json"
+last_request = time.monotonic()   # read by __main__ for the idle exit
+
+
+def tail(path: Path, n: int) -> list[str]:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return [l.rstrip("\n") for l in collections.deque(f, maxlen=n)]
+    except OSError:
+        return [f"(no log file yet at {path})"]
+
+
+def core_state() -> dict | None:
+    try:
+        st = json.loads(STATE_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    st["age_s"] = round(time.time() - st.get("time", 0), 1)
+    st["alive"] = st["age_s"] < 10
+    return st
 
 
 def _read(path: str) -> str | None:
@@ -68,6 +93,12 @@ def create_app(cfg: Config) -> FastAPI:
     proc = psutil.Process(os.getpid())
     psutil.cpu_percent(None)  # prime the counter
 
+    @app.middleware("http")
+    async def touch(request, call_next):
+        global last_request
+        last_request = time.monotonic()
+        return await call_next(request)
+
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(STATIC / "index.html")
@@ -80,12 +111,12 @@ def create_app(cfg: Config) -> FastAPI:
             "version": __version__,
             "host": socket.gethostname(),
             "uptime_s": int(time.time() - psutil.boot_time()),
-            "willie_uptime_s": int(time.time() - _BOOT),
             "cpu_percent": psutil.cpu_percent(None),
             "load": [round(x, 2) for x in la],
             "ram_total_mb": round(vm.total / 2**20),
             "ram_available_mb": round(vm.available / 2**20),
-            "willie_rss_mb": round(proc.memory_info().rss / 2**20, 1),
+            "dashboard_rss_mb": round(proc.memory_info().rss / 2**20, 1),
+            "core": core_state(),
             "temp_c": cpu_temp_c(),
             "throttled": throttled(),
             "wifi": wifi(),
@@ -93,9 +124,9 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/logs")
     def logs(n: int | None = None):
-        n = n or cfg.get("dashboard.log_lines")
-        lines = list(wlog.ring.lines)
-        return {"lines": lines[-max(1, min(n, 2000)):]}
+        n = max(1, min(n or cfg.get("dashboard.log_lines"), 2000))
+        cfg.reload()
+        return {"lines": tail(wlog.LOG_FILE, n)}
 
     @app.get("/api/schema")
     def schema():
@@ -103,6 +134,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/config")
     def get_config():
+        cfg.reload()
         return {"path": str(cfg.path), "values": cfg.snapshot()}
 
     @app.put("/api/config")

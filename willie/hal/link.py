@@ -1,0 +1,216 @@
+"""MCU serial link (D18). A9 scope: connect, ping/pong round-trip, stats.
+
+Later phases add `drive`, `look`, `cfg` and the 50 Hz state stream on the same link.
+
+CLI test (A9 "done when"), on the Pi with the core stopped:
+    .venv/bin/python -m willie.hal.link --port /dev/serial0 -n 200
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import statistics
+import time
+from collections import deque
+from dataclasses import dataclass, field
+
+import serial  # pyserial
+
+from willie.hal import proto
+
+log = logging.getLogger("willie.link")
+
+
+@dataclass
+class LinkStats:
+    port: str = ""
+    connected: bool = False
+    firmware: str | None = None      # from the MCU's "hello" line
+    pings: int = 0
+    pongs: int = 0
+    bad_lines: int = 0
+    rtt_last_ms: float | None = None
+    rtt_ms: deque = field(default_factory=lambda: deque(maxlen=200))
+
+    def summary(self) -> dict:
+        r = list(self.rtt_ms)
+        return {
+            "port": self.port,
+            "connected": self.connected,
+            "firmware": self.firmware,
+            "pings": self.pings,
+            "pongs": self.pongs,
+            "lost": self.pings - self.pongs,
+            "bad_lines": self.bad_lines,
+            "rtt_last_ms": self.rtt_last_ms,
+            "rtt_avg_ms": round(statistics.fmean(r), 3) if r else None,
+            "rtt_p95_ms": round(sorted(r)[int(len(r) * 0.95) - 1], 3) if len(r) >= 20 else None,
+            "rtt_max_ms": round(max(r), 3) if r else None,
+        }
+
+
+class Link:
+    def __init__(self, port: str, baud: int = 921600, ping_hz: float = 2.0, on_message=None):
+        self.port, self.baud, self.ping_hz = port, baud, ping_hz
+        self.on_message = on_message          # fn(words) for everything that isn't pong/hello
+        self.stats = LinkStats(port=port)
+        self._ser: serial.Serial | None = None
+        self._buf = bytearray()
+        self._seq = 0
+        self._sent: dict[int, float] = {}
+        self._pong_waiters: dict[int, asyncio.Future] = {}
+
+    # ---- transport -------------------------------------------------------
+    def _open(self):
+        self._ser = serial.Serial(self.port, self.baud, timeout=0, write_timeout=0.05)
+        self._ser.reset_input_buffer()
+        asyncio.get_running_loop().add_reader(self._ser.fileno(), self._on_readable)
+        self.stats.connected = True
+        log.info("link open %s @ %d", self.port, self.baud)
+
+    def _close(self):
+        if self._ser:
+            try:
+                asyncio.get_running_loop().remove_reader(self._ser.fileno())
+            except Exception:
+                pass
+            self._ser.close()
+        self._ser = None
+        self.stats.connected = False
+
+    def send(self, *words):
+        if not self._ser:
+            raise ConnectionError("link not open")
+        self._ser.write(proto.encode(*words))
+
+    def _on_readable(self):
+        try:
+            data = self._ser.read(4096)
+        except (serial.SerialException, OSError) as e:
+            log.warning("link read error: %s", e)
+            self._close()
+            return
+        self._buf += data
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl < 0:
+                if len(self._buf) > 512:        # garbage without newlines
+                    self._buf.clear()
+                    self.stats.bad_lines += 1
+                return
+            line, self._buf = bytes(self._buf[:nl]), self._buf[nl + 1:]
+            if line.strip():
+                self._handle(line)
+
+    def _handle(self, line: bytes):
+        now = time.perf_counter()
+        try:
+            words = proto.decode(line)
+        except proto.BadLine as e:
+            self.stats.bad_lines += 1
+            log.debug("%s", e)
+            return
+        kind = words[0]
+        if kind == "pong" and len(words) >= 2 and words[1].isdigit():
+            seq = int(words[1])
+            t0 = self._sent.pop(seq, None)
+            if t0 is not None:
+                rtt = (now - t0) * 1000
+                self.stats.pongs += 1
+                self.stats.rtt_last_ms = round(rtt, 3)
+                self.stats.rtt_ms.append(rtt)
+                if self.stats.pongs == 1:
+                    log.info("first pong from MCU: %.2f ms", rtt)
+            fut = self._pong_waiters.pop(seq, None)
+            if fut and not fut.done():
+                fut.set_result(now)
+        elif kind == "hello":
+            self.stats.firmware = " ".join(words[1:])
+            log.info("MCU says hello: %s", self.stats.firmware)
+        elif self.on_message:
+            self.on_message(words)
+        else:
+            log.info("MCU: %s", " ".join(words))
+
+    # ---- ping --------------------------------------------------------------
+    async def ping(self, timeout: float = 0.1) -> float | None:
+        """Send one ping, return the round-trip in ms (None on timeout)."""
+        self._seq = (self._seq + 1) % 1_000_000
+        seq = self._seq
+        fut = asyncio.get_running_loop().create_future()
+        self._pong_waiters[seq] = fut
+        t0 = time.perf_counter()
+        self._sent[seq] = t0
+        self.stats.pings += 1
+        self.send("ping", seq)
+        try:
+            t1 = await asyncio.wait_for(fut, timeout)
+            return (t1 - t0) * 1000
+        except asyncio.TimeoutError:
+            self._sent.pop(seq, None)
+            self._pong_waiters.pop(seq, None)
+            return None
+
+    # ---- long-running task for the core ------------------------------------
+    async def run(self, report_every_s: float = 60.0):
+        warned = False
+        last_report = time.monotonic()
+        while True:
+            if not self._ser:
+                try:
+                    self._open()
+                    warned = False
+                    self.send("hello?")
+                except (serial.SerialException, OSError) as e:
+                    if not warned:
+                        log.warning("MCU link not available (%s) — retrying every 5 s", e)
+                        warned = True
+                    await asyncio.sleep(5)
+                    continue
+            await self.ping()
+            if time.monotonic() - last_report >= report_every_s and self.stats.pongs:
+                s = self.stats.summary()
+                log.info("link rtt avg %.2f / p95 %s / max %.2f ms, lost %d, bad %d",
+                         s["rtt_avg_ms"], s["rtt_p95_ms"], s["rtt_max_ms"], s["lost"], s["bad_lines"])
+                last_report = time.monotonic()
+            await asyncio.sleep(1 / self.ping_hz)
+
+    def close(self):
+        self._close()
+
+
+async def _cli(port: str, baud: int, n: int):
+    link = Link(port, baud)
+    link._open()
+    link.send("hello?")
+    await asyncio.sleep(0.3)     # let a "hello" from a freshly reset board arrive
+    rtts = []
+    for _ in range(n):
+        r = await link.ping(timeout=0.2)
+        if r is not None:
+            rtts.append(r)
+        await asyncio.sleep(0.01)
+    link.close()
+    if not rtts:
+        print(f"no pong in {n} pings — check wiring (Pi TX->MCU RX, Pi RX<-MCU TX, GND) and baud")
+        return 1
+    rtts.sort()
+    print(f"firmware: {link.stats.firmware}")
+    print(f"pongs {len(rtts)}/{n}   min {rtts[0]:.2f}   avg {statistics.fmean(rtts):.2f}   "
+          f"p95 {rtts[int(len(rtts) * 0.95) - 1]:.2f}   max {rtts[-1]:.2f} ms   (A9 target: < 5 ms)")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="WILL-E MCU link ping test")
+    ap.add_argument("--port", default="/dev/serial0")
+    ap.add_argument("--baud", type=int, default=921600)
+    ap.add_argument("-n", type=int, default=100)
+    a = ap.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    raise SystemExit(asyncio.run(_cli(a.port, a.baud, a.n)))
+
+
+if __name__ == "__main__":
+    main()

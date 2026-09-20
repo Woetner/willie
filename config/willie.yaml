@@ -54,5 +54,9 @@ privacy:
   mute: false
   camera_allowed: true
 dashboard:
-  port: 8080
+  idle_minutes: 5
   log_lines: 300
+link:
+  port: /dev/serial0
+  baud: 921600
+  ping_hz: 2.0

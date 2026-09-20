@@ -76,6 +76,11 @@ privacy:
 
 dashboard:
   _label: Dashboard
-  port:            {type: int, default: 8080, min: 1024, max: 65535, restart: true}
+  idle_minutes:    {type: int, default: 5, min: 1, max: 120, unit: min, help: Dashboard process exits after this long without a browser (D20); port 8080 stays open via systemd}
   log_lines:       {type: int, default: 300, min: 50, max: 2000, help: Lines shown in the log viewer}
 
+link:
+  _label: MCU link (D18)
+  port:            {type: str, default: /dev/serial0, restart: true, help: Serial port to the ESP32 (Pi UART on GPIO14/15)}
+  baud:            {type: int, default: 921600, min: 9600, max: 2000000, restart: true, help: Must match the firmware}
+  ping_hz:         {type: float, default: 2.0, min: 0.2, max: 50, unit: Hz, help: Link health pings (round-trip time shown in the dashboard)}

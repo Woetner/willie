@@ -94,12 +94,21 @@ async function loadStatus() {
   const st = await api("/api/status");
   const w = st.wifi || {};
   const thr = st.throttled == null ? "n/a" : st.throttled;
+  const c = st.core, L = c && c.link;
+  const coreTxt = !c ? "no state" : (c.alive ? "running" : "stale " + c.age_s + " s");
+  let linkV = "n/a", linkS = "";
+  if (L) {
+    linkV = L.connected ? (L.rtt_last_ms == null ? "no pong" : L.rtt_last_ms.toFixed(2) + " ms") : "offline";
+    linkS = L.connected ? `avg ${L.rtt_avg_ms ?? "–"} · max ${L.rtt_max_ms ?? "–"} ms · lost ${L.lost} · ${L.firmware || "no hello"}` : L.port;
+  }
   $("#tiles").innerHTML =
     tile("CPU", st.cpu_percent.toFixed(0) + " %", "load " + st.load.join(" · ")) +
-    tile("RAM free", st.ram_available_mb + " MB", "of " + st.ram_total_mb + " MB · WILL-E " + st.willie_rss_mb + " MB") +
+    tile("RAM free", st.ram_available_mb + " MB", "of " + st.ram_total_mb + " MB · core " + (c ? c.rss_mb : "–") + " · dash " + st.dashboard_rss_mb + " MB") +
     tile("Temperature", st.temp_c == null ? "n/a" : st.temp_c + " °C", "throttled: " + thr) +
     tile("Wi-Fi", w.signal_dbm == null ? "n/a" : w.signal_dbm + " dBm", (w.ssid || "") + (w.iface ? " · " + w.iface : "")) +
-    tile("Uptime", dur(st.uptime_s), "WILL-E " + dur(st.willie_uptime_s)) +
+    tile("Core", coreTxt, c ? "up " + dur(c.uptime_s) + " · pid " + c.pid : "is willie.service running?") +
+    tile("MCU link", linkV, linkS) +
+    tile("Uptime", dur(st.uptime_s), "since boot") +
     tile("Version", st.version, st.host);
 }
 

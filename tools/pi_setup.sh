@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# WILL-E — step A4 base config. Run ON THE PI as your normal user (uses sudo):
+# WILL-E — base config for a FRESH Pi (A4, updated for D18/D20/D22).
+# Run ON THE PI as your normal user (uses sudo):
 #   bash ~/willie/tools/pi_setup.sh        (or from the Mac: make setup)
+# Then: bash ~/willie/tools/os_diet.sh     (A8)  and reboot.
 # Safe to run again: every step checks first.
 set -euo pipefail
 
@@ -9,23 +11,22 @@ CFG=/boot/firmware/config.txt
 [ -f "$CFG" ] || CFG=/boot/config.txt
 say() { printf '\n\033[1;33m== %s\033[0m\n' "$*"; }
 
-say "1/8 apt update + full-upgrade (takes a while on a Pi 3 A+)"
+say "1/7 apt update + full-upgrade (takes a while on a Pi 3 A+)"
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade
 
-say "2/8 packages"
+say "2/7 packages (no mosquitto on the Pi: D22; no pigpio: D18)"
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y install \
-  git rsync python3-venv python3-dev i2c-tools mosquitto mosquitto-clients \
-  build-essential wget unzip
+  git rsync python3-venv python3-dev i2c-tools
 command -v rpicam-hello >/dev/null || sudo apt-get -y install rpicam-apps-lite
 
-say "3/8 interfaces: I2C on, SPI on, serial console + UART off (GPIO14/15 = encoders)"
+say "3/7 interfaces: I2C + SPI on; serial console OFF, UART hardware ON (GPIO14/15 = MCU link, D18)"
 sudo raspi-config nonint do_i2c 0
 sudo raspi-config nonint do_spi 0
 sudo raspi-config nonint do_serial_cons 1
-sudo raspi-config nonint do_serial_hw 1
+sudo raspi-config nonint do_serial_hw 0
 
-say "4/8 $CFG (WILL-E block, §5.2)"
+say "4/7 $CFG (WILL-E block, §5.2)"
 sudo sed -i 's/^dtparam=audio=on/#dtparam=audio=on  # WILL-E: on-board audio off/' "$CFG"
 if ! grep -q '>>> WILL-E' "$CFG"; then
   sudo tee -a "$CFG" >/dev/null <<'EOF'
@@ -35,7 +36,10 @@ if ! grep -q '>>> WILL-E' "$CFG"; then
 dtparam=audio=off
 dtparam=i2c_arm=on
 dtparam=spi=on
-enable_uart=0
+# UART on GPIO14/15 to the ESP32 (D18). disable-bt gives the good PL011 UART
+# (/dev/serial0 = ttyAMA0, needed for 921600 baud) and switches Bluetooth off (A8).
+enable_uart=1
+dtoverlay=disable-bt
 camera_auto_detect=1
 # Screen ILI9486 + XPT2046 touch — enabled and tested in step B5:
 #dtoverlay=piscreen,speed=16000000,rotate=90
@@ -45,34 +49,10 @@ camera_auto_detect=1
 EOF
   echo "added WILL-E block"
 else
-  echo "WILL-E block already present"
+  echo "WILL-E block already present (tools/os_diet.sh migrates older blocks)"
 fi
 
-say "5/8 pigpio (daemon runs with -t 0 so it does not steal the I2S clock)"
-if ! command -v pigpiod >/dev/null; then
-  # `apt-cache show` also succeeds for a name that is only referenced (trixie) -> check for a real candidate
-  if apt-cache policy pigpio 2>/dev/null | grep -q 'Candidate: [0-9]'; then
-    sudo apt-get -y install pigpio python3-pigpio
-  else
-    echo "pigpio is not packaged for this OS release -> building from source"
-    tmp=$(mktemp -d); cd "$tmp"
-    wget -q https://github.com/joan2937/pigpio/archive/refs/heads/master.zip -O pigpio.zip
-    unzip -q pigpio.zip && cd pigpio-master
-    make -j2
-    # install ends with `python3 setup.py`, which needs distutils (gone in Python 3.13);
-    # the C library + pigpiod are installed before that, and pigpio.py comes from pip in the venv
-    sudo make install || command -v pigpiod >/dev/null
-    cd / && rm -rf "$tmp"
-  fi
-fi
-sudo ldconfig   # outside the if: a half-finished earlier run may have installed libpigpio without it
-PIGPIOD=$(command -v pigpiod)
-sed "s#@PIGPIOD@#$PIGPIOD#" "$REPO/systemd/pigpiod.service" | sudo tee /etc/systemd/system/pigpiod.service >/dev/null
-sudo systemctl daemon-reload
-sudo systemctl enable pigpiod
-sudo systemctl restart pigpiod   # fail here, not silently at the next boot
-
-say "6/8 swap in RAM (zram, 1 GB) for installs"
+say "5/7 swap in RAM (zram, 1 GB) for installs"
 if dpkg -s rpi-swap >/dev/null 2>&1; then
   # Pi OS trixie+ already runs zram swap via rpi-swap (default = RAM size); just raise it. Active after reboot.
   sudo mkdir -p /etc/rpi/swap.conf.d
@@ -86,22 +66,23 @@ elif ! grep -q zram /proc/swaps; then
 fi
 cat /proc/swaps
 
-say "7/8 Python venv + requirements"
+say "6/7 Python venv + requirements"
 cd "$REPO"
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
-say "8/8 willie.service"
+say "7/7 services (willie + on-demand dashboard)"
 sudo bash "$REPO/tools/install_service.sh"
 
 cat <<'EOF'
 
-Done. Now reboot once so config.txt + interfaces take effect:
+Done. Next:
+    bash ~/willie/tools/os_diet.sh     # A8: Bluetooth/MQTT/pigpio off, journald in RAM
     sudo reboot
-Then check (A4 "done when"):
-    i2cdetect -y 1                    # prints a grid (empty is OK before sensors are wired)
-    systemctl is-active pigpiod       # active
-    rpicam-hello --list-cameras       # lists the camera once it is plugged in
-    curl -s localhost:8080/api/status # dashboard answers
+Then check:
+    i2cdetect -y 1                     # prints a grid
+    ls -l /dev/serial0                 # -> ttyAMA0 (MCU link)
+    rpicam-hello --list-cameras        # lists the camera once it is plugged in
+    bash ~/willie/tools/ram.sh         # RAM table (A8)
 EOF
