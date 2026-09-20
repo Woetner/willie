@@ -121,10 +121,8 @@ class Face:
             self.text("WILL-E", 8, 8, 2, AMBER)
 
     def idle(self, question: str = "") -> None:
+        # Eyes only; `question` stays in the signature so keyboard_loop is unchanged.
         self.base()
-        self.text("TYPE A QUESTION", 12, self.displays[0].height * 68 // 100, 2, WHITE)
-        self.text(question[-68:] or "ENTER TO LOOK", 12, self.displays[0].height * 80 // 100, 2, CYAN)
-        self.text("ENTER = CAMERA  CTRL-C = QUIT", 12, self.displays[0].height * 92 // 100, 1, DIM)
 
     def waiting(self) -> None:
         self.base()
