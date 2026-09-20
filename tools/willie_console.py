@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from ask_camera import ask_gemini, capture, load_env
+from willie.audio import speech
 from willie.face.framebuffer import Framebuffer, open_all
 
 
@@ -92,7 +93,7 @@ class Face:
         for display in self.displays:
             cursor_x, cursor_y = x, y
             limit = max_width or display.width - x
-            for char in text.upper():
+            for char in speech.to_display(text).upper():
                 glyph = FONT.get(char, FONT["?"])
                 char_width = 6 * scale
                 if cursor_x + char_width > x + limit:
@@ -125,11 +126,12 @@ class Face:
         self.base(eye_colour=colour)
         self.text(label, 12, self.displays[0].height * 72 // 100, 3, colour)
 
-    def answer(self, answer: str) -> None:
-        self.base(eye_colour=CYAN)
+    def answer(self, answer: str, talking: bool = False) -> None:
+        self.base(eye_colour=AMBER if talking else CYAN)
         # Five 2x-font lines fit between the eyes and the next-question hint on 320px.
         self.text(answer[:180], 10, self.displays[0].height * 62 // 100, 2, WHITE, self.displays[0].width - 20)
-        self.text("TYPE AGAIN FOR NEXT QUESTION", 10, self.displays[0].height * 91 // 100, 1, DIM)
+        hint = "TALKING..." if talking else "TYPE AGAIN FOR NEXT QUESTION"
+        self.text(hint, 10, self.displays[0].height * 91 // 100, 1, AMBER if talking else DIM)
 
     def error(self, message: str) -> None:
         self.base(eye_colour=RED, eyelids=0.55)
@@ -193,11 +195,17 @@ def main() -> int:
                             capture(image, quiet=True)
                             face.status("THINKING", AMBER)
                             answer = ask_gemini(image, question, api_key)
+                        # Say it first with the talking face up, then settle back
+                        # to the normal answer screen. The text is on the screen
+                        # either way, so a missing espeak-ng is not an error.
+                        face.answer(answer, talking=True)
+                        speech.speak(answer)
                         face.answer(answer)
                         question = ""
                         showed_answer = True
                     except RuntimeError as exc:
                         face.error(str(exc))
+                        speech.speak("Sorry, dat ging mis.")
                         question = ""
                         showed_answer = True
                     continue

@@ -23,6 +23,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 
 # Gemini returned a 404 for 2.5 Flash Lite on 2026-09-20 and directs new users
 # to this replacement model.
@@ -80,7 +82,15 @@ def capture(path: Path, quiet: bool = False) -> None:
         raise RuntimeError("Camera capture did not produce an image.")
 
 
-def ask_gemini(image: Path, question: str, api_key: str) -> str:
+# WILL-E is spoken to in Dutch, and espeak-ng reads Dutch with the Dutch voice,
+# so the model answers in Dutch unless a caller asks for something else.
+LANGUAGE_RULE = {
+    "nl": "Antwoord altijd in het Nederlands, in hooguit twee korte zinnen.",
+    "en": "Always answer in English, in at most two short sentences.",
+}
+
+
+def ask_gemini(image: Path, question: str, api_key: str, language: str = "nl") -> str:
     image_b64 = base64.b64encode(image.read_bytes()).decode("ascii")
     body = json.dumps(
         {
@@ -90,7 +100,10 @@ def ask_gemini(image: Path, question: str, api_key: str) -> str:
                         {
                             "text": (
                                 "You are WILL-E's visual assistant. Answer concisely and honestly. "
-                                "If the image is unclear, say so.\n\nUser question: " + question
+                                "If the image is unclear, say so. "
+                                + LANGUAGE_RULE.get(language, LANGUAGE_RULE["nl"])
+                                + " Your answer is read aloud by a speech synthesiser, so write plain "
+                                "sentences: no lists, no markdown, no emoji.\n\nUser question: " + question
                             )
                         },
                         {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}},
@@ -125,6 +138,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Take one picture and ask Gemini about it.")
     parser.add_argument("--question", help="Question to ask. Prompts at the keyboard when omitted.")
     parser.add_argument("--save", metavar="PATH", help="Keep the captured JPEG at PATH.")
+    parser.add_argument("--language", default="nl", choices=sorted(LANGUAGE_RULE), help="Answer language (default: nl).")
+    parser.add_argument("--speak", action="store_true", help="Also say the answer through the speaker (B6).")
     args = parser.parse_args()
 
     load_env(Path(__file__).resolve().parents[1] / ".env")
@@ -145,8 +160,14 @@ def main() -> int:
         print("Capturing image…")
         capture(image)
         print("Asking Gemini…")
-        answer = ask_gemini(image, question, api_key)
+        answer = ask_gemini(image, question, api_key, args.language)
     print("\nWILL-E:", answer)
+    if args.speak:
+        from willie.audio import speech
+
+        if not speech.available():
+            print("(espeak-ng is not installed, so nothing was spoken)", file=sys.stderr)
+        speech.speak(answer, voice=args.language)
     if saved_path:
         print(f"Saved image: {saved_path}")
     return 0
