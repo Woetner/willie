@@ -10,7 +10,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-camera bench-screen bench-audio-out voice-pi live-talk
+        pull-config run-local fw flash monitor bench-camera bench-screen bench-audio-out voice-pi live-talk improve improve-watch
 
 help:
 	@echo "Pi"
@@ -30,6 +30,9 @@ help:
 	@echo "  make bench-audio-out B6 speaker test (answer the listening questions)"
 	@echo "  make voice-pi     hands-free: wake word -> spoken conversation"
 	@echo "  make live-talk    one 60 s spoken session, no wake word"
+	@echo "Self-improvement (runs Claude Code on the Mac, never deploys)"
+	@echo "  make improve       do the changes WILL-E was asked for, on a branch"
+	@echo "  make improve-watch keep watching for spoken requests"
 	@echo "MCU (needs PlatformIO on the Mac: brew install platformio)"
 	@echo "  make fw           build the firmware            (MCU=$(MCU))"
 	@echo "  make flash        build + flash over USB        (MCU=$(MCU))"
@@ -126,6 +129,14 @@ flash:
 
 monitor:
 	cd firmware && pio device monitor -e $(MCU)
+
+# Picks up what WILL-E was asked to change and lets Claude Code do it in a
+# worktree on a branch. Deploying stays a human decision.
+improve:
+	bash tools/improve_worker.sh
+
+improve-watch:
+	bash tools/improve_worker.sh --watch
 
 # ---------------------------------------------------------------- Mac
 # Temporary bench bridge: the Mac records and speaks, the Pi keeps the camera and

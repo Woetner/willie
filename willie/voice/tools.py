@@ -57,6 +57,28 @@ DECLARATIONS = [
         },
     },
     {
+        "name": "verbeter_jezelf",
+        "description": (
+            "Zet een verbetering aan je eigen code in de wachtrij. Gebruik dit als Wouter "
+            "zegt dat iets anders moet aan hoe jij werkt: een bug, een instelling, een "
+            "functie die ontbreekt. Je verandert niets zelf - een agent op zijn laptop "
+            "maakt er een branch van die hij daarna nakijkt."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "opdracht": {
+                    "type": "string",
+                    "description": (
+                        "Wat er moet veranderen, concreet en op zichzelf te begrijpen. "
+                        "Noem het bestand of de functie als je die weet."
+                    ),
+                }
+            },
+            "required": ["opdracht"],
+        },
+    },
+    {
         "name": "status",
         "description": "Lees de toestand van de Pi: temperatuur, vrij geheugen, voeding, uptime.",
         "parameters": {"type": "object", "properties": {}},
@@ -106,6 +128,28 @@ def onthoud(notitie: str) -> dict:
     return {"ok": True}
 
 
+QUEUE_FILE = Path(os.environ.get("WILLIE_IMPROVE_QUEUE", REPO / ".local" / "improve_queue.jsonl"))
+
+
+def verbeter_jezelf(opdracht: str) -> dict:
+    """Queue a code change. Nothing here runs it - see tools/improve_worker.sh.
+
+    The robot cannot change itself: it writes a line to a file. A worker on the
+    Mac picks it up, works in a git worktree on a branch and pushes. Deploying
+    stays a human decision, which is the whole point of the split.
+    """
+    opdracht = " ".join(opdracht.split())
+    if len(opdracht) < 10:
+        return {"fout": "te vaag, zeg concreter wat er moet veranderen"}
+    QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime
+
+    entry = {"gevraagd": datetime.now().isoformat(timespec="seconds"), "opdracht": opdracht, "status": "nieuw"}
+    with QUEUE_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return {"ok": True, "in_wachtrij": opdracht}
+
+
 def status() -> dict:
     def shell(command: str) -> str:
         try:
@@ -132,7 +176,13 @@ def zet_volume(niveau: float) -> dict:
     return {"ok": True, "volume": niveau}
 
 
-HANDLERS = {"kijk": kijk, "onthoud": onthoud, "status": status, "zet_volume": zet_volume}
+HANDLERS = {
+    "kijk": kijk,
+    "onthoud": onthoud,
+    "status": status,
+    "zet_volume": zet_volume,
+    "verbeter_jezelf": verbeter_jezelf,
+}
 
 
 def call(name: str, arguments: dict) -> dict:
