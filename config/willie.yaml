@@ -48,7 +48,7 @@ voice:
   voice_name: ''
   speed: 1.0
   robot_filter: 0.3
-  wake_sensitivity: 0.5
+  wake_sensitivity: 0.8
   language: auto
 privacy:
   mute: false
