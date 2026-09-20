@@ -85,3 +85,24 @@ to exit. It is on-demand and has no third-party Python dependency.
 
 Install the short launch command once from the Mac with `make face-install`; then
 the Pi keyboard needs only `willie` and Enter.
+
+## Voice bridge (temporary, Mac-only)
+Talk to WILL-E with the MacBook's microphone and speakers while the robot has no
+audio hardware of its own. From the Mac:
+
+```bash
+make voice
+```
+
+Press Enter to start recording, Enter again to stop. The WAV is piped over SSH to
+`tools/ask_voice.py` on the Pi, which captures one still and sends audio + image to
+Gemini in a single request; the answer is printed and read aloud by the built-in
+`say` command.
+
+The split is deliberate: the Mac only records and speaks, so the **API key never
+leaves the Pi**. `sounddevice` is installed from `requirements-mac.txt` into the
+Mac's `.venv` only — the Pi never sees it (D21). macOS will ask for microphone
+permission for your terminal on the first run.
+
+This is a bench bridge, not the robot's voice. The real path is the on-robot
+realtime speech-to-speech adapter chosen at Gate G1 (D9).

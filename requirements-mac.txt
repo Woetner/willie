@@ -1,0 +1,2 @@
+# Mac-only bench tools. The Pi never installs these (D21: the RAM budget is on the robot).
+sounddevice>=0.5

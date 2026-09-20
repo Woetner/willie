@@ -9,7 +9,7 @@ RSYNC   := rsync -az --delete \
              --exclude .git/ --exclude .env --exclude .venv/ --exclude __pycache__/ \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
-.PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install \
+.PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
         pull-config run-local fw flash monitor
 
 help:
@@ -21,6 +21,7 @@ help:
 	@echo "  make ask-camera   take one photo and ask Gemini about it (bench prototype)"
 	@echo "  make face         fullscreen face + typed camera questions on the Pi"
 	@echo "  make face-install install the short 'willie' face-console command on the Pi"
+	@echo "  make voice        talk to WILL-E with the MacBook mic + speakers (temporary bridge)"
 	@echo "  make link-test    200 pings Pi -> MCU, prints round-trip times (A9)"
 	@echo "  make logs         follow the core log"
 	@echo "  make pull-config  copy the live settings from the Pi into config/willie.yaml"
@@ -101,6 +102,13 @@ monitor:
 	cd firmware && pio device monitor -e $(MCU)
 
 # ---------------------------------------------------------------- Mac
+# Temporary bench bridge: the Mac records and speaks, the Pi keeps the camera and
+# the API key. Not the robot's voice path - that is the Gate G1 adapter (D9).
+voice: sync
+	test -d .venv || python3 -m venv .venv
+	.venv/bin/python -c 'import sounddevice' 2>/dev/null || .venv/bin/pip install -q -r requirements-mac.txt
+	.venv/bin/python tools/voice_mac.py
+
 run-local:
 	test -d .venv || python3 -m venv .venv
 	.venv/bin/pip install -q -r requirements.txt

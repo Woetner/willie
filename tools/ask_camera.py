@@ -51,8 +51,11 @@ def capture(path: Path, quiet: bool = False) -> None:
     command = [
         "rpicam-still",
         "--nopreview",
+        # The Camera Module 3 has autofocus. Without these it shoots at whatever
+        # the lens happened to be at, which is blurry for workshop close-ups.
+        "--autofocus-on-capture",
         "--timeout",
-        "800",
+        "2000",
         "--width",
         "1024",
         "--height",
