@@ -15,6 +15,11 @@ import termios
 from contextlib import contextmanager
 from pathlib import Path
 
+# The short /usr/local/bin/willie launcher executes this script by absolute path,
+# so the repository root is not otherwise guaranteed to be on sys.path.
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+
 from ask_camera import ask_gemini, capture, load_env
 from willie.face.framebuffer import Framebuffer, open_all
 
@@ -160,7 +165,7 @@ def quiet_keyboard():
 
 
 def main() -> int:
-    load_env(Path(__file__).resolve().parents[1] / ".env")
+    load_env(REPO / ".env")
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("GEMINI_API_KEY is missing from ~/willie/.env", file=sys.stderr)
