@@ -28,6 +28,8 @@ import subprocess
 
 import websockets
 
+from willie.audio import speech
+
 HOST = "generativelanguage.googleapis.com"
 PATH = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
@@ -86,7 +88,7 @@ class Speaker:
         self.start()
         try:
             if self.process and self.process.stdin:
-                self.process.stdin.write(_upsample(pcm))
+                self.process.stdin.write(_upsample(speech.scale(pcm)))
                 self.process.stdin.flush()
         except (BrokenPipeError, ValueError):
             self.process = None

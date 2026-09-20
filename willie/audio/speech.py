@@ -63,6 +63,23 @@ def to_display(text: str) -> str:
 # 48 kHz here instead of being handed to ALSA at its native rate.
 CARD_RATE = 48_000
 
+# The MAX98357A has no mixer control of its own (checked with amixer on 20 Sep),
+# so volume is done here by scaling samples. 0.0 is silence, 1.0 is as loud as
+# the amp goes, which is far too loud on a desk.
+VOLUME = float(os.environ.get("WILLIE_VOLUME", "0.15"))
+
+
+def scale(pcm: bytes, gain: float = None) -> bytes:
+    """Apply the software volume. Returns the PCM unchanged at gain 1.0."""
+    gain = VOLUME if gain is None else gain
+    if gain >= 0.999:
+        return pcm
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) // 2 * 2])
+    for i, value in enumerate(samples):
+        samples[i] = int(value * gain)
+    return samples.tobytes()
+
 
 def _upsample(pcm: bytes, rate: int) -> bytes:
     """Repeat each sample to reach CARD_RATE. Rates that do not divide evenly
@@ -80,6 +97,7 @@ def _upsample(pcm: bytes, rate: int) -> bytes:
 
 
 def _play_pcm(pcm: bytes, rate: int, channels: int = 1) -> None:
+    pcm = scale(pcm)
     if channels == 1 and rate < CARD_RATE:
         pcm, rate = _upsample(pcm, rate), CARD_RATE
     subprocess.run(

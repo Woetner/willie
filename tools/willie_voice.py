@@ -44,7 +44,8 @@ def main() -> int:
             if not wake.listen_for_wake():
                 continue
             print("wake!", flush=True)
-            speech.speak("Ja?")
+            backend = speech.speak("Ja?")
+            print(f"  said 'Ja?' via {backend or 'NOTHING - no tts and no espeak-ng'}", flush=True)
 
             started = time.monotonic()
             first_audio: list[float] = []
@@ -52,10 +53,13 @@ def main() -> int:
             def on_event(kind: str, detail: str) -> None:
                 elapsed = time.monotonic() - started
                 if kind == "ready":
-                    print(f"  [{elapsed:5.1f}s] session open ({detail.split('/')[-1]})")
+                    print(f"  [{elapsed:5.1f}s] session open ({detail.split('/')[-1]}) - TALK NOW, he only"
+                          f" answers what he hears")
                 elif kind == "audio" and not first_audio:
                     first_audio.append(elapsed)
                     print(f"  [{elapsed:5.1f}s] answering")
+                elif kind == "uplink":
+                    print(f"  [{elapsed:5.1f}s] mic {detail}")
                 elif kind in ("idle", "error", "interrupted"):
                     print(f"  [{elapsed:5.1f}s] {kind} {detail}".rstrip())
 
