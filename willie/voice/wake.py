@@ -28,15 +28,22 @@ DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
 RATE = 16_000
 CHUNK = 4000  # 0.25 s: small enough to react, big enough not to spin the CPU
 
+# The ENGLISH model, although the conversation is in Dutch: "gemini" is an
+# English name and Wouter says it the English way, "hey jeminai". Measured on a
+# recording of him saying it three times (20 Sep): the English model returns
+# "gemini" 3 out of 3, the Dutch model hears nothing at all - its vocabulary has
+# no jemini/gemeni, so those spellings were silently dropped from the grammar.
 MODEL_DIR = Path(os.environ.get(
     "WILLIE_VOSK_MODEL",
-    Path(__file__).resolve().parents[2] / ".local" / "models" / "vosk-model-small-nl-0.22",
+    Path(__file__).resolve().parents[2] / ".local" / "models" / "vosk-model-small-en-us-0.15",
 ))
 
-# Dutch speech recognition writes an English name several ways, and a wake word
-# that only fires on the perfect spelling is a wake word that never fires.
-PHRASES = ("hey gemini", "hé gemini", "hei gemini", "hey jemini", "hey gemeni", "hey gemini")
-GRAMMAR = json.dumps(sorted({*PHRASES, "[unk]"}), ensure_ascii=False)
+# "hey" is often swallowed, so the name alone is enough to wake him. With a
+# closed grammar everything else collapses to [unk], so this is less trigger
+# happy than it looks - but it is the number to watch in the D2 false-trigger
+# test.
+PHRASES = ("hey gemini", "hi gemini", "hay gemini", "gemini")
+GRAMMAR = json.dumps([*PHRASES, "[unk]"], ensure_ascii=False)
 
 _model: Model | None = None
 
@@ -59,8 +66,7 @@ def _recognizer() -> KaldiRecognizer:
 
 
 def _heard_wake(text: str) -> bool:
-    text = text.lower()
-    return any(phrase in text for phrase in PHRASES) or ("gemini" in text and "hey" in text)
+    return "gemini" in text.lower()
 
 
 def listen_for_wake(stop_after: float | None = None, on_tick=None) -> bool:

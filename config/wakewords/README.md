@@ -4,12 +4,17 @@ WILL-E listens for **"hey gemini"** with [Vosk](https://alphacephei.com/vosk/):
 offline, free, no account and no training. Porcupine was the first choice for
 its size, but its free tier is company-only now.
 
-The model is not in git - it is 66 MB of third-party data. Install it on the Pi:
+The model is **English**, although WILL-E speaks Dutch: "gemini" is an English
+name and Wouter pronounces it the English way. Measured on a recording of him
+saying it three times, the English model returns "gemini" 3/3 and the Dutch
+model hears nothing - Dutch has no such word.
+
+The model is not in git - it is 68 MB of third-party data. Install it on the Pi:
 
 ```bash
 mkdir -p ~/willie/.local/models && cd ~/willie/.local/models
-curl -sSLO https://alphacephei.com/vosk/models/vosk-model-small-nl-0.22.zip
-unzip -q vosk-model-small-nl-0.22.zip && rm vosk-model-small-nl-0.22.zip
+curl -sSLO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+unzip -q vosk-model-small-en-us-0.15.zip && rm vosk-model-small-en-us-0.15.zip
 ```
 
 `WILLIE_VOSK_MODEL` overrides the path if you want a different model - the
