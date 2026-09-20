@@ -10,7 +10,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-camera bench-screen bench-audio-out
+        pull-config run-local fw flash monitor bench-camera bench-screen bench-audio-out voice-pi live-talk
 
 help:
 	@echo "Pi"
@@ -28,6 +28,8 @@ help:
 	@echo "  make bench-camera B8 camera test, photos land in ../photos/bench/b8/"
 	@echo "  make bench-screen B5 screen blink fps + touch test"
 	@echo "  make bench-audio-out B6 speaker test (answer the listening questions)"
+	@echo "  make voice-pi     hands-free: wake word -> spoken conversation"
+	@echo "  make live-talk    one 60 s spoken session, no wake word"
 	@echo "MCU (needs PlatformIO on the Mac: brew install platformio)"
 	@echo "  make fw           build the firmware            (MCU=$(MCU))"
 	@echo "  make flash        build + flash over USB        (MCU=$(MCU))"
@@ -104,6 +106,13 @@ bench-camera: sync
 
 bench-screen: sync
 	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && sudo .venv/bin/python tools/bench/screen.py; sudo systemctl start willie'
+
+# Hands-free voice loop. Run from the Pi's console so it owns the microphone.
+voice-pi: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/willie_voice.py'
+
+live-talk: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/live_talk.py 60'
 
 bench-audio-out: sync
 	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && .venv/bin/python tools/bench/audio_out.py; sudo systemctl start willie'

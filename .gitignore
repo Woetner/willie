@@ -14,3 +14,6 @@ venv/
 logs/
 .DS_Store
 .local/
+
+# Wake-word models are account-bound and stay out of git (see config/wakewords/README.md)
+config/wakewords/*.ppn

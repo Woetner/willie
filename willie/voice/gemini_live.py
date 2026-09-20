@@ -117,7 +117,12 @@ def _uplink(chunk: bytes, shape: str) -> str:
     return json.dumps({"realtimeInput": inner})
 
 
-async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=None) -> None:
+# Anything below this is room tone, measured on the bench: a quiet room reads
+# about 1.5 % FS and speech at 30 cm reads 20-40 %.
+SPEECH_FS = 0.05
+
+
+async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=None, activity=None) -> None:
     frames = IN_RATE * CHUNK_MS // 1000
     sent = 0
     loudest = 0.0
@@ -135,7 +140,10 @@ async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=Non
             samples = array.array("h")
             samples.frombytes(chunk[: len(chunk) // 2 * 2])
             if samples:
-                loudest = max(loudest, max(max(samples), -min(samples)) / 32768)
+                peak = max(max(samples), -min(samples)) / 32768
+                loudest = max(loudest, peak)
+                if peak >= SPEECH_FS and activity is not None:
+                    activity[0] = asyncio.get_running_loop().time()
             if on_event and sent % 20 == 0:      # every 2 s
                 on_event("uplink", f"{sent} chunks, loudest {loudest * 100:.1f}% FS")
                 loudest = 0.0
@@ -144,7 +152,7 @@ async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=Non
         await process.wait()
 
 
-async def _receive(socket, speaker: Speaker, stop: asyncio.Event, on_event=None) -> None:
+async def _receive(socket, speaker: Speaker, stop: asyncio.Event, on_event=None, activity=None) -> None:
     async for raw in socket:
         if stop.is_set():
             break
@@ -160,6 +168,8 @@ async def _receive(socket, speaker: Speaker, stop: asyncio.Event, on_event=None)
             blob = part.get("inlineData") or part.get("inline_data")
             if blob and blob.get("data"):
                 speaker.write(base64.b64decode(blob["data"]))
+                if activity is not None:
+                    activity[0] = asyncio.get_running_loop().time()
                 if on_event:
                     on_event("audio", "")
             if part.get("text") and on_event:
@@ -168,9 +178,32 @@ async def _receive(socket, speaker: Speaker, stop: asyncio.Event, on_event=None)
             on_event("turn_complete", "")
 
 
-async def session(api_key: str, seconds: float | None = None, on_event=None) -> str:
-    """Hold a live conversation. Returns the model name that worked."""
+async def _watch_idle(stop: asyncio.Event, activity: list[float], idle_timeout: float, on_event=None) -> None:
+    """End the session once nobody has spoken and nothing has been said back."""
+    loop = asyncio.get_running_loop()
+    activity[0] = loop.time()
+    while not stop.is_set():
+        await asyncio.sleep(0.5)
+        if loop.time() - activity[0] >= idle_timeout:
+            if on_event:
+                on_event("idle", f"{idle_timeout:.0f} s without speech")
+            stop.set()
+            return
+
+
+async def session(
+    api_key: str,
+    seconds: float | None = None,
+    idle_timeout: float | None = None,
+    on_event=None,
+) -> str:
+    """Hold a live conversation. Returns the model name that worked.
+
+    `idle_timeout` closes the session after that many seconds with neither side
+    making a sound, which is what the wake-word loop uses to go back to sleep.
+    """
     stop = asyncio.Event()
+    activity = [0.0]
     speaker = Speaker()
     last_error = "no model accepted the session"
     for model, shape in MODELS:
@@ -185,14 +218,15 @@ async def session(api_key: str, seconds: float | None = None, on_event=None) -> 
                 if on_event:
                     on_event("ready", model)
                 tasks = [
-                    asyncio.create_task(_send_microphone(socket, stop, shape, on_event)),
-                    asyncio.create_task(_receive(socket, speaker, stop, on_event)),
+                    asyncio.create_task(_send_microphone(socket, stop, shape, on_event, activity)),
+                    asyncio.create_task(_receive(socket, speaker, stop, on_event, activity)),
                 ]
+                if idle_timeout:
+                    tasks.append(asyncio.create_task(_watch_idle(stop, activity, idle_timeout, on_event)))
                 try:
-                    if seconds:
-                        await asyncio.wait(tasks, timeout=seconds)
-                    else:
-                        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    waiter = asyncio.create_task(stop.wait())
+                    await asyncio.wait([waiter, *tasks], timeout=seconds, return_when=asyncio.FIRST_COMPLETED)
+                    waiter.cancel()
                 finally:
                     stop.set()
                     for task in tasks:
@@ -201,7 +235,7 @@ async def session(api_key: str, seconds: float | None = None, on_event=None) -> 
                     speaker.stop()
                     # A task that dies on its own leaves the session looking like
                     # a clean exit, so say which one and why.
-                    for name, result in zip(("microphone", "receive"), results):
+                    for name, result in zip(("microphone", "receive", "idle"), results):
                         if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                             if on_event:
                                 on_event("error", f"{name}: {type(result).__name__}: {result}")
