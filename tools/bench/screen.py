@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import select
 import struct
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -35,12 +37,30 @@ def find_panel() -> str:
     sys.exit("FAIL no ILI9486 framebuffer - is dtoverlay=piscreen enabled in /boot/firmware/config.txt?")
 
 
-def spi_hz() -> int | None:
-    for f in glob.glob("/proc/device-tree/soc/spi@*/*/spi-max-frequency"):
+def panel_prop(name: str) -> int | None:
+    """Read a device-tree property of the ILI9486 SPI node (set by the tft35a overlay)."""
+    for f in glob.glob(f"/proc/device-tree/soc/spi@*/*/{name}"):
         compat = Path(f).with_name("compatible")
         if compat.exists() and b"9486" in compat.read_bytes():
             return struct.unpack(">I", Path(f).read_bytes()[:4])[0]
     return None
+
+
+def effective_hz(requested: int, core_hz: int = 250_000_000) -> int:
+    """The clock the SPI block really runs at: core clock / an even divisor, rounded down."""
+    divisor = max(2, -(-core_hz // requested))
+    divisor += divisor % 2
+    return core_hz // divisor
+
+
+def defio_hz() -> int:
+    """The fbtft deferred-io rate actually in use (kernel clamps it to whole jiffies)."""
+    try:
+        out = subprocess.run(["dmesg"], capture_output=True, text=True, check=False).stdout
+    except OSError:
+        out = ""
+    matches = re.findall(r"fb_ili9486 frame buffer.*?fps=(\d+)", out)
+    return int(matches[-1]) if matches else (panel_prop("fps") or 30)
 
 
 def blink_test(fb: Framebuffer, seconds: float = 10.0) -> None:
@@ -65,11 +85,18 @@ def blink_test(fb: Framebuffer, seconds: float = 10.0) -> None:
     render_fps = frames / elapsed
     band_bytes = band_h * fb.stride
     print(f"  render fps : {render_fps:.1f}  ({frames} frames in {elapsed:.1f} s)")
-    hz = spi_hz()
+    hz = panel_prop("spi-max-frequency")
     if hz:
-        # ~15 % protocol overhead for fbtft (commands, DC toggles, gaps)
-        panel_fps = hz / (band_bytes * 8 * 1.15)
-        print(f"  SPI clock  : {hz / 1e6:.0f} MHz -> panel fps for the eye band ({band_h} rows) ~ {panel_fps:.1f}")
+        # Two costs per update, both measured on the bench (20 Sep, §12):
+        #   transfer  - band bytes over SPI, ~15 % protocol overhead (commands, DC toggles, gaps)
+        #   defio     - fbtft sleeps one deferred-io period before it flushes the dirty rows
+        # The defio period dominated until fps was raised from 60 to 150 in the overlay line.
+        wait = defio_hz()
+        real = effective_hz(hz)
+        seconds = band_bytes * 8 * 1.15 / real + 1.0 / wait
+        panel_fps = 1.0 / seconds
+        print(f"  SPI clock  : {hz / 1e6:.0f} MHz asked -> {real / 1e6:.1f} MHz real, fbtft defio {wait} Hz")
+        print(f"  panel fps for the eye band ({band_h} rows) ~ {panel_fps:.1f}")
         best = min(render_fps, panel_fps)
     else:
         print("  SPI clock  : unknown (could not read the device tree) - judge by eye")
@@ -132,8 +159,11 @@ def main() -> int:
     try:
         print("-- 1. blink (10 s)")
         blink_test(fb)
-        print("-- 2. touch")
-        touch_test()
+        if "--no-touch" in sys.argv:
+            print("-- 2. touch: skipped (--no-touch)")
+        else:
+            print("-- 2. touch")
+            touch_test()
     finally:
         fb.close()
     return 0
