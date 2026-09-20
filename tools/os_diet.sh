@@ -44,6 +44,14 @@ say "4/7 other resident services that WILL-E does not need"
 # keep: NetworkManager/wpa_supplicant (Wi-Fi), avahi-daemon (willie.local), ssh, cron, timesyncd, getty
 off triggerhappy ModemManager udisks2 packagekit rpi-connect rpi-connect-wayvnc
 sudo systemctl --global disable rpi-connect rpi-connect-wayvnc >/dev/null 2>&1 || true
+# polkit only authorises non-root D-Bus clients (e.g. nmcli without sudo); headless WILL-E uses sudo.
+if systemctl list-unit-files --no-legend polkit.service 2>/dev/null | grep -q .; then
+  sudo systemctl mask --now polkit.service >/dev/null 2>&1 && echo "  masked: polkit (use 'sudo nmcli')"
+fi
+# cloud-init only matters on the first boot (A3 is done); stop it re-running its units at every boot
+if [ -d /etc/cloud ] && [ ! -f /etc/cloud/cloud-init.disabled ]; then
+  sudo touch /etc/cloud/cloud-init.disabled && echo "  off: cloud-init (after first boot)"
+fi
 
 say "5/7 no desktop GPU stack; CMA down to 64 MB (D20, D21)"
 # vc4-kms-v3d reserves 256 MB of CMA on a Pi with 415 MB usable, which alone blows the
@@ -64,8 +72,8 @@ sudo tee /etc/systemd/journald.conf.d/50-willie.conf >/dev/null <<'EOF'
 # WILL-E (A8): logs in RAM, capped. willie also keeps its own 1 MB rotating file.
 [Journal]
 Storage=volatile
-RuntimeMaxUse=16M
-RuntimeMaxFileSize=4M
+RuntimeMaxUse=4M
+RuntimeMaxFileSize=1M
 EOF
 sudo systemctl restart systemd-journald
 
