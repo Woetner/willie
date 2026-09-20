@@ -45,7 +45,7 @@ def load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-def capture(path: Path) -> None:
+def capture(path: Path, quiet: bool = False) -> None:
     if not shutil.which("rpicam-still"):
         raise RuntimeError("rpicam-still is not installed; run the camera setup first.")
     command = [
@@ -65,7 +65,12 @@ def capture(path: Path) -> None:
         str(path),
     ]
     try:
-        subprocess.run(command, check=True)
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL if quiet else None,
+            stderr=subprocess.DEVNULL if quiet else None,
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("Camera capture failed. Check its flex cable and rpicam-hello.") from exc
     if not path.exists() or path.stat().st_size == 0:

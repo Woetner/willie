@@ -69,3 +69,16 @@ It asks for a question, captures one 1024×768 JPEG with `rpicam-still`, sends t
 image and question to Gemini, and prints the answer. The image is deleted afterwards.
 Use `--save ~/picture.jpg` to keep it. This is an on-demand tool: no camera or AI
 process remains running afterwards.
+
+## Face console (bench prototype)
+From the Pi's attached keyboard, run:
+
+```bash
+cd ~/willie
+.venv/bin/python tools/willie_console.py
+```
+
+The face renders directly to every available `/dev/fb*` device; typed characters,
+camera capture, Gemini thinking, and the answer all appear on the face rather than
+the terminal. Press `Enter` to ask, type again for a new question, and use `Ctrl+C`
+to exit. It is on-demand and has no third-party Python dependency.

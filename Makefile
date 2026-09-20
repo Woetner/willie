@@ -9,7 +9,7 @@ RSYNC   := rsync -az --delete \
              --exclude .git/ --exclude .env --exclude .venv/ --exclude __pycache__/ \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
-.PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera \
+.PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face \
         pull-config run-local fw flash monitor
 
 help:
@@ -19,6 +19,7 @@ help:
 	@echo "  make deploy       sync code + restart WILL-E (A5)"
 	@echo "  make ram          RAM table from the Pi (A8, D21)"
 	@echo "  make ask-camera   take one photo and ask Gemini about it (bench prototype)"
+	@echo "  make face         fullscreen face + typed camera questions on the Pi"
 	@echo "  make link-test    200 pings Pi -> MCU, prints round-trip times (A9)"
 	@echo "  make logs         follow the core log"
 	@echo "  make pull-config  copy the live settings from the Pi into config/willie.yaml"
@@ -72,6 +73,10 @@ ram:
 # It prompts for the question on the Pi's attached keyboard.
 ask-camera: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/ask_camera.py'
+
+# On-demand physical UI. Run from the Pi's console for its attached keyboard.
+face: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/willie_console.py'
 
 # stops the core for a moment so the test owns the serial port
 link-test:
