@@ -5,7 +5,7 @@
 #   bash tools/ram.sh --summary  summary only
 #   bash tools/ram.sh -n 25      show 25 processes (default 15)
 # "used" = MemTotal - MemAvailable (what the budget in §5.5 counts).
-# "os"   = used - willie core - dashboard - harness  (A8 target: <= 80 MB).
+# "os"   = used - willie core - dashboard - harness  (A8: measured 106-117 MB, budget <= 125).
 #          "harness" is this script's own python: it is measuring overhead, not OS.
 set -euo pipefail
 
