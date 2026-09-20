@@ -58,6 +58,10 @@ def main() -> int:
                 elif kind == "audio" and not first_audio:
                     first_audio.append(elapsed)
                     print(f"  [{elapsed:5.1f}s] answering")
+                elif kind == "tool":
+                    print(f"  [{elapsed:5.1f}s] tool {detail}")
+                elif kind == "tool_result":
+                    print(f"  [{elapsed:5.1f}s]      {detail}")
                 elif kind == "uplink":
                     print(f"  [{elapsed:5.1f}s] mic {detail}")
                 elif kind in ("idle", "error", "interrupted"):

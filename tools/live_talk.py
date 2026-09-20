@@ -43,6 +43,10 @@ def main() -> int:
             print(f"[{elapsed:5.1f}s] text: {detail}")
         elif kind == "interrupted":
             print(f"[{elapsed:5.1f}s] interrupted (barge-in)")
+        elif kind == "tool":
+            print(f"[{elapsed:5.1f}s] tool {detail}")
+        elif kind == "tool_result":
+            print(f"[{elapsed:5.1f}s]      {detail}")
         elif kind == "uplink":
             print(f"[{elapsed:5.1f}s] mic -> {detail}")
         elif kind == "error":

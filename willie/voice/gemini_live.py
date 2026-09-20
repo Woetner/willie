@@ -29,6 +29,7 @@ import subprocess
 import websockets
 
 from willie.audio import speech
+from willie.voice import tools as willie_tools
 from willie.voice.persona import system_prompt
 
 HOST = "generativelanguage.googleapis.com"
@@ -43,7 +44,9 @@ MODELS = (
     ("models/gemini-3.1-flash-live-preview", "audio"),
     ("models/gemini-2.5-flash-native-audio-latest", "mediaChunks"),
 )
-VOICE = os.environ.get("WILLIE_LIVE_VOICE", "Puck")
+# Puck is bright and eager, which is the generic-assistant sound Wouter did not
+# want. Charon is lower and flatter - it reads as matter-of-fact.
+VOICE = os.environ.get("WILLIE_LIVE_VOICE", "Charon")
 
 IN_RATE, OUT_RATE, CARD_RATE = 16_000, 24_000, 48_000
 CHUNK_MS = 100
@@ -110,7 +113,8 @@ async def _setup(socket, model: str) -> None:
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": VOICE}}},
             },
-            "systemInstruction": {"parts": [{"text": system_prompt(LIVE_EXTRA)}]},
+            "systemInstruction": {"parts": [{"text": system_prompt(LIVE_EXTRA) + willie_tools.remembered()}]},
+            "tools": [{"functionDeclarations": willie_tools.DECLARATIONS}],
         }
     }))
 
@@ -156,11 +160,37 @@ async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=Non
         await process.wait()
 
 
+async def _handle_tool_call(socket, message: dict, on_event=None) -> bool:
+    """Run any function the model asked for and send the results back."""
+    call = message.get("toolCall") or message.get("tool_call")
+    if not call:
+        return False
+    responses = []
+    for function in call.get("functionCalls") or call.get("function_calls") or []:
+        name = function.get("name", "")
+        arguments = function.get("args") or {}
+        if on_event:
+            on_event("tool", f"{name}({json.dumps(arguments, ensure_ascii=False)[:60]})")
+        # Tools run in a thread: rpicam-still takes seconds and the audio
+        # stream must keep flowing while it does.
+        result = await asyncio.to_thread(willie_tools.call, name, arguments)
+        if on_event:
+            on_event("tool_result", f"{name} -> {json.dumps(result, ensure_ascii=False)[:80]}")
+        responses.append({"id": function.get("id"), "name": name, "response": result})
+    if responses:
+        await socket.send(json.dumps({"toolResponse": {"functionResponses": responses}}))
+    return True
+
+
 async def _receive(socket, speaker: Speaker, stop: asyncio.Event, on_event=None, activity=None) -> None:
     async for raw in socket:
         if stop.is_set():
             break
         message = json.loads(raw) if isinstance(raw, (str, bytes)) else {}
+        if await _handle_tool_call(socket, message, on_event):
+            if activity is not None:
+                activity[0] = asyncio.get_running_loop().time()
+            continue
         server = message.get("serverContent") or message.get("server_content") or {}
         if server.get("interrupted"):
             speaker.stop()

@@ -17,3 +17,6 @@ logs/
 
 # Wake-word models are account-bound and stay out of git (see config/wakewords/README.md)
 config/wakewords/*.ppn
+
+# What WILL-E remembers is his, not the repository's
+config/memory.md
