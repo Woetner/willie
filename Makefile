@@ -10,7 +10,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-camera bench-screen
+        pull-config run-local fw flash monitor bench-camera bench-screen bench-audio-out
 
 help:
 	@echo "Pi"
@@ -27,6 +27,7 @@ help:
 	@echo "  make pull-config  copy the live settings from the Pi into config/willie.yaml"
 	@echo "  make bench-camera B8 camera test, photos land in ../photos/bench/b8/"
 	@echo "  make bench-screen B5 screen blink fps + touch test"
+	@echo "  make bench-audio-out B6 speaker test (answer the listening questions)"
 	@echo "MCU (needs PlatformIO on the Mac: brew install platformio)"
 	@echo "  make fw           build the firmware            (MCU=$(MCU))"
 	@echo "  make flash        build + flash over USB        (MCU=$(MCU))"
@@ -102,6 +103,9 @@ bench-camera: sync
 
 bench-screen: sync
 	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && sudo .venv/bin/python tools/bench/screen.py; sudo systemctl start willie'
+
+bench-audio-out: sync
+	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && .venv/bin/python tools/bench/audio_out.py; sudo systemctl start willie'
 
 # ---------------------------------------------------------------- MCU
 fw:

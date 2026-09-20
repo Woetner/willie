@@ -5,7 +5,8 @@
 #   bash tools/ram.sh --summary  summary only
 #   bash tools/ram.sh -n 25      show 25 processes (default 15)
 # "used" = MemTotal - MemAvailable (what the budget in §5.5 counts).
-# "os"   = used - willie core - dashboard  (A8 target: <= 80 MB).
+# "os"   = used - willie core - dashboard - harness  (A8 target: <= 80 MB).
+#          "harness" is this script's own python: it is measuring overhead, not OS.
 set -euo pipefail
 
 N=15; SUMMARY_ONLY=0
@@ -50,6 +51,8 @@ for pid in filter(str.isdigit, os.listdir("/proc")):
         role = "dashboard"
     elif " -m willie" in cmd:
         role = "core"
+    elif int(pid) in (os.getpid(), os.getppid()):
+        role = "harness"  # this script measuring itself - not OS overhead
     procs.append((rss, int(pid), name, role, cmd))
 
 procs.sort(reverse=True)
@@ -57,7 +60,8 @@ m = meminfo()
 used = m["MemTotal"] - m["MemAvailable"]
 core = sum(p[0] for p in procs if p[3] == "core")
 dash = sum(p[0] for p in procs if p[3] == "dashboard")
-os_mb = used - core - dash
+harness = sum(p[0] for p in procs if p[3] == "harness")
+os_mb = used - core - dash - harness
 swap = m.get("SwapTotal", 0) - m.get("SwapFree", 0)
 
 if not summary_only:
@@ -68,7 +72,8 @@ if not summary_only:
     print()
 
 line = (f"RAM {time.strftime('%Y-%m-%d %H:%M')}  total {m['MemTotal']:.0f}  used {used:.0f}  "
-        f"avail {m['MemAvailable']:.0f}  os {os_mb:.0f}  core {core:.0f}  dash {dash:.0f}  swap {swap:.0f}  (MB)")
+        f"avail {m['MemAvailable']:.0f}  os {os_mb:.0f}  core {core:.0f}  dash {dash:.0f}  "
+        f"harness {harness:.0f}  swap {swap:.0f}  (MB)")
 print(line)
 with open(log_path, "a") as f:
     f.write(line + "\n")
