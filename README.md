@@ -82,3 +82,6 @@ The face renders directly to every available `/dev/fb*` device; typed characters
 camera capture, Gemini thinking, and the answer all appear on the face rather than
 the terminal. Press `Enter` to ask, type again for a new question, and use `Ctrl+C`
 to exit. It is on-demand and has no third-party Python dependency.
+
+Install the short launch command once from the Mac with `make face-install`; then
+the Pi keyboard needs only `willie` and Enter.

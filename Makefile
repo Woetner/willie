@@ -9,7 +9,7 @@ RSYNC   := rsync -az --delete \
              --exclude .git/ --exclude .env --exclude .venv/ --exclude __pycache__/ \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
-.PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face \
+.PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install \
         pull-config run-local fw flash monitor
 
 help:
@@ -20,6 +20,7 @@ help:
 	@echo "  make ram          RAM table from the Pi (A8, D21)"
 	@echo "  make ask-camera   take one photo and ask Gemini about it (bench prototype)"
 	@echo "  make face         fullscreen face + typed camera questions on the Pi"
+	@echo "  make face-install install the short 'willie' face-console command on the Pi"
 	@echo "  make link-test    200 pings Pi -> MCU, prints round-trip times (A9)"
 	@echo "  make logs         follow the core log"
 	@echo "  make pull-config  copy the live settings from the Pi into config/willie.yaml"
@@ -77,6 +78,9 @@ ask-camera: sync
 # On-demand physical UI. Run from the Pi's console for its attached keyboard.
 face: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/willie_console.py'
+
+face-install: sync
+	ssh -t $(PI) 'bash $(PI_DIR)/tools/install_face_console.sh'
 
 # stops the core for a moment so the test owns the serial port
 link-test:
