@@ -17,10 +17,10 @@ off() {  # stop + disable a unit if it exists
   done
 }
 
-say "0/6 RAM before"
+say "0/7 RAM before"
 bash "$REPO/tools/ram.sh" --summary || true
 
-say "1/6 Bluetooth off (overlay + services) and the MCU UART on"
+say "1/7 Bluetooth off (overlay + services) and the MCU UART on"
 if ! grep -q '^dtoverlay=disable-bt' "$CFG"; then
   sudo sed -i 's/^# <<< WILL-E <<</dtoverlay=disable-bt\n# <<< WILL-E <<</' "$CFG"
   grep -q '^dtoverlay=disable-bt' "$CFG" || printf '[all]\ndtoverlay=disable-bt\n' | sudo tee -a "$CFG" >/dev/null
@@ -32,20 +32,33 @@ sudo raspi-config nonint do_serial_cons 1
 sudo raspi-config nonint do_serial_hw 0
 off hciuart bluetooth
 
-say "2/6 MQTT broker off the Pi (D22: it moves to the house/laptop)"
+say "2/7 MQTT broker off the Pi (D22: it moves to the house/laptop)"
 off mosquitto
 if dpkg -s mosquitto >/dev/null 2>&1; then sudo apt-get -y purge mosquitto >/dev/null && echo "  purged mosquitto"; fi
 
-say "3/6 pigpio off (D18: the MCU drives the hardware)"
+say "3/7 pigpio off (D18: the MCU drives the hardware)"
 off pigpiod
 if [ -f /etc/systemd/system/pigpiod.service ]; then sudo rm -f /etc/systemd/system/pigpiod.service; echo "  removed pigpiod.service"; fi
 
-say "4/6 other resident services that WILL-E does not need"
+say "4/7 other resident services that WILL-E does not need"
 # keep: NetworkManager/wpa_supplicant (Wi-Fi), avahi-daemon (willie.local), ssh, cron, timesyncd, getty
 off triggerhappy ModemManager udisks2 packagekit rpi-connect rpi-connect-wayvnc
 sudo systemctl --global disable rpi-connect rpi-connect-wayvnc >/dev/null 2>&1 || true
 
-say "5/6 journald in RAM with a size cap"
+say "5/7 no desktop GPU stack; CMA down to 64 MB (D20, D21)"
+# vc4-kms-v3d reserves 256 MB of CMA on a Pi with 415 MB usable, which alone blows the
+# A8 budget. WILL-E has no desktop: the face is a direct framebuffer over SPI (D20).
+# The camera does need CMA buffers, so keep a 64 MB region instead of dropping it.
+for k in dtoverlay=vc4-kms-v3d max_framebuffers=2 display_auto_detect=1 disable_fw_kms_setup=1; do
+  sudo sed -i "s|^${k}\$|#willie# ${k}|" "$CFG" && grep -q "^#willie# ${k}" "$CFG" && echo "  off: ${k}"
+done
+if ! grep -q '^dtoverlay=cma,cma-64' "$CFG"; then
+  sudo sed -i '0,/^dtoverlay=disable-bt/s//dtoverlay=disable-bt\ndtoverlay=cma,cma-64/' "$CFG"
+  grep -q '^dtoverlay=cma,cma-64' "$CFG" || printf '[all]\ndtoverlay=cma,cma-64\n' | sudo tee -a "$CFG" >/dev/null
+  echo "  added dtoverlay=cma,cma-64"
+fi
+
+say "6/7 journald in RAM with a size cap"
 sudo mkdir -p /etc/systemd/journald.conf.d
 sudo tee /etc/systemd/journald.conf.d/50-willie.conf >/dev/null <<'EOF'
 # WILL-E (A8): logs in RAM, capped. willie also keeps its own 1 MB rotating file.
@@ -56,7 +69,7 @@ RuntimeMaxFileSize=4M
 EOF
 sudo systemctl restart systemd-journald
 
-say "6/6 service units (MemoryMax + on-demand dashboard)"
+say "7/7 service units (MemoryMax + on-demand dashboard)"
 sudo bash "$REPO/tools/install_service.sh"
 sudo systemctl daemon-reload
 
