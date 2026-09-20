@@ -24,7 +24,9 @@ import urllib.request
 from pathlib import Path
 
 
-MODEL = "gemini-2.5-flash-lite"
+# Gemini returned a 404 for 2.5 Flash Lite on 2026-09-20 and directs new users
+# to this replacement model.
+MODEL = "gemini-3.5-flash-lite"
 API_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{MODEL}:generateContent"
