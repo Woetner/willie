@@ -34,11 +34,19 @@ health_ok() {
   ssh "$PI" "systemctl is-active --quiet willie && cd $PI_DIR && .venv/bin/python -c 'import willie.voice.gemini_live, willie.voice.tools, willie.audio.speech' " >/dev/null 2>&1
 }
 
-deploy_tree() {  # deploy_tree <path>
+deploy_tree() {  # deploy_tree <path> [units]
+  # "units" reinstalls the systemd unit files too. `make deploy` never does that,
+  # so without it a change under systemd/ lands on disk, reports success and
+  # changes nothing - what actually runs is the installed copy in
+  # /etc/systemd/system.
   rsync -az --delete \
     --exclude .git/ --exclude .env --exclude .venv/ --exclude __pycache__/ \
     --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/ \
     "$1/" "$PI:$PI_DIR/" >/dev/null 2>&1 || return 1
+  if [ "${2:-}" = "units" ]; then
+    ssh "$PI" "sudo bash $PI_DIR/tools/install_service.sh" >/dev/null 2>&1 \
+      || echo "   (install_service.sh failed)"
+  fi
   ssh "$PI" "sudo systemctl restart willie" >/dev/null 2>&1
   sleep 4
 }
@@ -60,13 +68,25 @@ run_one() {
   prompt="${prompt//__TASK__/$task}"
   prompt="${prompt//__PLAN__/$plan}"
   prompt="${prompt//__RISK__/$risk}"
-  ( cd "$tree" && claude -p "$prompt" ) >/dev/null 2>&1
+  # Keep what the agent said: without it a run that changes nothing is a mystery.
+  local agentlog="$REPO/.local/logs/$stamp.log"
+  mkdir -p "$REPO/.local/logs"
+  # acceptEdits, because nobody is here to answer a permission prompt: a headless
+  # run that asks for write access just stops and reports "nothing changed".
+  # It is confined to a throwaway worktree, and its work still has to survive the
+  # smoke test, the health check and the rollback before it reaches the robot.
+  ( cd "$tree" && claude -p "$prompt" \
+      --permission-mode acceptEdits \
+      --allowedTools "Edit" "Write" "Read" "Grep" "Glob" "Bash(git *)" "Bash(python3 *)" \
+  ) > "$agentlog" 2>&1
+  echo "   agent log: $agentlog"
 
   if [ -n "$(git -C "$tree" status --porcelain)" ]; then
     git -C "$tree" add -A && git -C "$tree" commit -qm "willie: $task"
   fi
   if ! git -C "$tree" log --oneline main..HEAD 2>/dev/null | grep -q .; then
     report niets "er viel niets te veranderen, of de opdracht was te vaag"
+    echo "   agent said: $(tail -c 400 "$agentlog" 2>/dev/null | tr '\n' ' ')"
     git -C "$REPO" worktree remove --force "$tree" 2>/dev/null
     git -C "$REPO" branch -D "$branch" >/dev/null 2>&1
     return
@@ -86,12 +106,23 @@ run_one() {
   rm -rf "$backup" && mkdir -p "$backup"
   rsync -az --exclude .venv/ --exclude .local/ "$PI:$PI_DIR/" "$backup/" >/dev/null 2>&1
 
-  if deploy_tree "$tree" && health_ok; then
+  # A change under systemd/ is inert until the units are reinstalled.
+  local units=""
+  if git -C "$tree" diff --name-only main..HEAD | grep -q "^systemd/"; then
+    units="units"
+    echo "   touches systemd - units will be reinstalled"
+  fi
+
+  if deploy_tree "$tree" "$units" && health_ok; then
     git -C "$tree" push -q -u origin "$branch" 2>/dev/null
-    report klaar "$plan"
+    if [ -n "$units" ]; then
+      report klaar "$plan (systemd opnieuw geinstalleerd)"
+    else
+      report klaar "$plan"
+    fi
   else
     echo "   health check failed - rolling back"
-    deploy_tree "$backup"
+    deploy_tree "$backup" "$units"
     if health_ok; then
       report teruggedraaid "het werkte niet, ik heb de oude versie teruggezet"
     else
@@ -103,18 +134,35 @@ run_one() {
 }
 
 pass() {
-  local tasks
-  tasks="$(ssh "$PI" "test -s $PI_DIR/$QUEUE && cat $PI_DIR/$QUEUE && : > $PI_DIR/$QUEUE" 2>/dev/null)"
-  [ -n "$tasks" ] || return 0
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    local parsed task plan risk
-    parsed="$(printf '%s' "$line" | python3 "$REPO/tools/improve_parse.py" 2>/dev/null)" || continue
+  # Crash-safe handover: the queue is moved to a local file BEFORE the Pi's copy
+  # is cleared, and each line is removed only once it has been dealt with. Losing
+  # the worker mid-pass then costs at most the task it was working on.
+  local pending="$REPO/.local/pending.jsonl"
+  mkdir -p "$REPO/.local"
+
+  if [ ! -s "$pending" ]; then
+    local fetched
+    fetched="$(ssh "$PI" "test -s $PI_DIR/$QUEUE && cat $PI_DIR/$QUEUE" 2>/dev/null)"
+    [ -n "$fetched" ] || return 0
+    printf '%s\n' "$fetched" > "$pending"
+    ssh "$PI" ": > $PI_DIR/$QUEUE" 2>/dev/null
+  fi
+
+  while [ -s "$pending" ]; do
+    local line parsed task plan risk
+    line="$(head -n 1 "$pending")"
+    if [ -z "$line" ]; then
+      tail -n +2 "$pending" > "$pending.tmp" && mv "$pending.tmp" "$pending"
+      continue
+    fi
+    parsed="$(printf '%s' "$line" | python3 "$REPO/tools/improve_parse.py" 2>/dev/null)"
     task="$(sed -n 1p <<< "$parsed")"
     plan="$(sed -n 2p <<< "$parsed")"
     risk="$(sed -n 3p <<< "$parsed")"
     [ -n "$task" ] && run_one "$task" "$plan" "$risk"
-  done <<< "$tasks"
+    # Only now is it gone.
+    tail -n +2 "$pending" > "$pending.tmp" && mv "$pending.tmp" "$pending"
+  done
 }
 
 mkdir -p "$WORKTREES"
