@@ -80,6 +80,12 @@ class Speaker:
 
     def __init__(self) -> None:
         self.process: subprocess.Popen | None = None
+        # When the audio written so far will have finished playing. aplay buffers,
+        # so this is tracked from the byte count rather than from the last write.
+        self.busy_until = 0.0
+
+    def speaking(self, now: float) -> bool:
+        return now < self.busy_until + BARGE_IN_TAIL
 
     def start(self) -> None:
         if self.process and self.process.poll() is None:
@@ -93,7 +99,11 @@ class Speaker:
         self.start()
         try:
             if self.process and self.process.stdin:
-                self.process.stdin.write(_upsample(speech.scale(pcm)))
+                data = _upsample(speech.scale(pcm))
+                seconds = len(data) / (CARD_RATE * 2)
+                loop = asyncio.get_event_loop()
+                self.busy_until = max(self.busy_until, loop.time()) + seconds
+                self.process.stdin.write(data)
                 self.process.stdin.flush()
         except (BrokenPipeError, ValueError):
             self.process = None
@@ -103,12 +113,24 @@ class Speaker:
         if self.process and self.process.poll() is None:
             self.process.kill()
         self.process = None
+        self.busy_until = 0.0
 
 
 async def _setup(socket, model: str) -> None:
     await socket.send(json.dumps({
         "setup": {
             "model": model,
+            # Ask the server to be slow to call something an interruption. The
+            # local gate below does the heavy lifting, but a deaf-er detector
+            # helps for whatever leaks through.
+            "realtimeInputConfig": {
+                "automaticActivityDetection": {
+                    "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+                    "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+                    "prefixPaddingMs": 300,
+                    "silenceDurationMs": 800,
+                }
+            },
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": VOICE}}},
@@ -129,8 +151,18 @@ def _uplink(chunk: bytes, shape: str) -> str:
 # about 1.5 % FS and speech at 30 cm reads 20-40 %.
 SPEECH_FS = 0.05
 
+# The microphone hears the speaker - there is no echo cancellation and they sit
+# on the same board. Without this the server's voice detector hears WILL-E's own
+# voice, calls it an interruption, and he stops mid-sentence every time.
+# While he is talking the uplink is gated: only genuinely loud speech gets
+# through, which is what makes barge-in still possible.
+BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "0.35"))
+# Keep the gate shut a moment after the audio ends, for the tail out of the cone.
+BARGE_IN_TAIL = 0.4
 
-async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=None, activity=None) -> None:
+
+async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=None, activity=None,
+                           speaker: "Speaker | None" = None) -> None:
     frames = IN_RATE * CHUNK_MS // 1000
     sent = 0
     loudest = 0.0
@@ -143,12 +175,17 @@ async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=Non
             chunk = await process.stdout.read(frames * 2)
             if not chunk:
                 break
-            await socket.send(_uplink(chunk, shape))
-            sent += 1
             samples = array.array("h")
             samples.frombytes(chunk[: len(chunk) // 2 * 2])
+            peak = max(max(samples), -min(samples)) / 32768 if samples else 0.0
+            # While he is speaking, swallow anything that is not clearly louder
+            # than his own voice coming back through the microphone.
+            now = asyncio.get_running_loop().time()
+            if speaker is not None and speaker.speaking(now) and peak < BARGE_IN_FS:
+                continue
+            await socket.send(_uplink(chunk, shape))
+            sent += 1
             if samples:
-                peak = max(max(samples), -min(samples)) / 32768
                 loudest = max(loudest, peak)
                 if peak >= SPEECH_FS and activity is not None:
                     activity[0] = asyncio.get_running_loop().time()
@@ -252,7 +289,7 @@ async def session(
                 if on_event:
                     on_event("ready", model)
                 tasks = [
-                    asyncio.create_task(_send_microphone(socket, stop, shape, on_event, activity)),
+                    asyncio.create_task(_send_microphone(socket, stop, shape, on_event, activity, speaker)),
                     asyncio.create_task(_receive(socket, speaker, stop, on_event, activity)),
                 ]
                 if idle_timeout:
