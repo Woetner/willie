@@ -10,7 +10,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor
+        pull-config run-local fw flash monitor bench-camera bench-screen
 
 help:
 	@echo "Pi"
@@ -25,6 +25,8 @@ help:
 	@echo "  make link-test    200 pings Pi -> MCU, prints round-trip times (A9)"
 	@echo "  make logs         follow the core log"
 	@echo "  make pull-config  copy the live settings from the Pi into config/willie.yaml"
+	@echo "  make bench-camera B8 camera test, photos land in ../photos/bench/b8/"
+	@echo "  make bench-screen B5 screen blink fps + touch test"
 	@echo "MCU (needs PlatformIO on the Mac: brew install platformio)"
 	@echo "  make fw           build the firmware            (MCU=$(MCU))"
 	@echo "  make flash        build + flash over USB        (MCU=$(MCU))"
@@ -90,6 +92,16 @@ link-test:
 pull-config:
 	scp $(PI):.config/willie/willie.yaml config/willie.yaml
 	@echo "config/willie.yaml updated — review with git diff, then commit"
+
+# ---------------------------------------------------------------- Phase B bench tests
+# The core is stopped during a test so nothing else owns the camera/screen.
+bench-camera: sync
+	ssh -t $(PI) 'sudo systemctl stop willie; bash $(PI_DIR)/tools/bench/camera.sh; sudo systemctl start willie'
+	mkdir -p ../photos/bench/b8
+	scp '$(PI):bench/b8/*.jpg' ../photos/bench/b8/
+
+bench-screen: sync
+	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && sudo .venv/bin/python tools/bench/screen.py; sudo systemctl start willie'
 
 # ---------------------------------------------------------------- MCU
 fw:
