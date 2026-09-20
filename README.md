@@ -26,6 +26,7 @@ tools/               pi_setup.sh (A4), os_diet.sh + ram.sh (A8), fake_mcu.py, in
 | `make deploy` | rsync to the Pi + restart WILL-E |
 | `make ram` | per-process RAM table from the Pi (budget: WILL-E.md §5.5) |
 | `make link-test` | 200 pings Pi → ESP32, round-trip times |
+| `make ask-camera` | on the Pi keyboard: capture one JPEG and ask Gemini about it |
 | `make flash MCU=esp32dev` | build + flash the firmware (`esp32s3` is the default) |
 | `make logs` | follow the core log |
 | `make pull-config` | copy dashboard-changed settings back into `config/willie.yaml` |
@@ -52,4 +53,19 @@ Changes are picked up by the core within 2 s.
 Power the ESP32 from the Mac's USB while flashing/testing.
 
 ## Secrets
-API keys only in `.env` (git-ignored, but synced to the Pi by `make deploy`). Template: `.env.example`.
+API keys live only in `~/willie/.env` on the Pi; it is git-ignored and explicitly
+preserved by `make deploy`. Template: `.env.example`.
+
+## Camera question (bench prototype)
+With the camera connected and `GEMINI_API_KEY` set in `~/willie/.env`, run from the
+Pi's attached keyboard:
+
+```bash
+cd ~/willie
+.venv/bin/python tools/ask_camera.py
+```
+
+It asks for a question, captures one 1024×768 JPEG with `rpicam-still`, sends that
+image and question to Gemini, and prints the answer. The image is deleted afterwards.
+Use `--save ~/picture.jpg` to keep it. This is an on-demand tool: no camera or AI
+process remains running afterwards.
