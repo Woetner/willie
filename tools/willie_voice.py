@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,14 @@ from willie.voice import gemini_live, wake
 IDLE_TIMEOUT = float(os.environ.get("WILLIE_IDLE_TIMEOUT", "30"))
 
 
+def muted() -> bool:
+    try:
+        from willie.config import Config
+        return bool(Config().get("privacy.mute"))
+    except Exception:
+        return False
+
+
 def main() -> int:
     load_env(REPO / ".env")
     gemini_key = os.environ.get("GEMINI_API_KEY")
@@ -36,19 +45,31 @@ def main() -> int:
         print("GEMINI_API_KEY missing from .env", file=sys.stderr)
         return 2
     if not wake.available():
-        print(f"Vosk model missing - see config/wakewords/README.md", file=sys.stderr)
+        print("pymicro-wakeword missing - run `make deps`", file=sys.stderr)
         return 2
 
+    # systemd stops us with SIGTERM: turn it into the same clean exit as Ctrl-C, so the
+    # face gives the console back and the mic is released.
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     print(f"listening for {wake.describe()} - Ctrl-C to stop")
     face = Face.optional()
     try:
         while True:
             try:
+                if muted():
+                    # privacy.mute (dashboard): no listening at all, not even locally.
+                    if face:
+                        face.indicators(mic=False, muted=True)
+                        face.set_state("sleep")
+                    time.sleep(2)
+                    continue
                 if face:
+                    face.indicators(muted=False)
                     face.waiting()
                     face.indicators(mic=True)
                 try:
-                    detected = wake.listen_for_wake()
+                    # Re-check mute every 30 s while waiting.
+                    detected = wake.listen_for_wake(stop_after=30)
                 finally:
                     if face:
                         face.indicators(mic=False)

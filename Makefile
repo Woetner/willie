@@ -4,12 +4,15 @@ PI      ?= willie.local
 PI_DIR  ?= willie
 # ESP32 board for the firmware (D18): the 30-pin ESP32-WROOM DevKit (esp32dev).
 MCU     ?= esp32dev
+# Run a command on the Pi with the mic to itself: pause the hands-free voice service,
+# and start it again afterwards - also after Ctrl-C.
+MIC = sudo systemctl stop willie-voice 2>/dev/null; trap "sudo systemctl start willie-voice 2>/dev/null" EXIT;
 RSYNC   := rsync -az --delete \
              --exclude .git/ --exclude .env --exclude .venv/ --exclude __pycache__/ \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch improve improve-watch improve-install
+        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test improve improve-watch improve-install
 
 help:
 	@echo "Pi"
@@ -27,7 +30,9 @@ help:
 	@echo "  make bench-camera B8 camera test, photos land in ../photos/bench/b8/"
 	@echo "  make bench-screen B5 screen blink fps + touch test"
 	@echo "  make bench-audio-out B6 speaker test (answer the listening questions)"
-	@echo "  make voice-pi     hands-free: wake word -> spoken conversation"
+	@echo "  make voice-pi     hands-free loop in the foreground (the willie-voice service does this at boot)"
+	@echo "  make voice-logs   follow what the hands-free service hears and does"
+	@echo "  make wake-test    2 min wake-word bench (S=600 for longer), service paused meanwhile"
 	@echo "  make live-talk    spoken session until Ctrl-C, no wake word (S=60 for a timed one)"
 	@echo "  make voice-samples make the candidate voice samples on the Pi (V='Orus Schedar' for only those)"
 	@echo "  make voices       play the voice samples one after another on the Mac"
@@ -120,14 +125,20 @@ bench-screen: sync
 
 # Hands-free voice loop. Run from the Pi's console so it owns the microphone.
 voice-pi: sync
-	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/willie_voice.py'
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/willie_voice.py'
+
+voice-logs:
+	ssh -t $(PI) 'journalctl -u willie-voice -f -n 30 -o cat'
+
+wake-test: sync
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/wake.py $(or $(S),120)'
 
 live-talk: sync
-	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/live_talk.py $(S)'
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/live_talk.py $(S)'
 
 # Wake word round 2 (D2): record Wouter through the robot's mic, fetch for training on the Mac.
 wake-record: sync
-	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/wakeword/record.py'
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/wakeword/record.py'
 
 wake-fetch:
 	mkdir -p .local/wakeword/samples/wouter .local/wakeword/samples/wouter_neg_long

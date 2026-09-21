@@ -1,0 +1,24 @@
+# Installed by tools/install_service.sh (@USER@ / @HOME@ are filled in there).
+# Hands-free WILL-E (D2): listens for "Hey Willie" / "Willie" on the Pi's own mic, then
+# holds a Gemini Live conversation with the face, and goes back to listening after 30 s
+# of silence. Nothing leaves the Pi until the wake word is heard (D17).
+[Unit]
+Description=WILL-E voice (wake word -> conversation)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@HOME@/willie
+EnvironmentFile=-@HOME@/willie/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@HOME@/willie/.venv/bin/python tools/willie_voice.py
+Restart=always
+RestartSec=5
+# RAM (D21, §5.5): wake word ~30 + face ~17 + live session ~32 MB, measured 21 Sep.
+MemoryHigh=130M
+MemoryMax=160M
+
+[Install]
+WantedBy=multi-user.target
