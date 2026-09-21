@@ -32,7 +32,7 @@ import websockets
 from willie.audio import speech
 from willie.voice import tools as willie_tools
 from willie.voice.base import Tool, VoiceAdapter
-from willie.voice.persona import system_prompt
+from willie.voice.persona import VOICE, system_prompt
 
 log = logging.getLogger("willie.voice.gemini")
 
@@ -48,10 +48,6 @@ MODELS = (
     ("models/gemini-3.1-flash-live-preview", "audio"),
     ("models/gemini-2.5-flash-native-audio-latest", "mediaChunks"),
 )
-
-# Puck is bright and eager, which is the generic-assistant sound Wouter did not
-# want. Charon is lower and flatter - it reads as matter-of-fact.
-VOICE = os.environ.get("WILLIE_LIVE_VOICE", "Charon")
 
 IN_RATE, OUT_RATE, CARD_RATE = 16_000, 24_000, 48_000
 CHUNK_MS = 100
@@ -87,14 +83,14 @@ class GeminiLiveAdapter(VoiceAdapter):
     in_rate = IN_RATE
     out_rate = OUT_RATE
 
-    def __init__(self, api_key: str | None = None, model: str = "", voice: str = "",
+    def __init__(self, api_key: str | None = None, model: str = "",
                  url: str | None = None, setup_timeout: float = 15.0, language: str = "nl"):
         """`model` = one entry of MODELS (or any Live model; empty = try MODELS in order).
         `url` replaces the Google endpoint - the tests point it at a local mock server."""
         super().__init__()
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.models = [(m, s) for m, s in MODELS if m == model] or ([(model, "audio")] if model else list(MODELS))
-        self.voice = voice or VOICE
+        self.voice = VOICE
         self.language = language
         self.url = url
         self.setup_timeout = setup_timeout

@@ -35,8 +35,8 @@ DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
 # Listed on the key 20 Sep; the 2.5 preview is the documented older name.
 TTS_MODEL = os.environ.get("WILLIE_TTS_MODEL", "gemini-3.1-flash-tts-preview")
 TTS_FALLBACK_MODEL = "gemini-2.5-flash-preview-tts"
-# Prebuilt voices are multilingual. Puck is bright and young, which suits him.
-TTS_VOICE = os.environ.get("WILLIE_TTS_VOICE", "Puck")
+# The same voice as the live session (willie/voice/persona.py): he has one voice.
+from willie.voice.persona import VOICE as TTS_VOICE  # noqa: E402
 # Matches config/persona.md: direct, quick, no announcer warmth.
 TTS_STYLE = "Zeg dit vlot en zakelijk, in een stevig tempo, zonder opgewekte ondertoon:"
 TTS_RATE = 24_000  # what the model returns: 16-bit mono PCM
@@ -156,10 +156,11 @@ def espeak(text: str, voice: str = VOICE) -> None:
 
 
 def speak(text: str, voice: str = VOICE, api_key: str | None = None) -> str:
-    """Say `text` out loud. Returns the backend that spoke ('gemini'/'espeak'/'').
+    """Say `text` out loud. Returns the backend that spoke ('gemini' or '').
 
     Never raises: a mute robot is better than a crashed one, and the answer is
-    on the screen either way.
+    on the screen either way. There is no espeak fallback: it would be a second,
+    different voice (21 Sep, Wouter: one voice only). `espeak()` stays for benches.
     """
     text = text.strip()
     if not text:
@@ -176,5 +177,4 @@ def speak(text: str, voice: str = VOICE, api_key: str | None = None) -> str:
                 return "gemini"
             except RuntimeError:
                 continue
-    espeak(text, voice)
-    return "espeak" if shutil.which("espeak-ng") else ""
+    return ""

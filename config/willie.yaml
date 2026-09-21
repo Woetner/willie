@@ -46,7 +46,6 @@ behavior:
 voice:
   adapter: gemini_live
   model: ''
-  voice_name: ''
   speed: 1.0
   robot_filter: 0.3
   wake_sensitivity: 0.5

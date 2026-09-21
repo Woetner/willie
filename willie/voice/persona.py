@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# WILL-E's one voice (Wouter, 21 Sep, chosen by ear from all 16 male-sounding Gemini voices
+# with `make voices`). The live session and the TTS lines both use it; there is deliberately
+# no setting or environment override, so he never sounds like someone else.
+VOICE = "Iapetus"
+
 PERSONA_FILE = Path(__file__).resolve().parents[2] / "config" / "persona.md"
 
 # Used only if the file is missing, so a broken deploy still has a character.
