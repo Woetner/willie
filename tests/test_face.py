@@ -242,3 +242,16 @@ def test_live_runner_uses_borrowed_face_and_leaves_owner_to_close(monkeypatch):
     assert asyncio.run(gemini_live.session("test",seconds=.1,face=face))=="offline-fake"
     assert not face._closed and not face.snapshot().mic and face.snapshot().state=="idle"
     face.close()
+
+
+def test_busy_shows_researching_except_while_talking(face):
+    face.event("ready")
+    with face.busy("RESEARCHING..."):
+        view = face.snapshot()
+        assert view.state == "thinking" and view.label == "RESEARCHING..."
+        face.event("speaking")                       # "Even opzoeken" still shows as talking
+        assert face.snapshot().state == "talking"
+        face.event("turn_complete")
+        face.event("interrupted")                    # back to listening -> busy wins again
+        assert face.snapshot().label == "RESEARCHING..."
+    assert face.snapshot().label == "" and face.snapshot().state == "listening"

@@ -487,8 +487,14 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
     tools = [screen, photo, *wrapped]
     if web_search:
         from willie.voice import search
+
+        async def web_search_on_face(args):
+            if not face:
+                return await search.search(str(args.get("vraag", "")))
+            with face.busy("RESEARCHING..."):
+                return await search.search(str(args.get("vraag", "")))
         tools.append(Tool(WEB_SEARCH.name, WEB_SEARCH.description, WEB_SEARCH.parameters,
-                          handler=lambda args: search.search(str(args.get("vraag", "")))))
+                          handler=web_search_on_face))
     return tools
 
 

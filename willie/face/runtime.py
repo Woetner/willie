@@ -129,6 +129,7 @@ class Face:
         self._audio = deque(maxlen=1500)  # 30 s at 20 ms; amplitudes only, no stored audio
         self._audio_until = 0.0
         self._return_to_listening = False
+        self._busy: list[str] = []   # labels of running background jobs (Face.busy)
         self._level = 0.0
         self.failure = None
         self.console = None
@@ -342,6 +343,23 @@ class Face:
                 self._show_until = 0
                 self.set_state("idle")
 
+    def busy(self, label):
+        """While the returned context is open, the face thinks and shows `label` whenever it
+        is not talking - so a 15 s web search does not look like a hang (or like listening)."""
+        face = self
+
+        class _Busy:
+            def __enter__(self):
+                with face._lock:
+                    face._busy.append(label)
+                return self
+
+            def __exit__(self, *exc):
+                with face._lock:
+                    face._busy.remove(label)
+                return False
+        return _Busy()
+
     def snapshot(self, now=None):
         now = self.clock() if now is None else now
         with self._lock:
@@ -353,6 +371,8 @@ class Face:
                     self.set_state("listening")
                     self._return_to_listening = False
             v = replace(self._view, level=self._level)
+            if self._busy and v.state not in ("talking", "error", "low_battery"):
+                v.state, v.label = "thinking", self._busy[-1]
             v.pet = max(0, min(1, (self._pet_until-now)/1.4))
             if (v.battery is not None and v.battery < 20 and not v.charging
                     and v.state in ("idle", "sleep", "curious", "happy", "sad")):

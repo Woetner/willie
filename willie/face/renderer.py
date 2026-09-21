@@ -30,6 +30,7 @@ class View:
     pet: float = 0.0
     page: int = 0
     image: dict | None = None   # {framebuffer layout: (width, height, pixels)} from Face.show_image
+    label: str = ""             # replaces the state's caption, e.g. "RESEARCHING..." (Face.busy)
 
 
 def colour(value, fallback):
@@ -220,7 +221,7 @@ class Renderer:
                   "sad":"OH, WELL", "surprised":"WAIT, WHAT?", "sleep":"RECHARGING" if view.charging else "ZZZ...",
                   "low_battery":"TIME TO RECHARGE", "error":"OOPS", "seeing":"TAKING A LOOK",
                   "connecting":"CONNECTING"}
-        label = "MIC MUTED" if view.muted else labels.get(state, "RIGHT HERE")
+        label = "MIC MUTED" if view.muted else view.label or labels.get(state, "RIGHT HERE")
         p.centre(label, 271, 2, eye if state in ("error","low_battery") else WHITE)
         detail = view.code[:48] if state == "error" else view.text[:48]
         if detail:
