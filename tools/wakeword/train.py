@@ -69,13 +69,13 @@ def main() -> int:
     model = W / "trained_models/hey_willie/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite"
     OUT.mkdir(parents=True, exist_ok=True)
     shutil.copy(model, OUT / "hey_willie.tflite")
-    # Same manifest shape as the stock pymicro-wakeword / ESPHome v2 models. The cutoff is a
-    # starting point: tune it on real recordings (D2 tests), not on the synthetic test set.
+    # Same manifest shape as the stock pymicro-wakeword / ESPHome v2 models. 0.91 = first run's
+    # synthetic test set: 24 % missed, 0.56 false wakes/h. Tune on real recordings (D2 tests).
     (OUT / "hey_willie.json").write_text(json.dumps({
         "type": "micro", "wake_word": "hey willie", "author": "WILL-E project",
         "website": "https://github.com/woetner/willie", "model": "hey_willie.tflite",
         "trained_languages": ["en", "nl"], "version": 2,
-        "micro": {"probability_cutoff": 0.97, "sliding_window_size": 5, "feature_step_size": 10,
+        "micro": {"probability_cutoff": 0.91, "sliding_window_size": 5, "feature_step_size": 10,
                   "tensor_arena_size": 30000, "minimum_esphome_version": "2024.7.0"},
     }, indent=2) + "\n")
     print(f"exported {OUT / 'hey_willie.tflite'} ({(OUT / 'hey_willie.tflite').stat().st_size} bytes)")
