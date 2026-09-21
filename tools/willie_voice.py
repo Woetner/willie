@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO / "tools"))
 
 from ask_camera import load_env
 from willie.audio import speech
+from willie.face.runtime import Face
 from willie.voice import gemini_live, wake
 
 IDLE_TIMEOUT = float(os.environ.get("WILLIE_IDLE_TIMEOUT", "30"))
@@ -39,42 +40,57 @@ def main() -> int:
         return 2
 
     print(f"listening for {wake.describe()} - Ctrl-C to stop")
-    while True:
-        try:
-            if not wake.listen_for_wake():
-                continue
-            print("wake!", flush=True)
-            backend = speech.speak("Ja?")
-            print(f"  said 'Ja?' via {backend or 'NOTHING - no tts and no espeak-ng'}", flush=True)
+    face = Face.optional()
+    try:
+        while True:
+            try:
+                if face:
+                    face.waiting()
+                    face.indicators(mic=True)
+                try:
+                    detected = wake.listen_for_wake()
+                finally:
+                    if face:
+                        face.indicators(mic=False)
+                if not detected:
+                    continue
+                if face:
+                    face.set_state("curious")
+                print("wake!", flush=True)
+                backend = speech.speak("Ja?")
+                print(f"  said 'Ja?' via {backend or 'NOTHING - no tts and no espeak-ng'}", flush=True)
 
-            started = time.monotonic()
-            first_audio: list[float] = []
+                started = time.monotonic()
+                first_audio: list[float] = []
 
-            def on_event(kind: str, detail: str) -> None:
-                elapsed = time.monotonic() - started
-                if kind == "ready":
-                    print(f"  [{elapsed:5.1f}s] session open ({detail.split('/')[-1]}) - TALK NOW, he only"
-                          f" answers what he hears")
-                elif kind == "audio" and not first_audio:
-                    first_audio.append(elapsed)
-                    print(f"  [{elapsed:5.1f}s] answering")
-                elif kind == "tool":
-                    print(f"  [{elapsed:5.1f}s] tool {detail}")
-                elif kind == "tool_result":
-                    print(f"  [{elapsed:5.1f}s]      {detail}")
-                elif kind == "uplink":
-                    print(f"  [{elapsed:5.1f}s] mic {detail}")
-                elif kind in ("idle", "error", "interrupted"):
-                    print(f"  [{elapsed:5.1f}s] {kind} {detail}".rstrip())
+                def on_event(kind: str, detail: str) -> None:
+                    elapsed = time.monotonic() - started
+                    if kind == "ready":
+                        print(f"  [{elapsed:5.1f}s] session open ({detail.split('/')[-1]}) - TALK NOW, he only"
+                              f" answers what he hears")
+                    elif kind == "audio" and not first_audio:
+                        first_audio.append(elapsed)
+                        print(f"  [{elapsed:5.1f}s] answering")
+                    elif kind == "tool":
+                        print(f"  [{elapsed:5.1f}s] tool {detail}")
+                    elif kind == "tool_result":
+                        print(f"  [{elapsed:5.1f}s]      {detail}")
+                    elif kind == "uplink":
+                        print(f"  [{elapsed:5.1f}s] mic {detail}")
+                    elif kind in ("idle", "error", "interrupted"):
+                        print(f"  [{elapsed:5.1f}s] {kind} {detail}".rstrip())
 
-            asyncio.run(gemini_live.session(gemini_key, idle_timeout=IDLE_TIMEOUT, on_event=on_event))
-            print("back to sleep\n", flush=True)
-        except KeyboardInterrupt:
-            print()
-            return 0
-        except RuntimeError as exc:
-            print(f"session failed: {exc}", file=sys.stderr)
-            time.sleep(2)
+                asyncio.run(gemini_live.session(gemini_key, idle_timeout=IDLE_TIMEOUT, on_event=on_event, face=face))
+                print("back to sleep\n", flush=True)
+            except KeyboardInterrupt:
+                print()
+                return 0
+            except RuntimeError as exc:
+                print(f"session failed: {exc}", file=sys.stderr)
+                time.sleep(2)
+    finally:
+        if face:
+            face.close()
 
 
 if __name__ == "__main__":

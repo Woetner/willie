@@ -48,6 +48,7 @@ MODELS = (
     ("models/gemini-3.1-flash-live-preview", "audio"),
     ("models/gemini-2.5-flash-native-audio-latest", "mediaChunks"),
 )
+
 # Puck is bright and eager, which is the generic-assistant sound Wouter did not
 # want. Charon is lower and flatter - it reads as matter-of-fact.
 VOICE = os.environ.get("WILLIE_LIVE_VOICE", "Charon")
@@ -342,11 +343,13 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                       activity: list[float], on_event) -> None:
     frames = IN_RATE * CHUNK_MS // 1000
     sent, loudest = 0, 0.0
+    user_speaking, last_speech = False, 0.0
     process = await asyncio.create_subprocess_exec(
         "arecord", "-D", DEVICE, "-f", "S16_LE", "-r", str(IN_RATE), "-c", "1", "-t", "raw", "-q",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     loop = asyncio.get_running_loop()
+    on_event("mic_active", "")
     try:
         while not stop.is_set():
             chunk = await process.stdout.read(frames * 2)
@@ -362,33 +365,31 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             loudest = max(loudest, peak)
             if peak >= SPEECH_FS:
                 activity[0] = loop.time()
+                last_speech = loop.time()
+                if not user_speaking:
+                    on_event("user_speaking", "")
+                    user_speaking = True
+            elif user_speaking and loop.time()-last_speech >= 0.4:
+                on_event("user_turn_end", "")
+                user_speaking = False
             if sent % 20 == 0:                       # every 2 s
                 on_event("uplink", f"{sent} chunks, loudest {loudest * 100:.1f}% FS")
                 loudest = 0.0
     finally:
-        process.terminate()
+        on_event("mic_idle", "")
+        if process.returncode is None:
+            process.terminate()
         await process.wait()
 
 
-def show(args: dict) -> dict:
-    """D4's test tool: put a short text on the face. D6 replaces this with the real face."""
+def show(args: dict, face=None) -> dict:
+    """Update the session's face owner; never open a competing framebuffer writer."""
     text = str(args.get("tekst", "")).strip()
     if not text:
         return {"fout": "geen tekst"}
-    try:
-        import sys
-        sys.path.insert(0, str(willie_tools.REPO / "tools"))
-        from willie_console import Face
-        from willie.face.framebuffer import open_all
-        face = Face(open_all())
-        try:
-            face.answer(text)
-        finally:
-            face.close()
-        return {"getoond": text}
-    except (ImportError, OSError, RuntimeError) as exc:     # no screen: say so, keep talking
-        print(f"[show] {text}  (no face: {exc})", flush=True)
-        return {"getoond": text, "let_op": "geen scherm gevonden, alleen gelogd"}
+    if face is not None:
+        return face.show(text)
+    return {"fout": "geen scherm beschikbaar"}
 
 
 SHOW = Tool(
@@ -401,15 +402,42 @@ SHOW = Tool(
 )
 
 
-def willie_tool_list() -> list[Tool]:
+def willie_tool_list(face=None) -> list[Tool]:
     """The fixed tool list (voice/tools.py) + show(), wrapped as D3 Tools. Tools run in a
     thread: rpicam-still takes seconds and the audio stream must keep flowing."""
+    camera_jobs = 0
+
+    async def call(name, args):
+        nonlocal camera_jobs
+        if face and name == "kijk":
+            camera_jobs += 1
+            face.indicators(camera=True)
+            face.set_state("seeing")
+        worker = asyncio.create_task(asyncio.to_thread(willie_tools.call, name, args))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # A cancelled await cannot stop rpicam in its worker thread. Keep the
+            # camera indicator on until the capture/upload actually finishes.
+            try:
+                await worker
+            except Exception:
+                pass
+            raise
+        finally:
+            if face and name == "kijk":
+                camera_jobs -= 1
+                face.indicators(camera=camera_jobs > 0)
+                if camera_jobs == 0 and face.snapshot().state == "seeing":
+                    face.set_state("thinking")
+
     wrapped = [
         Tool(d["name"], d["description"], d.get("parameters") or {"type": "object", "properties": {}},
-             handler=lambda args, n=d["name"]: asyncio.to_thread(willie_tools.call, n, args))
+             handler=lambda args, n=d["name"]: call(n, args))
         for d in willie_tools.DECLARATIONS
     ]
-    return [SHOW, *wrapped]
+    screen = Tool(SHOW.name, SHOW.description, SHOW.parameters, handler=lambda args: show(args, face))
+    return [screen, *wrapped]
 
 
 def live_context() -> str:
@@ -432,13 +460,25 @@ async def session(
     seconds: float | None = None,
     idle_timeout: float | None = None,
     on_event=None,
+    face=None,
 ) -> str:
     """Hold a live conversation on the Pi's sound card. Returns the model name that worked.
 
     `idle_timeout` closes the session after that many seconds with neither side
     making a sound, which is what the wake-word loop uses to go back to sleep.
     """
-    emit = on_event or (lambda kind, detail: None)
+    from willie.face.runtime import Face
+    owns_face = face is None
+    face = Face.optional() if owns_face else face
+    if face:
+        face.set_state("connecting")
+
+    def emit(kind, detail=""):
+        if face:
+            face.event(kind, detail)
+        if on_event:
+            on_event(kind, detail)
+
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     activity = [loop.time()]
@@ -446,7 +486,10 @@ async def session(
     adapter = GeminiLiveAdapter(api_key, language=configured_language())
 
     def audio(pcm: bytes) -> None:
+        starts_at = max(loop.time(), speaker.busy_until)
         speaker.write(pcm)
+        if face:
+            face.audio(pcm, adapter.out_rate, starts_at=starts_at)
         activity[0] = loop.time()
         emit("audio", "")
 
@@ -461,7 +504,14 @@ async def session(
 
     adapter.on_audio(audio)
     adapter.on_event(event)
-    await adapter.start_session(system_prompt(LIVE_EXTRA), live_context(), willie_tool_list())
+    try:
+        await adapter.start_session(system_prompt(LIVE_EXTRA), live_context(), willie_tool_list(face))
+    except BaseException:
+        speaker.stop()
+        await adapter.close()
+        if face and owns_face:
+            face.close()
+        raise
 
     async def idle_watch() -> None:
         while not stop.is_set():
@@ -483,6 +533,8 @@ async def session(
         results = await asyncio.gather(*tasks, return_exceptions=True)
         speaker.stop()
         await adapter.close()
+        if face and owns_face:
+            face.close()
         # A task that dies on its own leaves the session looking like a clean
         # exit, so say which one and why.
         for name, result in zip(("microphone", "idle"), results):

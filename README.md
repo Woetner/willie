@@ -118,3 +118,14 @@ permission for your terminal on the first run.
 
 This is a bench bridge, not the robot's voice. The real path is the on-robot
 realtime speech-to-speech adapter chosen at Gate G1 (D9).
+
+## Animated face (D6)
+
+`make face-preview` opens the offline face studio at <http://127.0.0.1:8765>.
+It uses the same Python renderer as the Pi: expressive eyes, voice motion,
+status indicators, touch reactions, and text cards. Preview data is simulated.
+
+The existing live voice runners now connect to the animated face. On the Pi,
+`make face-demo` runs a face-only 60-second demonstration with memory/render
+measurements. See [docs/face.md](docs/face.md) for controls, integration, and the
+remaining physical-screen checks. No new Pi runtime dependency is required.

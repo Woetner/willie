@@ -21,7 +21,7 @@ FBIOGET_VSCREENINFO = 0x4600
 class Framebuffer:
     path: str
     fd: int
-    memory: mmap.mmap
+    memory: mmap.mmap | bytearray
     width: int
     height: int
     stride: int
@@ -52,9 +52,42 @@ class Framebuffer:
             os.close(fd)
             raise
 
+    @classmethod
+    def canvas(cls, width: int = 480, height: int = 320) -> "Framebuffer":
+        """RGB565 software surface; no device, display server or Pi dependency."""
+        return cls("memory", -1, bytearray(width * height * 2), width, height,
+                   width * 2, 2, (11, 5), (5, 6), (0, 5))
+
+    def back_buffer(self) -> "Framebuffer":
+        return Framebuffer("memory", -1, bytearray(self.stride * self.height),
+                           self.width, self.height, self.stride, self.bytes_per_pixel,
+                           self.red, self.green, self.blue)
+
+    def present(self, frame: "Framebuffer") -> int:
+        """Only touch changed rows: fbtft transfers the dirty band over SPI.
+
+        Drawing finishes in RAM first so the panel cannot see an erased half-face.
+        Returns the number of rows written (useful for the offline performance test).
+        """
+        if (self.width, self.height, self.stride, self.bytes_per_pixel,
+            self.red, self.green, self.blue) != (
+                frame.width, frame.height, frame.stride, frame.bytes_per_pixel,
+                frame.red, frame.green, frame.blue):
+            raise ValueError("framebuffer layout mismatch")
+        changed = 0
+        for y in range(self.height):
+            start, end = y * self.stride, y * self.stride + self.width * self.bytes_per_pixel
+            row = frame.memory[start:end]
+            if self.memory[start:end] != row:
+                self.memory[start:end] = row
+                changed += 1
+        return changed
+
     def close(self) -> None:
-        self.memory.close()
-        os.close(self.fd)
+        if self.fd >= 0:
+            self.memory.close()
+            os.close(self.fd)
+            self.fd = -1
 
     def _pixel(self, colour: tuple[int, int, int]) -> bytes:
         value = 0

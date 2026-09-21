@@ -40,7 +40,10 @@ help:
 	@echo "  make flash        build + flash over USB        (MCU=$(MCU))"
 	@echo "  make monitor      USB serial monitor (debug output)"
 	@echo "  make bench-mcu T=servo|sensors|io|motors|spin|watch   B9-B12 tests over the link"
+	@echo "  make face-demo    on the Pi: 60 s face-only demo + RAM/render measurements"
 	@echo "Mac"
+	@echo "  make face-preview animated face studio -> http://127.0.0.1:8765"
+	@echo "  make face-test    offline face + voice regression checks"
 	@echo "  make run-local    core + dashboard + fake MCU on the Mac -> http://localhost:8080"
 
 # ---------------------------------------------------------------- Pi
@@ -177,3 +180,14 @@ run-local:
 	sleep 1; \
 	WILLIE_CONFIG=.local/willie.yaml WILLIE_DATA=.local .venv/bin/python -m willie & \
 	WILLIE_CONFIG=.local/willie.yaml WILLIE_DATA=.local .venv/bin/python -m willie.dashboard --port 8080
+
+# D6: offline preview and face-only hardware demo. Neither opens mic/camera.
+.PHONY: face-preview face-demo face-test
+face-preview:
+	python3 tools/face_preview.py
+
+face-demo:
+	.venv/bin/python tools/bench/face.py --seconds 60
+
+face-test:
+	.venv/bin/python -m pytest tests/test_face.py tests/test_voice_adapter.py -q
