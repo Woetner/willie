@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import font
 from .framebuffer import Framebuffer, open_all
-from .renderer import STATES, View, Renderer
+from .renderer import PICTURE_BOX, STATES, View, Renderer
 
 log = logging.getLogger("willie.face")
 
@@ -124,6 +124,7 @@ class Face:
         self._closed = False
         self._pet_until = self._show_until = self._show_started = 0.0
         self._shown_text = ""
+        self._shown_image = None
         self._page_offset = 0
         self._audio = deque(maxlen=1500)  # 30 s at 20 ms; amplitudes only, no stored audio
         self._audio_until = 0.0
@@ -238,11 +239,31 @@ class Face:
             return {"fout": "geen tekst"}
         with self._lock:
             self._shown_text = text
+            self._shown_image = None
             self._show_started = self.clock()
             pages = max(1, (len(font.lines(text, 36))+6)//7)
             self._show_until = self._show_started+max(15, pages*6)
             self._page_offset = 0
         return {"getoond": text}
+
+    def show_image(self, picture, seconds=20):
+        """Put a `willie.face.picture.Picture` on the show card. Scaling and pixel
+        conversion happen here, once, in the caller's thread - never in the render loop."""
+        _, _, bw, bh = PICTURE_BOX
+        prepared = {}
+        for display in self.displays:
+            key = display.layout()
+            if key not in prepared:
+                sx, sy = display.width / 480, display.height / 320
+                fitted = picture.fit(int(bw * sx), int(bh * sy))
+                prepared[key] = (fitted.width, fitted.height, display.convert(fitted.rgb))
+        with self._lock:
+            self._shown_text = picture.title
+            self._shown_image = prepared
+            self._show_started = self.clock()
+            self._show_until = self._show_started + seconds
+            self._page_offset = 0
+        return {"getoond": picture.title}
 
     def dismiss(self):
         with self._lock:
@@ -254,7 +275,7 @@ class Face:
             if now < self._pet_until-1.15:  # 250 ms contact debounce
                 return
             if now < self._show_until:
-                pages = max(1, (len(font.lines(self._shown_text, 36))+6)//7)
+                pages = 1 if self._shown_image else max(1, (len(font.lines(self._shown_text, 36))+6)//7)
                 if pages == 1:
                     self._show_until = 0
                 else:
@@ -339,7 +360,7 @@ class Face:
             if v.pet and v.state in ("idle", "happy", "sleep", "curious"):
                 v.state = "happy"
             if now < self._show_until and v.state not in ("error", "low_battery"):
-                v.state, v.text = "show", self._shown_text
+                v.state, v.text, v.image = "show", self._shown_text, self._shown_image
                 v.page = int((now-self._show_started)//6)+self._page_offset
             return v
 

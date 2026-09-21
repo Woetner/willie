@@ -398,6 +398,36 @@ SHOW = Tool(
 )
 
 
+def show_picture(args: dict, face=None) -> dict:
+    """Find a photo of the subject on Wikipedia and put it on the face."""
+    subject = str(args.get("onderwerp", "")).strip()
+    if not subject:
+        return {"fout": "geen onderwerp"}
+    if face is None:
+        return {"fout": "geen scherm beschikbaar"}
+    from willie.face import picture
+    try:
+        found = picture.find(subject, str(args.get("onderwerp_en", "")))
+    except (RuntimeError, OSError, ValueError) as exc:
+        return {"fout": f"geen foto gevonden: {exc}"}
+    face.show_image(found)
+    return {"getoond": found.title, "bron": found.source}
+
+
+SHOW_PICTURE = Tool(
+    "toon_afbeelding",
+    "Zoek een foto van iets op Wikipedia en zet die op je scherm. Gebruik dit als Wouter "
+    "vraagt hoe iets eruitziet of iets wil zien: een dier, een ding, een plek, een onderdeel. "
+    "Niet voor dingen die voor je staan: daarvoor is kijk.",
+    {"type": "object", "properties": {
+        "onderwerp": {"type": "string",
+                      "description": "Kort onderwerp zoals een Nederlandse Wikipedia-titel, bijvoorbeeld 'banaan' of 'ESP32'."},
+        "onderwerp_en": {"type": "string",
+                         "description": "Hetzelfde onderwerp in het Engels, bijvoorbeeld 'banana' of 'stepper motor'."}},
+     "required": ["onderwerp", "onderwerp_en"]},
+)
+
+
 def willie_tool_list(face=None) -> list[Tool]:
     """The fixed tool list (voice/tools.py) + show(), wrapped as D3 Tools. Tools run in a
     thread: rpicam-still takes seconds and the audio stream must keep flowing."""
@@ -433,7 +463,9 @@ def willie_tool_list(face=None) -> list[Tool]:
         for d in willie_tools.DECLARATIONS
     ]
     screen = Tool(SHOW.name, SHOW.description, SHOW.parameters, handler=lambda args: show(args, face))
-    return [screen, *wrapped]
+    photo = Tool(SHOW_PICTURE.name, SHOW_PICTURE.description, SHOW_PICTURE.parameters,
+                 handler=lambda args: asyncio.to_thread(show_picture, args, face))
+    return [screen, photo, *wrapped]
 
 
 def live_context() -> str:

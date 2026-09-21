@@ -6,11 +6,13 @@ ILI9486 but reads the framebuffer geometry and colour layout at runtime.
 
 from __future__ import annotations
 
+import array
 import fcntl
 import glob
 import mmap
 import os
 import struct
+import sys
 from dataclasses import dataclass
 
 
@@ -95,6 +97,37 @@ class Framebuffer:
             if length:
                 value |= (component * ((1 << length) - 1) // 255) << offset
         return value.to_bytes(self.bytes_per_pixel, "little")
+
+    def layout(self) -> tuple:
+        """Pixel format key: pictures are converted once per format, not per frame."""
+        return (self.bytes_per_pixel, self.red, self.green, self.blue)
+
+    def convert(self, rgb: bytes) -> bytes:
+        """Packed 8-bit RGB -> this framebuffer's pixel format (one-off, for pictures)."""
+        (ro, rl), (go, gl), (bo, bl) = self.red, self.green, self.blue
+        rs, gs, bs = 8 - rl, 8 - gl, 8 - bl
+        values = [((rgb[i] >> rs) << ro) | ((rgb[i + 1] >> gs) << go) | ((rgb[i + 2] >> bs) << bo)
+                  for i in range(0, len(rgb) - 2, 3)]
+        size = self.bytes_per_pixel
+        if size == 2:
+            return array.array("H", values).tobytes() if sys.byteorder == "little" else \
+                b"".join(v.to_bytes(2, "little") for v in values)
+        return b"".join(v.to_bytes(size, "little") for v in values)
+
+    def blit(self, x: int, y: int, width: int, height: int, pixels: bytes) -> None:
+        """Copy converted pixels (see convert) with the top-left corner at x, y."""
+        row_bytes = width * self.bytes_per_pixel
+        for row in range(height):
+            py = y + row
+            if not 0 <= py < self.height:
+                continue
+            x0, x1 = max(0, x), min(self.width, x + width)
+            if x0 >= x1:
+                return
+            src = row * row_bytes + (x0 - x) * self.bytes_per_pixel
+            dst = py * self.stride + x0 * self.bytes_per_pixel
+            n = (x1 - x0) * self.bytes_per_pixel
+            self.memory[dst:dst + n] = pixels[src:src + n]
 
     def fill(self, colour: tuple[int, int, int]) -> None:
         row = self._pixel(colour) * self.width
