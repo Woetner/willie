@@ -28,7 +28,7 @@ help:
 	@echo "  make bench-screen B5 screen blink fps + touch test"
 	@echo "  make bench-audio-out B6 speaker test (answer the listening questions)"
 	@echo "  make voice-pi     hands-free: wake word -> spoken conversation"
-	@echo "  make live-talk    one 60 s spoken session, no wake word"
+	@echo "  make live-talk    spoken session until Ctrl-C, no wake word (S=60 for a timed one)"
 	@echo "  make voice-samples make the candidate voice samples on the Pi (V='Orus Schedar' for only those)"
 	@echo "  make voices       play the voice samples one after another on the Mac"
 	@echo "  make wake-record  record 'Hey Willie' + everyday sound through the robot's mic (D2 round 2)"
@@ -123,7 +123,7 @@ voice-pi: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/willie_voice.py'
 
 live-talk: sync
-	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/live_talk.py 60'
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/live_talk.py $(S)'
 
 # Wake word round 2 (D2): record Wouter through the robot's mic, fetch for training on the Mac.
 wake-record: sync
