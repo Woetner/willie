@@ -24,7 +24,7 @@ sys.path.insert(0, str(REPO / "tools"))
 from ask_camera import load_env
 from willie.audio import speech
 
-# Calm male-sounding candidates for a Jarvis-like assistant (Google's one-word labels).
+# Male-sounding voices, calmest first (Google's one-word labels; gender by ear, Google does not list it).
 CANDIDATES = {
     "Charon": "informative (current)",
     "Algieba": "smooth",
@@ -34,6 +34,15 @@ CANDIDATES = {
     "Alnilam": "firm",
     "Rasalgethi": "informative",
     "Sadaltager": "knowledgeable",
+    # The rest of the male-sounding voices, for a full comparison (21 Sep, Wouter).
+    "Puck": "upbeat",
+    "Fenrir": "excitable",
+    "Enceladus": "breathy",
+    "Umbriel": "easy-going",
+    "Algenib": "gravelly",
+    "Achird": "friendly",
+    "Zubenelgenubi": "casual",
+    "Sadachbia": "lively",
 }
 
 # One answer, one explanation, one warning: the three things persona v2 does most.
@@ -62,14 +71,17 @@ def main() -> int:
         # The TTS preview has a small per-minute quota (429 after ~4 samples), so wait it out.
         for attempt in range(4):
             try:
-                pcm = speech.gemini_pcm(TEXT, key, voice=voice, style=STYLE, timeout=60)
+                # Retries go to the older TTS model: it has its own quota.
+                model = speech.TTS_MODEL if attempt == 0 else speech.TTS_FALLBACK_MODEL
+                pcm = speech.gemini_pcm(TEXT, key, model=model, voice=voice, style=STYLE, timeout=60)
                 break
             except RuntimeError as exc:
                 if "429" not in str(exc) or attempt == 3:
                     print(f"{voice:12} FAILED {str(exc)[:120]}", file=sys.stderr)
                     break
-                print(f"{voice:12} quota, waiting 30 s", flush=True)
-                time.sleep(30)
+                if attempt:
+                    print(f"{voice:12} quota, waiting 30 s", flush=True)
+                    time.sleep(30)
         if pcm is None:
             continue
         for old in OUT.glob(f"*_{voice}.wav"):
