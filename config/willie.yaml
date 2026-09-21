@@ -31,7 +31,7 @@ face:
   bg_color: '#000000'
   brightness: 80
   blink_rate: 4.0
-  fps: 25
+  fps: 15
 mood:
   energy_base: 0.6
   curiosity_base: 0.7
