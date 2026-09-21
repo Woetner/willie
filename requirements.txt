@@ -4,4 +4,5 @@ uvicorn>=0.29      # dashboard process only
 pyyaml>=6.0
 psutil>=5.9
 pyserial>=3.5      # MCU link (D18)
+pymicro-wakeword>=2.5  # wake word "Hey Willie" (D2): 32 MB RSS, 5 % of a core, own TFLite C lib
 websockets>=13       # Gemini Live bench prototype only (~6 MB RSS while a session is open)

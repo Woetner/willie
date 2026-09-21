@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""B7/D2 bench test: does "hey gemini" fire, and how often does it fire wrongly?
+"""D2 bench test: does "hey willie" fire, and how often does it fire wrongly?
 
 Run on the Pi:  .venv/bin/python tools/bench/wake.py [seconds]
 
-Prints every detection with its timestamp, and anything the recogniser thought
-it nearly heard. No API calls, so this costs nothing to run for an hour with
+Prints every detection with its timestamp, and the highest wake probability of
+each half second when it gets above 0.3 (for tuning the cutoff in hey_willie.json). No API calls, so this costs nothing to run for an hour with
 the TV on - which is exactly the D2 false-trigger test.
 """
 
@@ -23,7 +23,7 @@ from willie.voice import wake
 def main() -> int:
     seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 60.0
     if not wake.available():
-        print(f"No Vosk model at {wake.MODEL_DIR} - see config/wakewords/README.md", file=sys.stderr)
+        print("pymicro-wakeword missing - run `make deps`", file=sys.stderr)
         return 2
     print(f"listening for {wake.describe()} for {seconds:.0f} s - say it whenever you like")
     started = time.monotonic()
@@ -32,7 +32,7 @@ def main() -> int:
         remaining = seconds - (time.monotonic() - started)
         heard = wake.listen_for_wake(
             stop_after=remaining,
-            on_tick=lambda _, partial: print(f"    ...heard: {partial!r}", flush=True),
+            on_tick=lambda t, p: p > 0.3 and print(f"    ...{p:.2f}", flush=True),
         )
         if heard:
             hits += 1
