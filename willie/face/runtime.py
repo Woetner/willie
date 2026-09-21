@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import array
+import atexit
+import fcntl
 import logging
 import math
 import os
@@ -63,6 +65,53 @@ class Touch:
         os.close(self.fd)
 
 
+class Console:
+    """Keep the Linux text console off the panel while the face owns it.
+
+    `fbcon=map:11` puts tty1 on the ILI9486 (the login screen lives there), so
+    without this the console's blinking cursor shows through the left eye and any
+    console output would draw over the face. KD_GRAPHICS tells fbcon to stop
+    drawing on that VT; KD_TEXT on close gives the login screen back.
+    """
+    KDSETMODE, KD_TEXT, KD_GRAPHICS = 0x4B3A, 0x00, 0x01
+
+    def __init__(self, path="/dev/tty1"):
+        self.fd, self.mode = None, ""
+        try:
+            self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
+        except OSError as exc:
+            log.info("console not reachable: %s", exc)
+            return
+        try:
+            fcntl.ioctl(self.fd, self.KDSETMODE, self.KD_GRAPHICS)   # needs root (the service)
+            self.mode = "graphics"
+        except OSError:
+            # As the logged-in user we own tty1 but may not switch its mode:
+            # hiding the cursor is what we can do, and it removes the blinking square.
+            try:
+                os.write(self.fd, b"\033[?25l")
+                self.mode = "cursor"
+            except OSError as exc:
+                log.info("console cursor stays: %s", exc)
+                os.close(self.fd)
+                self.fd = None
+                return
+        atexit.register(self.restore)              # Ctrl-C / normal exit, not SIGKILL
+
+    def restore(self):
+        if self.fd is None:
+            return
+        try:
+            if self.mode == "graphics":
+                fcntl.ioctl(self.fd, self.KDSETMODE, self.KD_TEXT)
+            else:
+                os.write(self.fd, b"\033[?25h")
+        except OSError:
+            pass
+        os.close(self.fd)
+        self.fd = None
+
+
 class Face:
     def __init__(self, displays=(), *, config=None, touch=None, clock=time.monotonic, autostart=True):
         self.displays = list(displays)
@@ -81,6 +130,7 @@ class Face:
         self._return_to_listening = False
         self._level = 0.0
         self.failure = None
+        self.console = None
         self.frames = self.dirty_rows = 0
         self.render_seconds = self.max_render_seconds = 0.0
         if autostart and self.displays:
@@ -98,7 +148,9 @@ class Face:
             if not displays:
                 displays = open_all()
             from willie.config import Config
-            return cls(displays, config=Config(), touch=Touch.discover())
+            face = cls(displays, config=Config(), touch=Touch.discover())
+            face.console = Console()
+            return face
         except Exception:
             for display in displays:
                 display.close()
@@ -337,3 +389,5 @@ class Face:
                 log.warning("could not paint inactive face on exit")
             finally:
                 display.close()
+        if self.console:
+            self.console.restore()
