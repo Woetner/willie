@@ -40,7 +40,7 @@ def record(path: Path, seconds: float, meter: bool = False, lead: float = 0.0, c
     import array
     import wave
     proc = subprocess.Popen(["arecord", "-q", "-D", DEVICE, "-f", "S16_LE", "-r", "16000", "-c", "1",
-                             "-t", "raw"], stdout=subprocess.PIPE)
+                             "-t", "raw"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     # The mic needs ~0.8 s to settle after arecord opens (a decaying bump that looks like
     # sound): record `lead` seconds first, throw them away, and only then show the cue.
     if lead:
