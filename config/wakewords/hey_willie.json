@@ -1,6 +1,6 @@
 {
   "type": "micro",
-  "wake_word": "hey willie",
+  "wake_word": "hey willie / willie",
   "author": "WILL-E project",
   "website": "https://github.com/woetner/willie",
   "model": "hey_willie.tflite",
@@ -10,7 +10,7 @@
   ],
   "version": 2,
   "micro": {
-    "probability_cutoff": 0.91,
+    "probability_cutoff": 0.9,
     "sliding_window_size": 5,
     "feature_step_size": 10,
     "tensor_arena_size": 30000,
