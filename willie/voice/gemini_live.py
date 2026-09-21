@@ -84,7 +84,8 @@ class GeminiLiveAdapter(VoiceAdapter):
     out_rate = OUT_RATE
 
     def __init__(self, api_key: str | None = None, model: str = "",
-                 url: str | None = None, setup_timeout: float = 15.0, language: str = "nl"):
+                 url: str | None = None, setup_timeout: float = 15.0, language: str = "nl",
+                 search: bool = False):
         """`model` = one entry of MODELS (or any Live model; empty = try MODELS in order).
         `url` replaces the Google endpoint - the tests point it at a local mock server."""
         super().__init__()
@@ -92,6 +93,7 @@ class GeminiLiveAdapter(VoiceAdapter):
         self.models = [(m, s) for m, s in MODELS if m == model] or ([(model, "audio")] if model else list(MODELS))
         self.voice = VOICE
         self.language = language
+        self.search = search            # Google Search grounding (built into the Live API)
         self.url = url
         self.setup_timeout = setup_timeout
         self.model = ""
@@ -153,13 +155,20 @@ class GeminiLiveAdapter(VoiceAdapter):
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}},
             },
-            "systemInstruction": {"parts": [{"text": prompt}]},
+            # A model does not know its own name or version (it answered "1.5"), so say it.
+            "systemInstruction": {"parts": [{"text": f"{prompt}\n\nJe draait op het model {model.split('/')[-1]}."}]},
         }
         code = LANGUAGES.get(self.language, ("", ""))[0]
         if code:
             setup["generationConfig"]["speechConfig"]["languageCode"] = code
+        tools = []
         if self.tools:
-            setup["tools"] = [{"functionDeclarations": [t.declaration() for t in self.tools.values()]}]
+            tools.append({"functionDeclarations": [t.declaration() for t in self.tools.values()]})
+        if self.search:
+            # Free on the free tier; paid: 5,000 searches/month free, then $14 per 1,000 (21 Sep).
+            tools.append({"googleSearch": {}})
+        if tools:
+            setup["tools"] = tools
         return {"setup": setup}
 
     async def send_audio(self, pcm: bytes) -> None:
@@ -474,6 +483,17 @@ def live_context() -> str:
             f"{now:%H:%M}.{willie_tools.remembered()}")
 
 
+def configured_search() -> bool:
+    """voice.search from the live willie.yaml. Off unless set: on a free-tier key the 3.x
+    Live models refuse a setup with Google Search, and the model list would silently fall
+    back to 2.5 (measured 21 Sep)."""
+    try:
+        from willie.config import Config
+        return bool(Config().get("voice.search"))
+    except Exception:
+        return False
+
+
 def configured_language() -> str:
     """voice.language from the live willie.yaml; Dutch if the settings cannot be read."""
     try:
@@ -511,7 +531,7 @@ async def session(
     stop = asyncio.Event()
     activity = [loop.time()]
     speaker = Speaker()
-    adapter = GeminiLiveAdapter(api_key, language=configured_language())
+    adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=configured_search())
 
     def audio(pcm: bytes) -> None:
         starts_at = max(loop.time(), speaker.busy_until)

@@ -96,7 +96,7 @@ class MockedGemini(GeminiLiveAdapter):
     """The real adapter, pointed at MockGeminiServer."""
 
     def __init__(self, **fake_kw):
-        super().__init__(api_key="test", model="models/gemini-3.8-live")
+        super().__init__(api_key="test", model="models/gemini-3.8-live", search=True)
         self.mock = MockGeminiServer(**fake_kw)
 
     async def start_session(self, persona, context, tools):
@@ -228,7 +228,9 @@ def test_gemini_setup_message():
         setup = a.mock.setup
         assert setup["model"] == "models/gemini-3.8-live"
         prompt = setup["systemInstruction"]["parts"][0]["text"]
-        assert prompt.startswith("PERSONA\n\nSpreek altijd Nederlands") and prompt.endswith("CONTEXT")
+        assert prompt.startswith("PERSONA\n\nSpreek altijd Nederlands") and "CONTEXT" in prompt
+        assert prompt.endswith("Je draait op het model gemini-3.8-live.")
+        assert {"googleSearch": {}} in setup["tools"]
         assert setup["generationConfig"]["speechConfig"]["languageCode"] == "nl-NL"
         assert setup["tools"][0]["functionDeclarations"][0]["name"] == "toon"
         assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
