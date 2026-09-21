@@ -81,8 +81,18 @@ async def amain():
 
     from willie.hal.link import Link  # pyserial only; tiny
 
+    from willie.hal.link import mcu_settings
+
     link = Link(cfg.get("link.port"), cfg.get("link.baud"), cfg.get("link.ping_hz"))
+
+    def push_mcu_settings():
+        if link.stats.connected:
+            for key, value in mcu_settings(cfg.get).items():
+                link.cfg(key, value)
+
+    link.on_hello = push_mcu_settings        # the firmware boots with its own defaults
     cfg.on_change(lambda old, new: setattr(link, "ping_hz", new["link"]["ping_hz"]))
+    cfg.on_change(lambda old, new: push_mcu_settings())
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

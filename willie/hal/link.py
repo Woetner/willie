@@ -1,6 +1,6 @@
-"""MCU serial link (D18). A9 scope: connect, ping/pong round-trip, stats.
+"""MCU serial link (D18): connect, ping/pong round-trip, the 50 Hz `st` state stream, commands.
 
-Later phases add `drive`, `look`, `cfg` and the 50 Hz state stream on the same link.
+Messages are listed in WILL-E.md §5.2; the `st` field order is ST_FIELDS (= firmware sendState()).
 
 CLI test (A9 "done when"), on the Pi with the core stopped:
     .venv/bin/python -m willie.hal.link --port /dev/serial0 -n 200
@@ -20,6 +20,46 @@ import serial  # pyserial
 from willie.hal import proto
 
 log = logging.getLogger("willie.link")
+
+
+# `st` line from the firmware, in order (firmware/src/main.cpp sendState()).
+ST_FIELDS = ("ms", "ticks_l", "ticks_r", "x_mm", "y_mm", "th_mrad", "v_mms", "w_mrads",
+             "tof_l", "tof_c", "tof_r", "io", "mv", "ma", "ax", "ay", "az", "gx", "gy", "gz",
+             "tilt_d10", "pan_d10", "tilt_servo_d10", "pwm_l", "pwm_r", "flags", "i2c_err")
+_HEX = {"io", "flags"}
+ESTOP_BITS = ("bump_l", "bump_r", "cliff_l", "cliff_r", "tilt")
+OK_BITS = {"pcf": 5, "mpu": 6, "ina": 7, "tof_l": 8, "tof_c": 9, "tof_r": 10, "enc": 11}
+
+
+def parse_state(words: list[str]) -> dict:
+    """`st ...` words -> dict of ints, plus decoded `estop` list, `ok` dict and `moving`."""
+    if len(words) != len(ST_FIELDS) + 1:
+        raise proto.BadLine(f"st has {len(words) - 1} fields, want {len(ST_FIELDS)}")
+    st = {k: int(v, 16 if k in _HEX else 10) for k, v in zip(ST_FIELDS, words[1:])}
+    f = st["flags"]
+    st["estop"] = [n for i, n in enumerate(ESTOP_BITS) if f >> i & 1]
+    st["ok"] = {n: bool(f >> b & 1) for n, b in OK_BITS.items()}
+    st["moving"] = bool(f >> 12 & 1)
+    return st
+
+
+# willie.yaml -> firmware `cfg` keys (firmware/src/config.h). The firmware clamps every value,
+# so nothing here can lift the 50 % PWM cap or the watchdog limits (§10.2).
+MCU_SETTINGS = {
+    "pwm_cap": "drive.pwm_cap", "wheel_d": "drive.wheel_diameter", "track": "drive.track_width",
+    "cpr": "drive.encoder_cpr", "wd_ms": "safety.watchdog_ms", "tilt_stop": "safety.tilt_stop_deg",
+    "pan_min": "head.pan_min_deg", "pan_max": "head.pan_max_deg", "tilt_min": "head.tilt_min_deg",
+    "tilt_max": "head.tilt_max_deg", "servo_dps": "head.speed_dps",
+    "pan_c": ("head.pan_trim_us", 1500), "tilt_c": ("head.tilt_trim_us", 1500),
+}
+
+
+def mcu_settings(get) -> dict:
+    """`get(dotted)` from willie.config.Config -> {firmware key: value}."""
+    out = {}
+    for key, src in MCU_SETTINGS.items():
+        out[key] = get(src[0]) + src[1] if isinstance(src, tuple) else get(src)
+    return out
 
 
 @dataclass
@@ -53,7 +93,12 @@ class LinkStats:
 class Link:
     def __init__(self, port: str, baud: int = 921600, ping_hz: float = 2.0, on_message=None):
         self.port, self.baud, self.ping_hz = port, baud, ping_hz
-        self.on_message = on_message          # fn(words) for everything that isn't pong/hello
+        self.on_message = on_message          # fn(words) for everything that isn't pong/hello/st
+        self.on_hello = None                  # fn() after the MCU (re)starts, e.g. to push settings
+        self.state: dict | None = None        # last `st` line, parsed
+        self.state_t = 0.0                    # perf_counter() when it arrived
+        self.states = 0                       # `st` lines received
+        self.clock_offset_ms: float | None = None   # Pi perf_counter ms - MCU millis(), from pings
         self.stats = LinkStats(port=port)
         self._ser: serial.Serial | None = None
         self._buf = bytearray()
@@ -122,16 +167,51 @@ class Link:
                 self.stats.rtt_ms.append(rtt)
                 if self.stats.pongs == 1:
                     log.info("first pong from MCU: %.2f ms", rtt)
+                if len(words) >= 3 and words[2].isdigit():   # MCU clock at the midpoint
+                    self.clock_offset_ms = (t0 * 1000 + rtt / 2) - int(words[2])
             fut = self._pong_waiters.pop(seq, None)
             if fut and not fut.done():
                 fut.set_result(now)
+        elif kind == "st":
+            try:
+                self.state = parse_state(words)
+            except (proto.BadLine, ValueError) as e:
+                self.stats.bad_lines += 1
+                log.debug("%s", e)
+                return
+            self.state_t = now
+            self.states += 1
         elif kind == "hello":
             self.stats.firmware = " ".join(words[1:])
             log.info("MCU says hello: %s", self.stats.firmware)
+            if self.on_hello:
+                self.on_hello()
         elif self.on_message:
             self.on_message(words)
+        elif kind in ("cfg", "ok"):            # echoes of our own commands
+            log.debug("MCU: %s", " ".join(words))
         else:
             log.info("MCU: %s", " ".join(words))
+
+    def mcu_to_local_ms(self, mcu_ms: int) -> float | None:
+        """MCU millis() -> this process's perf_counter() in ms (needs one pong first)."""
+        return None if self.clock_offset_ms is None else mcu_ms + self.clock_offset_ms
+
+    # ---- commands (WILL-E.md §5.2); motion must be repeated within wd_ms -----
+    def drive(self, v: float, w: float):
+        self.send("drive", f"{v:.3f}", f"{w:.3f}")
+
+    def pwm(self, left: float, right: float):
+        self.send("pwm", f"{left:.1f}", f"{right:.1f}")
+
+    def stop(self):
+        self.send("stop")
+
+    def look(self, pan: float, tilt: float):
+        self.send("look", f"{pan:.1f}", f"{tilt:.1f}")
+
+    def cfg(self, key: str, value: float):
+        self.send("cfg", key, f"{value:g}")
 
     # ---- ping --------------------------------------------------------------
     async def ping(self, timeout: float = 0.1) -> float | None:

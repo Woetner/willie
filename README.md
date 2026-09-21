@@ -27,7 +27,8 @@ tools/               pi_setup.sh (A4), os_diet.sh + ram.sh (A8), fake_mcu.py, in
 | `make ram` | per-process RAM table from the Pi (budget: WILL-E.md §5.5) |
 | `make link-test` | 200 pings Pi → ESP32, round-trip times |
 | `make ask-camera` | on the Pi keyboard: capture one JPEG and ask Gemini about it |
-| `make flash MCU=esp32dev` | build + flash the firmware (`esp32s3` is the default) |
+| `make flash` | build + flash the ESP32 firmware (30-pin WROOM DevKit) |
+| `make bench-mcu T=servo` | B9–B12 bench tests over the link: `servo`, `sensors`, `io`, `motors`, `watch` |
 | `make logs` | follow the core log |
 | `make pull-config` | copy dashboard-changed settings back into `config/willie.yaml` |
 | `make run-local` | core + dashboard + fake MCU on the Mac → http://localhost:8080 |
@@ -85,8 +86,8 @@ the speaker. Ordinary questions use audio only; a photo is captured only for a
 request such as “look at this” or “what is in front of you.” Use `Ctrl+C` to exit.
 
 This temporary bench wake detector routes speech clips through Gemini while the
-console is visibly listening. It is not the final always-on wake path: B13 keeps
-“Hey Willie” local on the ESP32, so idle room audio never goes to the cloud.
+console is visibly listening. It is not the final always-on wake path: D2 keeps
+“Hey Willie” local on the Pi (D19), so idle room audio never goes to the cloud.
 
 The older typed camera console is still available with:
 

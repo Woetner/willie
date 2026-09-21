@@ -228,7 +228,7 @@ def _listen(face: Face, label: str, *, wait_for_speech: float) -> bytes:
 
 
 def voice_loop(face: Face, api_key: str) -> int:
-    """Cloud-routed bench wake loop; the production wake detector is B13 on the MCU."""
+    """Cloud-routed bench wake loop; the production wake detector is D2, local on the Pi."""
     while True:
         try:
             face.waiting()

@@ -78,7 +78,7 @@ def wifi() -> dict:
 
 
 def throttled() -> str | None:
-    """Pi only: 0x0 = never under-voltage / throttled (used again in B13)."""
+    """Pi only: 0x0 = never under-voltage / throttled (used again in B14)."""
     if not shutil.which("vcgencmd"):
         return None
     try:

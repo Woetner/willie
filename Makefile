@@ -2,15 +2,14 @@
 # Override on the command line if needed:  make deploy PI=woetner@willie.local
 PI      ?= willie.local
 PI_DIR  ?= willie
-# ESP32 board for the firmware (A9): esp32s3 = the planned board (D18),
-# esp32dev = the 30-pin ESP32-WROOM DevKit for bench tests.
-MCU     ?= esp32s3
+# ESP32 board for the firmware (D18): the 30-pin ESP32-WROOM DevKit (esp32dev).
+MCU     ?= esp32dev
 RSYNC   := rsync -az --delete \
              --exclude .git/ --exclude .env --exclude .venv/ --exclude __pycache__/ \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-camera bench-screen bench-audio-out voice-pi live-talk improve improve-watch improve-install
+        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk improve improve-watch improve-install
 
 help:
 	@echo "Pi"
@@ -38,6 +37,7 @@ help:
 	@echo "  make fw           build the firmware            (MCU=$(MCU))"
 	@echo "  make flash        build + flash over USB        (MCU=$(MCU))"
 	@echo "  make monitor      USB serial monitor (debug output)"
+	@echo "  make bench-mcu T=servo|sensors|io|motors|spin|watch   B9-B12 tests over the link"
 	@echo "Mac"
 	@echo "  make run-local    core + dashboard + fake MCU on the Mac -> http://localhost:8080"
 
@@ -86,7 +86,7 @@ ask-camera: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/ask_camera.py'
 
 # On-demand physical UI: Pi mic + speaker + face, with a cloud-routed temporary
-# wake detector. The final local wake detector remains B13 on the MCU.
+# wake detector. The final local wake detector is D2 (on the Pi, D19).
 face: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/willie_console.py'
 
@@ -124,6 +124,11 @@ bench-audio-out: sync
 # ---------------------------------------------------------------- MCU
 fw:
 	cd firmware && pio run -e $(MCU)
+
+# B9–B12 over the link, e.g. make bench-mcu T=servo  (servo | sensors | io | motors | spin | watch)
+T ?= watch
+bench-mcu: sync
+	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && .venv/bin/python tools/bench/mcu.py $(T); sudo systemctl start willie'
 
 flash:
 	cd firmware && pio run -e $(MCU) -t upload
