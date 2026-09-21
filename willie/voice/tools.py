@@ -159,6 +159,11 @@ DECLARATIONS = [
 ]
 
 
+# Called with the photo's path right after kijk() captures it, before it goes to the model,
+# so the face can show what he is looking at (set by the live session when a face exists).
+LOOK_HOOK = None
+
+
 def kijk(waar_op_letten: str = "") -> dict:
     import sys
 
@@ -173,6 +178,11 @@ def kijk(waar_op_letten: str = "") -> dict:
         with tempfile.TemporaryDirectory(prefix="willie-look-") as tmp:
             image = Path(tmp) / "view.jpg"
             capture(image, quiet=True)
+            if LOOK_HOOK:
+                try:
+                    LOOK_HOOK(image)
+                except Exception:          # showing the photo is a nicety; the answer matters
+                    pass
             return {"gezien": ask_gemini(image, question, key)}
     except RuntimeError as exc:
         return {"fout": str(exc)}

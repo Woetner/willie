@@ -14,6 +14,7 @@ import subprocess
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 # Wikimedia asks every client to identify itself.
 USER_AGENT = "WILL-E/0.1 (home robot; https://github.com/woetner/willie)"
@@ -76,10 +77,12 @@ def search(subject: str, wiki: str) -> list[tuple[str, str]]:
     return found
 
 
-def decode_jpeg(data: bytes) -> tuple[int, int, bytes]:
+def decode_jpeg(data: bytes, scale: str = "") -> tuple[int, int, bytes]:
+    """`scale` like "1/2" lets djpeg shrink while decoding (cheap for camera photos)."""
     if not shutil.which("djpeg"):
         raise RuntimeError("djpeg missing: sudo apt install libjpeg-turbo-progs")
-    result = subprocess.run(["djpeg", "-pnm"], input=data, capture_output=True, timeout=10, check=False)
+    command = ["djpeg", "-pnm"] + (["-scale", scale] if scale else [])
+    result = subprocess.run(command, input=data, capture_output=True, timeout=10, check=False)
     if result.returncode or not result.stdout.startswith(b"P6"):
         raise RuntimeError(f"djpeg failed: {result.stderr.decode(errors='replace')[:120]}")
     return parse_ppm(result.stdout)
@@ -107,6 +110,12 @@ def parse_ppm(ppm: bytes) -> tuple[int, int, bytes]:
     if len(rgb) != width * height * 3:
         raise RuntimeError("truncated image")
     return width, height, rgb
+
+
+def from_file(path, title: str, scale: str = "1/2") -> Picture:
+    """A JPEG on disk (e.g. the camera's 1024x768 still) as a Picture."""
+    width, height, rgb = decode_jpeg(Path(path).read_bytes(), scale)
+    return Picture(title, width, height, rgb)
 
 
 def find(subject: str, subject_en: str = "") -> Picture:

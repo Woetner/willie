@@ -510,6 +510,14 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
                 face.indicators(camera=camera_jobs > 0)
                 face.set_state("thinking")           # photo sent; the answer is being made
 
+    if face:
+        from willie.face import picture
+
+        # Show the camera's photo on the face the moment it is taken, while the model is
+        # still looking at it: Wouter sees what WILL-E sees (21 Sep).
+        def show_look(path):
+            face.show_image(picture.from_file(path, "WAT IK ZIE"), seconds=15)
+        willie_tools.LOOK_HOOK = show_look
     wrapped = [
         Tool(d["name"], d["description"], d.get("parameters") or {"type": "object", "properties": {}},
              handler=lambda args, n=d["name"]: call(n, args))

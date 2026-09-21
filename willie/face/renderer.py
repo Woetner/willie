@@ -10,7 +10,7 @@ STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
           "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting")
 # Where a picture goes on the show card, in logical 480x320 coordinates: below the
 # status bar and the title line, above the hint. The mic/camera flags stay visible (D17).
-PICTURE_BOX = (24, 100, 432, 180)
+PICTURE_BOX = (24, 76, 432, 204)
 CYAN, AMBER, RED, WHITE = (57, 208, 255), (255, 190, 72), (255, 99, 105), (221, 238, 242)
 
 
@@ -239,19 +239,19 @@ class Renderer:
             p.line(225, 302, 255, 302, 2, dim)
 
     def _card(self, p, view, eye, dim, bg):
-        for cx in (423, 446):
-            p.round_rect(cx-7, 77, 14, 20, 5, eye)
         picture = (view.image or {}).get(p.fb.layout()) if hasattr(p.fb, "layout") else None
         if picture:
-            # Photo card: title where "ON MY MIND" goes, picture centred in the box below.
-            p.text(font.normalise(view.text)[:32], 24, 81, 1, WHITE)
+            # Photo card: as big as the status bar allows, title and hint underneath.
             w, h, pixels = picture
             bx, by, bw, bh = PICTURE_BOX
             x = round((bx + (bw - w / p.sx) / 2) * p.sx)
             y = round((by + (bh - h / p.sy) / 2) * p.sy)
             p.fb.blit(x, y, w, h, pixels)
-            p.text("TAP TO RETURN", 24, 285, 1, dim)
+            p.text(font.normalise(view.text)[:40], 24, 288, 2, WHITE)
+            p.text("TAP TO RETURN", 368, 293, 1, dim)
             return
+        for cx in (423, 446):
+            p.round_rect(cx-7, 77, 14, 20, 5, eye)
         p.text("ON MY MIND", 24, 81, 1, dim)
         text = view.text or "..."
         if len(font.normalise(text)) <= 12 and "\n" not in text:
