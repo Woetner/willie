@@ -92,6 +92,7 @@ def main() -> int:
             return 1
     else:
         print("  Goed.\n")
+    n = start
     for instruction, count in BLOCKS:
         input(f"--- {instruction}. Enter om te beginnen ---")
         for i in range(count):
