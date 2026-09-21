@@ -9,7 +9,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples improve improve-watch improve-install
+        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch improve improve-watch improve-install
 
 help:
 	@echo "Pi"
@@ -31,6 +31,8 @@ help:
 	@echo "  make live-talk    one 60 s spoken session, no wake word"
 	@echo "  make voice-samples make the candidate voice samples on the Pi (V='Orus Schedar' for only those)"
 	@echo "  make voices       play the voice samples one after another on the Mac"
+	@echo "  make wake-record  record 'Hey Willie' + everyday sound through the robot's mic (D2 round 2)"
+	@echo "  make wake-fetch   copy those recordings to the Mac training workspace"
 	@echo "Self-improvement (runs Claude Code on the Mac, never deploys)"
 	@echo "  make improve       do the changes WILL-E was asked for, on a branch"
 	@echo "  make improve-watch keep watching for spoken requests"
@@ -122,6 +124,16 @@ voice-pi: sync
 
 live-talk: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/live_talk.py 60'
+
+# Wake word round 2 (D2): record Wouter through the robot's mic, fetch for training on the Mac.
+wake-record: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/wakeword/record.py'
+
+wake-fetch:
+	mkdir -p .local/wakeword/samples/wouter .local/wakeword/samples/wouter_neg_long
+	rsync -a $(PI):$(PI_DIR)/.local/wakeword_rec/positive/ .local/wakeword/samples/wouter/
+	rsync -a $(PI):$(PI_DIR)/.local/wakeword_rec/negative/ .local/wakeword/samples/wouter_neg_long/
+	@echo "$$(ls .local/wakeword/samples/wouter | wc -l) positives, $$(ls .local/wakeword/samples/wouter_neg_long | wc -l) long negatives"
 
 # Voice audition (D7): samples are made on the Pi (API key) and played on the Mac.
 voice-samples: sync

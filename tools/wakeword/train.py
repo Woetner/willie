@@ -36,6 +36,10 @@ def main() -> int:
             {"features_dir": "features/positive", "sampling_weight": 2.0, "penalty_weight": 1.0,
              "truth": True, "truncation_strategy": "truncate_start", "type": "mmap"},
             negative("features/lookalike", 3.0, "truncate_start"),
+            *([{"features_dir": "features/wouter", "sampling_weight": 3.0, "penalty_weight": 1.0,
+                "truth": True, "truncation_strategy": "truncate_start", "type": "mmap"}]
+              if (W / "features/wouter").exists() else []),
+            *([negative("features/wouter_neg", 3.0)] if (W / "features/wouter_neg").exists() else []),
             negative("negative_datasets/speech", 10.0),
             negative("negative_datasets/dinner_party", 10.0),
             negative("negative_datasets/no_speech", 5.0),

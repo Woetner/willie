@@ -66,7 +66,17 @@ def load16(source):
     return librosa.resample(audio, orig_sr=rate, target_sr=16000) if rate != 16000 else audio
 
 
-def features(pattern: str, out: str) -> None:
+def split_long(src: str, dst: str, seconds: float = 3.0) -> None:
+    """Cut long recordings (Wouter talking, TV) into clips the size of a training window."""
+    Path(dst).mkdir(parents=True, exist_ok=True)
+    for path in sorted(Path(src).glob("*.wav")):
+        rate, audio = scipy.io.wavfile.read(path)
+        step = int(rate * seconds)
+        for i in range(0, len(audio) - step + 1, step):
+            scipy.io.wavfile.write(f"{dst}/{path.stem}_{i // step:03d}.wav", rate, audio[i:i + step])
+
+
+def features(pattern: str, out: str, train_repeat: int = 2) -> None:
     from mmap_ninja.ragged import RaggedMmap
     from microwakeword.audio.augmentation import Augmentation
     from microwakeword.audio.clips import Clips
@@ -89,7 +99,7 @@ def features(pattern: str, out: str) -> None:
         background_min_snr_db=-5, background_max_snr_db=10,
         min_jitter_s=0.195, max_jitter_s=0.205,
     )
-    for split, name, repeat, slide in (("training", "train", 2, 10),
+    for split, name, repeat, slide in (("training", "train", train_repeat, 10),
                                        ("validation", "validation", 1, 10),
                                        ("testing", "test", 1, 1)):
         target = Path(out) / split
@@ -104,3 +114,10 @@ if __name__ == "__main__":
     augmentation_data()
     features("positive_*/*.wav", "features/positive")
     features("negative/*/*.wav", "features/lookalike")
+    # Round 2: Wouter's own voice through the robot's mic (make wake-record / wake-fetch).
+    # Few clips, so each is augmented many more times than the synthetic ones.
+    if Path("samples/wouter").exists():
+        features("wouter/*.wav", "features/wouter", train_repeat=40)
+    if Path("samples/wouter_neg_long").exists():
+        split_long("samples/wouter_neg_long", "samples/wouter_neg")
+        features("wouter_neg/*.wav", "features/wouter_neg", train_repeat=10)
