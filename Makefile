@@ -9,7 +9,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk improve improve-watch improve-install
+        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples improve improve-watch improve-install
 
 help:
 	@echo "Pi"
@@ -29,6 +29,8 @@ help:
 	@echo "  make bench-audio-out B6 speaker test (answer the listening questions)"
 	@echo "  make voice-pi     hands-free: wake word -> spoken conversation"
 	@echo "  make live-talk    one 60 s spoken session, no wake word"
+	@echo "  make voice-samples make the candidate voice samples on the Pi (V='Orus Schedar' for only those)"
+	@echo "  make voices       play the voice samples one after another on the Mac"
 	@echo "Self-improvement (runs Claude Code on the Mac, never deploys)"
 	@echo "  make improve       do the changes WILL-E was asked for, on a branch"
 	@echo "  make improve-watch keep watching for spoken requests"
@@ -117,6 +119,16 @@ voice-pi: sync
 
 live-talk: sync
 	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/live_talk.py 60'
+
+# Voice audition (D7): samples are made on the Pi (API key) and played on the Mac.
+voice-samples: sync
+	ssh $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/voice_samples.py $(V)'
+
+voices:
+	mkdir -p .local/voices && rm -f .local/voices/*.wav
+	rsync -a $(PI):$(PI_DIR)/.local/voices/ .local/voices/
+	@for f in $$(ls .local/voices/*.wav | sort -t/ -k3 -n); do \
+	  n=$$(basename $$f .wav); echo "> $${n#*_}"; afplay $$f; sleep 1; done
 
 bench-audio-out: sync
 	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && .venv/bin/python tools/bench/audio_out.py; sudo systemctl start willie'

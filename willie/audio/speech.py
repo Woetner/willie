@@ -107,13 +107,14 @@ def _play_pcm(pcm: bytes, rate: int, channels: int = 1) -> None:
     )
 
 
-def gemini_pcm(text: str, api_key: str, model: str = TTS_MODEL, timeout: float = 30.0) -> bytes:
+def gemini_pcm(text: str, api_key: str, model: str = TTS_MODEL, timeout: float = 30.0,
+               voice: str = TTS_VOICE, style: str = TTS_STYLE) -> bytes:
     """Ask Gemini to read `text`. Returns raw 16-bit PCM, or raises RuntimeError."""
     body = json.dumps({
-        "contents": [{"parts": [{"text": f"{TTS_STYLE} {text}"}]}],
+        "contents": [{"parts": [{"text": f"{style} {text}"}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": TTS_VOICE}}},
+            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
         },
     }).encode("utf-8")
     request = urllib.request.Request(
