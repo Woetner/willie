@@ -65,6 +65,17 @@ LIVE_EXTRA = (
 )
 
 
+# voice.language (willie.yaml) -> BCP-47 code for speechConfig, plus a prompt line: the
+# language code alone does not stop the model switching to English on an English word.
+LANGUAGES = {
+    "nl": ("nl-NL", "Spreek altijd Nederlands. Alleen als Wouter zelf Engels praat, antwoord je in het Engels."),
+    "en": ("en-US", "Always speak English."),
+}
+DAYS = ("maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag")
+MONTHS = ("januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus",
+          "september", "oktober", "november", "december")
+
+
 def _get(message: dict, camel: str, snake: str):
     """The Live API has answered in both spellings on different model versions."""
     return message.get(camel) or message.get(snake)
@@ -76,13 +87,14 @@ class GeminiLiveAdapter(VoiceAdapter):
     out_rate = OUT_RATE
 
     def __init__(self, api_key: str | None = None, model: str = "", voice: str = "",
-                 url: str | None = None, setup_timeout: float = 15.0):
+                 url: str | None = None, setup_timeout: float = 15.0, language: str = "nl"):
         """`model` = one entry of MODELS (or any Live model; empty = try MODELS in order).
         `url` replaces the Google endpoint - the tests point it at a local mock server."""
         super().__init__()
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.models = [(m, s) for m, s in MODELS if m == model] or ([(model, "audio")] if model else list(MODELS))
         self.voice = voice or VOICE
+        self.language = language
         self.url = url
         self.setup_timeout = setup_timeout
         self.model = ""
@@ -98,7 +110,8 @@ class GeminiLiveAdapter(VoiceAdapter):
         if not self.api_key and not self.url:
             raise RuntimeError("GEMINI_API_KEY missing")
         self._register_tools(tools)
-        prompt = f"{persona}\n\n{context}".strip()
+        rule = LANGUAGES.get(self.language, ("", ""))[1]
+        prompt = "\n\n".join(p for p in (persona, rule, context) if p).strip()
         last_error = "no model accepted the session"
         for model, shape in self.models:
             url = self.url or f"wss://{HOST}{PATH}?key={self.api_key}"
@@ -145,6 +158,9 @@ class GeminiLiveAdapter(VoiceAdapter):
             },
             "systemInstruction": {"parts": [{"text": prompt}]},
         }
+        code = LANGUAGES.get(self.language, ("", ""))[0]
+        if code:
+            setup["generationConfig"]["speechConfig"]["languageCode"] = code
         if self.tools:
             setup["tools"] = [{"functionDeclarations": [t.declaration() for t in self.tools.values()]}]
         return {"setup": setup}
@@ -397,7 +413,18 @@ def willie_tool_list() -> list[Tool]:
 
 
 def live_context() -> str:
-    return f"Het is nu {datetime.now():%A %d %B %Y, %H:%M}.{willie_tools.remembered()}"
+    now = datetime.now()
+    return (f"Het is nu {DAYS[now.weekday()]} {now.day} {MONTHS[now.month - 1]} {now.year}, "
+            f"{now:%H:%M}.{willie_tools.remembered()}")
+
+
+def configured_language() -> str:
+    """voice.language from the live willie.yaml; Dutch if the settings cannot be read."""
+    try:
+        from willie.config import Config
+        return Config().get("voice.language")
+    except Exception:
+        return "nl"
 
 
 async def session(
@@ -416,7 +443,7 @@ async def session(
     stop = asyncio.Event()
     activity = [loop.time()]
     speaker = Speaker()
-    adapter = GeminiLiveAdapter(api_key)
+    adapter = GeminiLiveAdapter(api_key, language=configured_language())
 
     def audio(pcm: bytes) -> None:
         speaker.write(pcm)

@@ -49,7 +49,7 @@ voice:
   speed: 1.0
   robot_filter: 0.3
   wake_sensitivity: 0.5
-  language: auto
+  language: nl
 privacy:
   mute: false
   camera_allowed: true

@@ -227,7 +227,9 @@ def test_gemini_setup_message():
         await a.start_session("PERSONA", "CONTEXT", [show])
         setup = a.mock.setup
         assert setup["model"] == "models/gemini-3.8-live"
-        assert setup["systemInstruction"]["parts"][0]["text"] == "PERSONA\n\nCONTEXT"
+        prompt = setup["systemInstruction"]["parts"][0]["text"]
+        assert prompt.startswith("PERSONA\n\nSpreek altijd Nederlands") and prompt.endswith("CONTEXT")
+        assert setup["generationConfig"]["speechConfig"]["languageCode"] == "nl-NL"
         assert setup["tools"][0]["functionDeclarations"][0]["name"] == "toon"
         assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
         await a.close()
