@@ -53,10 +53,13 @@ def test_show_image_draws_picture_and_tap_dismisses():
     assert face.show_image(solid(400, 200)) == {"getoond": "Banaan (vrucht)"}
     view = face.snapshot()
     assert view.state == "show" and view.image
+    red = (0xF800).to_bytes(2, "little")
+    centre = (142 * fb.stride) + 240 * 2                # middle of the picture box
     buffer = fb.back_buffer()
     Renderer().draw(buffer, view, face.clock(), {"brightness": 100})
-    red = (0xF800).to_bytes(2, "little")
-    centre = (190 * fb.stride) + 240 * 2                # middle of the picture box
+    assert bytes(buffer.memory[centre:centre + 2]) != red   # eyelids still closed at t=0
+    face.clock.now += 1                                 # past the eyelid reveal
+    Renderer().draw(buffer, face.snapshot(), face.clock(), {"brightness": 100})
     assert bytes(buffer.memory[centre:centre + 2]) == red
     face.clock.now += 2
     face.pet()                                          # one tap returns to the face

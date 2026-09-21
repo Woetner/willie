@@ -35,6 +35,14 @@ class Picture:
         """Nearest-neighbour scale to fit inside the box, keeping the aspect ratio."""
         scale = min(box_w / self.width, box_h / self.height)
         w, h = max(1, int(self.width * scale)), max(1, int(self.height * scale))
+        try:
+            import numpy as np          # on the Pi via pymicro-wakeword: ~20x faster
+            src = np.frombuffer(self.rgb, np.uint8).reshape(self.height, self.width, 3)
+            ys = np.minimum(self.height - 1, (np.arange(h) / scale).astype(int))
+            xi = np.minimum(self.width - 1, (np.arange(w) / scale).astype(int))
+            return Picture(self.title, w, h, src[ys][:, xi].tobytes(), self.source)
+        except ImportError:
+            pass
         xs = [min(self.width - 1, int(x / scale)) * 3 for x in range(w)]
         out = bytearray(w * h * 3)
         for y in range(h):

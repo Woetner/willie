@@ -125,6 +125,7 @@ class Face:
         self._pet_until = self._show_until = self._show_started = 0.0
         self._shown_text = ""
         self._shown_image = None
+        self._shown_flash = False
         self._page_offset = 0
         self._audio = deque(maxlen=1500)  # 30 s at 20 ms; amplitudes only, no stored audio
         self._audio_until = 0.0
@@ -247,7 +248,7 @@ class Face:
             self._page_offset = 0
         return {"getoond": text}
 
-    def show_image(self, picture, seconds=20):
+    def show_image(self, picture, seconds=20, flash=False):
         """Put a `willie.face.picture.Picture` on the show card. Scaling and pixel
         conversion happen here, once, in the caller's thread - never in the render loop."""
         _, _, bw, bh = PICTURE_BOX
@@ -261,6 +262,7 @@ class Face:
         with self._lock:
             self._shown_text = picture.title
             self._shown_image = prepared
+            self._shown_flash = flash
             self._show_started = self.clock()
             self._show_until = self._show_started + seconds
             self._page_offset = 0
@@ -382,6 +384,7 @@ class Face:
                 v.state = "happy"
             if now < self._show_until and v.state not in ("error", "low_battery"):
                 v.state, v.text, v.image = "show", self._shown_text, self._shown_image
+                v.image_age, v.flash = now - self._show_started, self._shown_flash
                 v.page = int((now-self._show_started)//6)+self._page_offset
             return v
 

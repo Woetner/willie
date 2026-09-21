@@ -106,6 +106,14 @@ class Framebuffer:
         """Packed 8-bit RGB -> this framebuffer's pixel format (one-off, for pictures)."""
         (ro, rl), (go, gl), (bo, bl) = self.red, self.green, self.blue
         rs, gs, bs = 8 - rl, 8 - gl, 8 - bl
+        try:
+            import numpy as np
+            px = np.frombuffer(rgb[: len(rgb) // 3 * 3], np.uint8).reshape(-1, 3).astype(np.uint32)
+            value = ((px[:, 0] >> rs) << ro) | ((px[:, 1] >> gs) << go) | ((px[:, 2] >> bs) << bo)
+            if self.bytes_per_pixel in (2, 4):
+                return value.astype("<u2" if self.bytes_per_pixel == 2 else "<u4").tobytes()
+        except ImportError:
+            pass
         values = [((rgb[i] >> rs) << ro) | ((rgb[i + 1] >> gs) << go) | ((rgb[i + 2] >> bs) << bo)
                   for i in range(0, len(rgb) - 2, 3)]
         size = self.bytes_per_pixel

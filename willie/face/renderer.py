@@ -8,9 +8,11 @@ from . import font
 
 STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
           "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting")
-# Where a picture goes on the show card, in logical 480x320 coordinates: below the
-# status bar and the title line, above the hint. The mic/camera flags stay visible (D17).
-PICTURE_BOX = (24, 76, 432, 204)
+# Where a picture goes, in logical 480x320 coordinates: the whole screen except a 36 px bar
+# at the bottom for the title and the mic/camera flags, which stay visible (D17).
+PICTURE_BOX = (0, 0, 480, 284)
+REVEAL_S = .45              # the photo opens like an eyelid from its centre line
+FLASH_S = .12               # camera photos start with a short shutter flash
 CYAN, AMBER, RED, WHITE = (57, 208, 255), (255, 190, 72), (255, 99, 105), (221, 238, 242)
 
 
@@ -31,6 +33,8 @@ class View:
     page: int = 0
     image: dict | None = None   # {framebuffer layout: (width, height, pixels)} from Face.show_image
     label: str = ""             # replaces the state's caption, e.g. "RESEARCHING..." (Face.busy)
+    image_age: float = 99.0     # seconds since the picture appeared (drives the reveal)
+    flash: bool = False         # the picture is a camera photo: shutter flash first
 
 
 def colour(value, fallback):
@@ -103,6 +107,9 @@ class Renderer:
         state = view.state
         if state not in STATES:
             state = "idle"
+        if state == "show" and hasattr(surface, "layout") and (view.image or {}).get(surface.layout()):
+            self._photo(p, view, base, dim, bg)
+            return
         # Fixed layout: the animated eye band stays close to B5's measured 138 rows.
         targets = {
             "idle": (100, 106, 100, 106, 0, 0),
@@ -237,6 +244,35 @@ class Renderer:
             p.centre(detail, 299, 1, dim)
         else:
             p.line(225, 302, 255, 302, 2, dim)
+
+    def _photo(self, p, view, eye, dim, bg):
+        """A picture over (nearly) the whole screen, revealed like an opening eyelid."""
+        fb = p.fb
+        w, h, pixels = view.image[fb.layout()]
+        bx, by, bw, bh = PICTURE_BOX
+        x = round((bx + (bw - w / p.sx) / 2) * p.sx)
+        y = round((by + (bh - h / p.sy) / 2) * p.sy)
+        fb.blit(x, y, w, h, pixels)
+        age = max(0.0, view.image_age)
+        if view.flash and age < FLASH_S:
+            fb.rect(x, y, w, h, p.ink(mix(WHITE, (255, 255, 255), .5)))
+        elif age < REVEAL_S + (FLASH_S if view.flash else 0):
+            t = (age - (FLASH_S if view.flash else 0)) / REVEAL_S
+            t = 1 - (1 - max(0.0, min(1.0, t))) ** 3              # ease-out
+            half = round(h / 2 * t)
+            mid = y + h // 2
+            fb.rect(x, y, w, mid - half - y, p.ink(bg))             # upper lid
+            fb.rect(x, mid + half, w, y + h - mid - half, p.ink(bg))  # lower lid
+            for edge in (mid - half - 3, mid + half):
+                fb.rect(x, edge, w, 3, p.ink(eye))
+        # Bottom bar: title left, the privacy flags right (they must stay visible, D17).
+        p.rect(0, 286, 480, 1, dim)
+        p.text(font.normalise(view.text)[:28], 14, 296, 2, WHITE)
+        if view.camera:
+            p.ellipse(372, 302, 3, 3, RED)
+            p.text("CAM", 380, 298, 1, WHITE)
+        mic = "MUTED" if view.muted else "MIC" if view.mic else "MIC OFF"
+        p.text(mic, 414, 298, 1, AMBER if view.muted else eye if view.mic else dim)
 
     def _card(self, p, view, eye, dim, bg):
         picture = (view.image or {}).get(p.fb.layout()) if hasattr(p.fb, "layout") else None
