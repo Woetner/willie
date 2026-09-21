@@ -20,7 +20,9 @@ import sys
 import time
 from pathlib import Path
 
-DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from willie.audio import mic  # noqa: E402  same capture path as the wake word at runtime
+
 OUT = Path(__file__).resolve().parents[2] / ".local" / "wakeword_rec"
 BLOCKS = (
     ("Zeg 'Hey Willie', normaal, zoals je hem straks roept, op ~1 m", 10),
@@ -39,12 +41,12 @@ def record(path: Path, seconds: float, meter: bool = False, lead: float = 0.0, c
     With `meter`, prints a live timer and level bar once a second (long recordings)."""
     import array
     import wave
-    proc = subprocess.Popen(["arecord", "-q", "-D", DEVICE, "-f", "S16_LE", "-r", "16000", "-c", "1",
-                             "-t", "raw"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    factor = mic.gain()
+    proc = subprocess.Popen(mic.command(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     # The mic needs ~0.8 s to settle after arecord opens (a decaying bump that looks like
     # sound): record `lead` seconds first, throw them away, and only then show the cue.
     if lead:
-        proc.stdout.read(int(16000 * lead) * 2)
+        proc.stdout.read(int(16000 * lead) * mic.FRAME)
     if cue:
         print(cue, end="", flush=True)
     total, peak = int(16000 * seconds), 0.0
@@ -53,9 +55,10 @@ def record(path: Path, seconds: float, meter: bool = False, lead: float = 0.0, c
         done = 0
         try:
             while done < total:
-                chunk = proc.stdout.read(min(16000, total - done) * 2)
-                if not chunk:
+                raw = proc.stdout.read(min(16000, total - done) * mic.FRAME)
+                if not raw:
                     break
+                chunk = mic.left(raw, factor)
                 out.writeframes(chunk)
                 done += len(chunk) // 2
                 second = max(map(abs, array.array("h", chunk)), default=0) / 327.68
@@ -76,23 +79,26 @@ def main() -> int:
     (OUT / "negative").mkdir(parents=True, exist_ok=True)
     start = len(list((OUT / "positive").glob("*.wav")))
     print(f"Opnemen in {OUT} (al {start} opnames). Ctrl-C stopt; wat er is blijft bewaard.\n")
-    input("--- Microfooncheck: praat 5 s gewoon, vanaf waar je hem straks roept. Enter ---")
-    peak = record(Path("/tmp/willie_miccheck.wav"), 5, meter=True, lead=0.8)
-    if peak < 10:
-        print(f"  Je stem komt maar op {peak:.0f} % binnen (nodig: 10 % of meer). Staat het gaatje van de"
-              f" INMP441 naar je toe en ligt het niet tegen de tafel? Los dat eerst op.")
+    input("--- Microfooncheck, deel 1: 3 s stil zijn. Enter ---")
+    room = record(Path("/tmp/willie_miccheck.wav"), 3, meter=True, lead=0.8)
+    input("--- Deel 2: praat 5 s gewoon, vanaf waar je hem straks roept. Enter ---")
+    voice = record(Path("/tmp/willie_miccheck.wav"), 5, meter=True, lead=0.8)
+    ratio = voice / max(room, 0.1)
+    print(f"  Kamer {room:.0f} %, jouw stem {voice:.0f} % ({ratio:.1f}x zo luid).")
+    if voice < 25 or ratio < 2.5:
+        print("  Te zacht ten opzichte van de kamer (nodig: 25 % en 2,5x). Kom dichterbij, draai het\n"
+              "  gaatje van de INMP441 naar je toe, of zet voice.wake_gain hoger in het dashboard.")
         if input("  Toch doorgaan? (j/N) ").strip().lower() != "j":
             return 1
     else:
-        print(f"  Goed: {peak:.0f} %.\n")
-    n = start
+        print("  Goed.\n")
     for instruction, count in BLOCKS:
         input(f"--- {instruction}. Enter om te beginnen ---")
         for i in range(count):
             peak = record(OUT / "positive" / f"wouter_{n:03d}.wav", 2, lead=0.8,
                           cue=f"  [{i + 1}/{count}]  zeg het NU ... ")
             n += 1
-            print(f"ok ({peak:.0f} % FS){'  - te zacht, kom dichterbij' if peak < 10 else ''}")
+            print(f"ok ({peak:.0f} %){'  - te zacht, kom dichterbij' if peak < 20 else ''}")
             time.sleep(0.6)
     print(f"\n{n - start} wake-opnames gemaakt.\n")
 

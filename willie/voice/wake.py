@@ -16,9 +16,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
-RATE = 16_000
-CHUNK = 2048            # bytes = 64 ms at 16 kHz mono; features come out every 10 ms
+from willie.audio import mic
+
+CHUNK = 1024            # frames = 64 ms at 16 kHz; features come out every 10 ms
 MODEL = Path(__file__).resolve().parents[2] / "config" / "wakewords" / "hey_willie.json"
 
 _detector = None
@@ -57,17 +57,16 @@ def listen_for_wake(stop_after: float | None = None, on_tick=None) -> bool:
     model, features = _load()
     model.reset()
     features.reset()
-    recorder = subprocess.Popen(
-        ["arecord", "-D", DEVICE, "-f", "S16_LE", "-r", str(RATE), "-c", "1", "-t", "raw", "-q"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-    )
+    factor = mic.gain()
+    recorder = subprocess.Popen(mic.command(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     elapsed, loudest, next_tick = 0.0, 0.0, 0.5
     try:
         while True:
-            chunk = recorder.stdout.read(CHUNK) if recorder.stdout else b""
-            if len(chunk) < CHUNK:
+            raw = recorder.stdout.read(CHUNK * mic.FRAME) if recorder.stdout else b""
+            if len(raw) < CHUNK * mic.FRAME:
                 return False
-            elapsed += CHUNK / 2 / RATE
+            chunk = mic.left(raw, factor)
+            elapsed += CHUNK / mic.RATE
             for frame in features.process_streaming(chunk):
                 probability = model.process_streaming_prob(frame)
                 if probability is None:

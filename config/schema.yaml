@@ -67,6 +67,7 @@ voice:
   speed:           {type: float, default: 1.0, min: 0.7, max: 1.5, help: Speaking speed}
   robot_filter:    {type: float, default: 0.3, min: 0, max: 1, help: Amount of robot voice filter}
   wake_sensitivity: {type: float, default: 0.5, min: 0.1, max: 0.95, help: Wake-word threshold}
+  wake_gain:       {type: float, default: 8.0, min: 1, max: 32, help: "Digital mic gain for wake word + recorder (INMP441 is quiet; left channel only)"}
   search:          {type: bool, default: false, help: "Google Search in conversations. Needs a paid Gemini key for the 3.x models (free tier: quota 0)"}
   language:        {type: choice, default: nl, options: [nl, en, auto], help: "Conversation language (nl = Dutch unless you speak English)"}
 
