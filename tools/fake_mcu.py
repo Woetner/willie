@@ -111,6 +111,7 @@ def handle(w):
 def tick(dt):
     """Physics + watchdog + one `st` line."""
     global moving, wd_trips, pan, tilt, x, y, th
+    dt = max(dt, 1e-3)
     if moving and ms() - last_motion > CFG["wd_ms"]:
         pwm[:] = [0, 0]
         moving = False

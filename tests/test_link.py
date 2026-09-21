@@ -37,29 +37,35 @@ def fake_port(tmp_path):
 
 
 def test_watchdog_and_cap(fake_port):
+    # Wait on conditions, not fixed sleeps: the fake MCU is a Python process and may lag.
     async def run():
         events = []
         link = Link(fake_port, baud=115200, on_message=events.append)   # a macOS pty rejects 921600
         link._open()
         assert await link.ping(0.5) is not None
-        await asyncio.sleep(0.1)
-        assert link.state is not None and link.clock_offset_ms is not None
+        link.cfg("stream_hz", 20)
+
+        async def until(pred, timeout=1.0):
+            end = time.perf_counter() + timeout
+            while not (link.state and pred(link.state)):
+                assert time.perf_counter() < end, link.state
+                await asyncio.sleep(0.005)
+
+        await until(lambda st: True)
+        assert link.clock_offset_ms is not None
 
         link.pwm(80, -80)                            # above the 50 % hard cap
         t_last = time.perf_counter()
-        await asyncio.sleep(0.06)
-        assert (link.state["pwm_l"], link.state["pwm_r"]) == (50, -50)
-        assert link.state["moving"]
+        await until(lambda st: st["pwm_l"] != 0)
+        assert (link.state["pwm_l"], link.state["pwm_r"]) == (50, -50) and link.state["moving"]
 
-        while link.state["pwm_l"] and time.perf_counter() - t_last < 1:
-            await asyncio.sleep(0.005)
+        await until(lambda st: st["pwm_l"] == 0)     # silence: the watchdog must brake
         stop_ms = (link.state_t - t_last) * 1000
-        assert 180 < stop_ms < 300, stop_ms
-        assert any(w[:2] == ["ev", "wd"] for w in events)
+        assert 190 < stop_ms < 320, stop_ms          # 200 ms + up to one 50 ms frame
+        assert any(w[:2] == ["ev", "wd"] for w in events), events
 
         link.look(200, -100)                         # clamped to the configured limits
-        await asyncio.sleep(1.5)
-        assert (link.state["pan_d10"], link.state["tilt_servo_d10"]) == (900, -300)
+        await until(lambda st: (st["pan_d10"], st["tilt_servo_d10"]) == (900, -300), timeout=2)
         link.close()
 
     asyncio.run(run())
