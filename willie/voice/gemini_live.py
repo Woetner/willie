@@ -1,9 +1,12 @@
-"""Speech-to-speech with the Gemini Live API (bidi WebSocket).
+"""Adapter A (D4): Gemini Live behind the D3 `VoiceAdapter` interface.
 
-Unlike the request/response path in `tools/ask_camera.py`, this keeps a session
-open: microphone audio streams up continuously, the model's own voice streams
-back, and either side can interrupt the other. That is what makes it feel like
-talking rather than waiting.
+Two layers in this file:
+
+- `GeminiLiveAdapter` is the protocol only: one bidi WebSocket, audio up, audio down, tool
+  calls, interruptions. It never touches a sound card, so it runs the same on the Pi, on the
+  Mac and against the mock server in tests/test_voice_adapter.py.
+- `session()` is the Pi runner the bench tools use (`make live-talk`, `make voice-pi`):
+  arecord -> echo gate -> adapter -> aplay, plus the idle timeout.
 
 Audio contract:
   up    16 kHz 16-bit mono PCM, captured by ALSA (its resampler is clean; the
@@ -11,10 +14,6 @@ Audio contract:
         that the model could not understand Dutch at all)
   down  24 kHz 16-bit mono PCM, upsampled to 48 kHz before aplay, because this
         card plays 48 kHz and is silent at lower rates (B6/B7 bench finding)
-
-This is a bench prototype of the Gate G1 adapter (D4), not the adapter itself:
-no tool calls, no face states, no mood. It exists to measure whether the Pi 3 A+
-can hold a live session at all (G2) and how it feels in Dutch.
 """
 
 from __future__ import annotations
@@ -23,14 +22,19 @@ import array
 import asyncio
 import base64
 import json
+import logging
 import os
 import subprocess
+from datetime import datetime
 
 import websockets
 
 from willie.audio import speech
 from willie.voice import tools as willie_tools
+from willie.voice.base import Tool, VoiceAdapter
 from willie.voice.persona import system_prompt
+
+log = logging.getLogger("willie.voice.gemini")
 
 HOST = "generativelanguage.googleapis.com"
 PATH = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
@@ -60,6 +64,188 @@ LIVE_EXTRA = (
     "zinnen, daarna stil zijn. Val niet terug op beleefdheidsformules."
 )
 
+
+def _get(message: dict, camel: str, snake: str):
+    """The Live API has answered in both spellings on different model versions."""
+    return message.get(camel) or message.get(snake)
+
+
+class GeminiLiveAdapter(VoiceAdapter):
+    name = "gemini_live"
+    in_rate = IN_RATE
+    out_rate = OUT_RATE
+
+    def __init__(self, api_key: str | None = None, model: str = "", voice: str = "",
+                 url: str | None = None, setup_timeout: float = 15.0):
+        """`model` = one entry of MODELS (or any Live model; empty = try MODELS in order).
+        `url` replaces the Google endpoint - the tests point it at a local mock server."""
+        super().__init__()
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        self.models = [(m, s) for m, s in MODELS if m == model] or ([(model, "audio")] if model else list(MODELS))
+        self.voice = voice or VOICE
+        self.url = url
+        self.setup_timeout = setup_timeout
+        self.model = ""
+        self._shape = "audio"
+        self._socket = None
+        self._receiver: asyncio.Task | None = None
+        self._speaking = False           # "speaking" already sent for the current model turn
+        self._dropping = False           # interrupt() was called: discard the rest of this turn
+        self._closing = False
+
+    # ---- lifecycle -------------------------------------------------------------
+    async def start_session(self, persona: str, context: str, tools: list[Tool]) -> None:
+        if not self.api_key and not self.url:
+            raise RuntimeError("GEMINI_API_KEY missing")
+        self._register_tools(tools)
+        prompt = f"{persona}\n\n{context}".strip()
+        last_error = "no model accepted the session"
+        for model, shape in self.models:
+            url = self.url or f"wss://{HOST}{PATH}?key={self.api_key}"
+            try:
+                socket = await websockets.connect(url, max_size=None, ping_interval=20)
+            except (websockets.WebSocketException, OSError) as exc:
+                last_error = f"{model}: {exc}"
+                continue
+            try:
+                await socket.send(json.dumps(self._setup_message(model, prompt)))
+                ack = json.loads(await asyncio.wait_for(socket.recv(), timeout=self.setup_timeout))
+            except (asyncio.TimeoutError, websockets.WebSocketException, OSError) as exc:
+                last_error = f"{model}: {exc or 'no setup answer'}"
+                await socket.close()
+                continue
+            if "setupComplete" not in ack and "setup_complete" not in ack:
+                last_error = f"{model}: {json.dumps(ack)[:160]}"
+                await socket.close()
+                continue
+            self._socket, self.model, self._shape = socket, model, shape
+            self.is_open, self._closing = True, False
+            self._receiver = asyncio.create_task(self._receive())
+            await self._emit("ready", model)
+            return
+        raise RuntimeError(last_error)
+
+    def _setup_message(self, model: str, prompt: str) -> dict:
+        setup = {
+            "model": model,
+            # Ask the server to be slow to call something an interruption. The
+            # runner's echo gate does the heavy lifting, but a deaf-er detector
+            # helps for whatever leaks through.
+            "realtimeInputConfig": {
+                "automaticActivityDetection": {
+                    "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+                    "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+                    "prefixPaddingMs": 300,
+                    "silenceDurationMs": 800,
+                }
+            },
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}},
+            },
+            "systemInstruction": {"parts": [{"text": prompt}]},
+        }
+        if self.tools:
+            setup["tools"] = [{"functionDeclarations": [t.declaration() for t in self.tools.values()]}]
+        return {"setup": setup}
+
+    async def send_audio(self, pcm: bytes) -> None:
+        if not self.is_open or self._socket is None:
+            raise ConnectionError("session closed")
+        blob = {"mimeType": f"audio/pcm;rate={self.in_rate}", "data": base64.b64encode(pcm).decode("ascii")}
+        inner = {"audio": blob} if self._shape == "audio" else {"mediaChunks": [blob]}
+        try:
+            await self._socket.send(json.dumps({"realtimeInput": inner}))
+        except websockets.ConnectionClosed as exc:
+            raise ConnectionError(f"session closed: {exc}") from exc
+
+    async def interrupt(self) -> None:
+        """The Live API has no client-side "cancel": the server keeps generating the turn it
+        started. So the rest of that turn is dropped here, until its turnComplete (or the
+        server's own interruption) arrives."""
+        if self._speaking:
+            self._speaking = False
+            self._dropping = True
+            await self._emit("interrupted")
+
+    async def close(self) -> None:
+        if not self.is_open and self._socket is None:
+            return
+        self._closing = True
+        self.is_open = False
+        if self._socket is not None:
+            await self._socket.close()
+        if self._receiver is not None and self._receiver is not asyncio.current_task():
+            self._receiver.cancel()
+            await asyncio.gather(self._receiver, return_exceptions=True)
+        self._socket = self._receiver = None
+        await self._emit("closed", "close()")
+
+    # ---- downlink --------------------------------------------------------------
+    async def _receive(self) -> None:
+        reason = "server closed the session"
+        try:
+            async for raw in self._socket:
+                await self._handle(json.loads(raw))
+        except websockets.ConnectionClosed as exc:
+            reason = f"connection lost: {exc}"
+        except Exception as exc:                     # a bad message must be visible, not silent
+            log.exception("gemini receive failed")
+            reason = f"{type(exc).__name__}: {exc}"
+            await self._emit("error", reason)
+        if not self._closing:                        # the server ended it, not close()
+            self.is_open = False
+            self._socket = None
+            await self._emit("closed", reason)
+
+    async def _handle(self, message: dict) -> None:
+        call = _get(message, "toolCall", "tool_call")
+        if call:
+            # Each call runs as its own task: the camera takes seconds and the
+            # audio must keep flowing (and barge-in keep working) meanwhile.
+            for function in _get(call, "functionCalls", "function_calls") or []:
+                asyncio.create_task(self._answer_tool(function))
+            return
+        if _get(message, "goAway", "go_away"):
+            await self._emit("error", "server will end the session soon (goAway)")
+            return
+        server = _get(message, "serverContent", "server_content") or {}
+        if server.get("interrupted"):                # the user talked over him (server VAD)
+            if self._speaking:
+                await self._emit("interrupted")
+            self._speaking = self._dropping = False
+            return
+        turn = _get(server, "modelTurn", "model_turn") or {}
+        for part in turn.get("parts", []):
+            blob = _get(part, "inlineData", "inline_data")
+            if blob and blob.get("data") and not self._dropping:
+                if not self._speaking:
+                    self._speaking = True
+                    await self._emit("speaking")
+                await self._deliver_audio(base64.b64decode(blob["data"]))
+        if _get(server, "turnComplete", "turn_complete"):
+            if self._dropping:
+                self._dropping = False               # end of the turn interrupt() cut off
+            else:
+                await self._emit("turn_complete")
+            self._speaking = False
+
+    async def _answer_tool(self, function: dict) -> None:
+        name = function.get("name", "")
+        result = await self._run_tool(name, function.get("args") or {})
+        if not isinstance(result, dict):
+            result = {"result": result}
+        response = {"functionResponses": [{"id": function.get("id"), "name": name, "response": result}]}
+        if self._socket is not None:
+            try:
+                await self._socket.send(json.dumps({"toolResponse": response}))
+            except websockets.ConnectionClosed:
+                pass
+
+
+# ======================================================================= Pi runner
+# Everything below is sound-card plumbing for the bench tools; the adapter above
+# does not depend on it.
 
 def _upsample(pcm: bytes, rate: int = OUT_RATE) -> bytes:
     """Repeat samples up to the card's 48 kHz. Integer factors only."""
@@ -116,37 +302,6 @@ class Speaker:
         self.busy_until = 0.0
 
 
-async def _setup(socket, model: str) -> None:
-    await socket.send(json.dumps({
-        "setup": {
-            "model": model,
-            # Ask the server to be slow to call something an interruption. The
-            # local gate below does the heavy lifting, but a deaf-er detector
-            # helps for whatever leaks through.
-            "realtimeInputConfig": {
-                "automaticActivityDetection": {
-                    "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
-                    "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
-                    "prefixPaddingMs": 300,
-                    "silenceDurationMs": 800,
-                }
-            },
-            "generationConfig": {
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": VOICE}}},
-            },
-            "systemInstruction": {"parts": [{"text": system_prompt(LIVE_EXTRA) + willie_tools.remembered()}]},
-            "tools": [{"functionDeclarations": willie_tools.DECLARATIONS}],
-        }
-    }))
-
-
-def _uplink(chunk: bytes, shape: str) -> str:
-    blob = {"mimeType": f"audio/pcm;rate={IN_RATE}", "data": base64.b64encode(chunk).decode("ascii")}
-    inner = {"audio": blob} if shape == "audio" else {"mediaChunks": [blob]}
-    return json.dumps({"realtimeInput": inner})
-
-
 # Anything below this is room tone, measured on the bench: a quiet room reads
 # about 1.5 % FS and speech at 30 cm reads 20-40 %.
 SPEECH_FS = 0.05
@@ -161,35 +316,37 @@ BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "0.35"))
 BARGE_IN_TAIL = 0.4
 
 
-async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=None, activity=None,
-                           speaker: "Speaker | None" = None) -> None:
+def _peak(chunk: bytes) -> float:
+    samples = array.array("h")
+    samples.frombytes(chunk[: len(chunk) // 2 * 2])
+    return max(max(samples), -min(samples)) / 32768 if samples else 0.0
+
+
+async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Event,
+                      activity: list[float], on_event) -> None:
     frames = IN_RATE * CHUNK_MS // 1000
-    sent = 0
-    loudest = 0.0
+    sent, loudest = 0, 0.0
     process = await asyncio.create_subprocess_exec(
         "arecord", "-D", DEVICE, "-f", "S16_LE", "-r", str(IN_RATE), "-c", "1", "-t", "raw", "-q",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
+    loop = asyncio.get_running_loop()
     try:
         while not stop.is_set():
             chunk = await process.stdout.read(frames * 2)
             if not chunk:
                 break
-            samples = array.array("h")
-            samples.frombytes(chunk[: len(chunk) // 2 * 2])
-            peak = max(max(samples), -min(samples)) / 32768 if samples else 0.0
+            peak = _peak(chunk)
             # While he is speaking, swallow anything that is not clearly louder
             # than his own voice coming back through the microphone.
-            now = asyncio.get_running_loop().time()
-            if speaker is not None and speaker.speaking(now) and peak < BARGE_IN_FS:
+            if speaker.speaking(loop.time()) and peak < BARGE_IN_FS:
                 continue
-            await socket.send(_uplink(chunk, shape))
+            await adapter.send_audio(chunk)
             sent += 1
-            if samples:
-                loudest = max(loudest, peak)
-                if peak >= SPEECH_FS and activity is not None:
-                    activity[0] = asyncio.get_running_loop().time()
-            if on_event and sent % 20 == 0:      # every 2 s
+            loudest = max(loudest, peak)
+            if peak >= SPEECH_FS:
+                activity[0] = loop.time()
+            if sent % 20 == 0:                       # every 2 s
                 on_event("uplink", f"{sent} chunks, loudest {loudest * 100:.1f}% FS")
                 loudest = 0.0
     finally:
@@ -197,69 +354,50 @@ async def _send_microphone(socket, stop: asyncio.Event, shape: str, on_event=Non
         await process.wait()
 
 
-async def _handle_tool_call(socket, message: dict, on_event=None) -> bool:
-    """Run any function the model asked for and send the results back."""
-    call = message.get("toolCall") or message.get("tool_call")
-    if not call:
-        return False
-    responses = []
-    for function in call.get("functionCalls") or call.get("function_calls") or []:
-        name = function.get("name", "")
-        arguments = function.get("args") or {}
-        if on_event:
-            on_event("tool", f"{name}({json.dumps(arguments, ensure_ascii=False)[:60]})")
-        # Tools run in a thread: rpicam-still takes seconds and the audio
-        # stream must keep flowing while it does.
-        result = await asyncio.to_thread(willie_tools.call, name, arguments)
-        if on_event:
-            on_event("tool_result", f"{name} -> {json.dumps(result, ensure_ascii=False)[:80]}")
-        responses.append({"id": function.get("id"), "name": name, "response": result})
-    if responses:
-        await socket.send(json.dumps({"toolResponse": {"functionResponses": responses}}))
-    return True
+def show(args: dict) -> dict:
+    """D4's test tool: put a short text on the face. D6 replaces this with the real face."""
+    text = str(args.get("tekst", "")).strip()
+    if not text:
+        return {"fout": "geen tekst"}
+    try:
+        import sys
+        sys.path.insert(0, str(willie_tools.REPO / "tools"))
+        from willie_console import Face
+        from willie.face.framebuffer import open_all
+        face = Face(open_all())
+        try:
+            face.answer(text)
+        finally:
+            face.close()
+        return {"getoond": text}
+    except (ImportError, OSError, RuntimeError) as exc:     # no screen: say so, keep talking
+        print(f"[show] {text}  (no face: {exc})", flush=True)
+        return {"getoond": text, "let_op": "geen scherm gevonden, alleen gelogd"}
 
 
-async def _receive(socket, speaker: Speaker, stop: asyncio.Event, on_event=None, activity=None) -> None:
-    async for raw in socket:
-        if stop.is_set():
-            break
-        message = json.loads(raw) if isinstance(raw, (str, bytes)) else {}
-        if await _handle_tool_call(socket, message, on_event):
-            if activity is not None:
-                activity[0] = asyncio.get_running_loop().time()
-            continue
-        server = message.get("serverContent") or message.get("server_content") or {}
-        if server.get("interrupted"):
-            speaker.stop()
-            if on_event:
-                on_event("interrupted", "")
-            continue
-        turn = server.get("modelTurn") or server.get("model_turn") or {}
-        for part in turn.get("parts", []):
-            blob = part.get("inlineData") or part.get("inline_data")
-            if blob and blob.get("data"):
-                speaker.write(base64.b64decode(blob["data"]))
-                if activity is not None:
-                    activity[0] = asyncio.get_running_loop().time()
-                if on_event:
-                    on_event("audio", "")
-            if part.get("text") and on_event:
-                on_event("text", part["text"])
-        if (server.get("turnComplete") or server.get("turn_complete")) and on_event:
-            on_event("turn_complete", "")
+SHOW = Tool(
+    "toon",
+    "Zet een korte tekst op je gezicht (het scherm): een getal, een maat, een pinout-regel, "
+    "een lijstje. Gebruik dit als Wouter vraagt iets te laten zien of op te schrijven.",
+    {"type": "object", "properties": {"tekst": {"type": "string", "description": "Maximaal ~180 tekens."}},
+     "required": ["tekst"]},
+    handler=lambda args: asyncio.to_thread(show, args),
+)
 
 
-async def _watch_idle(stop: asyncio.Event, activity: list[float], idle_timeout: float, on_event=None) -> None:
-    """End the session once nobody has spoken and nothing has been said back."""
-    loop = asyncio.get_running_loop()
-    activity[0] = loop.time()
-    while not stop.is_set():
-        await asyncio.sleep(0.5)
-        if loop.time() - activity[0] >= idle_timeout:
-            if on_event:
-                on_event("idle", f"{idle_timeout:.0f} s without speech")
-            stop.set()
-            return
+def willie_tool_list() -> list[Tool]:
+    """The fixed tool list (voice/tools.py) + show(), wrapped as D3 Tools. Tools run in a
+    thread: rpicam-still takes seconds and the audio stream must keep flowing."""
+    wrapped = [
+        Tool(d["name"], d["description"], d.get("parameters") or {"type": "object", "properties": {}},
+             handler=lambda args, n=d["name"]: asyncio.to_thread(willie_tools.call, n, args))
+        for d in willie_tools.DECLARATIONS
+    ]
+    return [SHOW, *wrapped]
+
+
+def live_context() -> str:
+    return f"Het is nu {datetime.now():%A %d %B %Y, %H:%M}.{willie_tools.remembered()}"
 
 
 async def session(
@@ -268,51 +406,59 @@ async def session(
     idle_timeout: float | None = None,
     on_event=None,
 ) -> str:
-    """Hold a live conversation. Returns the model name that worked.
+    """Hold a live conversation on the Pi's sound card. Returns the model name that worked.
 
     `idle_timeout` closes the session after that many seconds with neither side
     making a sound, which is what the wake-word loop uses to go back to sleep.
     """
+    emit = on_event or (lambda kind, detail: None)
+    loop = asyncio.get_running_loop()
     stop = asyncio.Event()
-    activity = [0.0]
+    activity = [loop.time()]
     speaker = Speaker()
-    last_error = "no model accepted the session"
-    for model, shape in MODELS:
-        url = f"wss://{HOST}{PATH}?key={api_key}"
-        try:
-            async with websockets.connect(url, max_size=None, ping_interval=20) as socket:
-                await _setup(socket, model)
-                ack = json.loads(await asyncio.wait_for(socket.recv(), timeout=15))
-                if "setupComplete" not in ack and "setup_complete" not in ack:
-                    last_error = f"{model}: {json.dumps(ack)[:160]}"
-                    continue
-                if on_event:
-                    on_event("ready", model)
-                tasks = [
-                    asyncio.create_task(_send_microphone(socket, stop, shape, on_event, activity, speaker)),
-                    asyncio.create_task(_receive(socket, speaker, stop, on_event, activity)),
-                ]
-                if idle_timeout:
-                    tasks.append(asyncio.create_task(_watch_idle(stop, activity, idle_timeout, on_event)))
-                try:
-                    waiter = asyncio.create_task(stop.wait())
-                    await asyncio.wait([waiter, *tasks], timeout=seconds, return_when=asyncio.FIRST_COMPLETED)
-                    waiter.cancel()
-                finally:
-                    stop.set()
-                    for task in tasks:
-                        task.cancel()
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    speaker.stop()
-                    # A task that dies on its own leaves the session looking like
-                    # a clean exit, so say which one and why.
-                    for name, result in zip(("microphone", "receive", "idle"), results):
-                        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
-                            if on_event:
-                                on_event("error", f"{name}: {type(result).__name__}: {result}")
-                return model
-        except asyncio.TimeoutError:
-            last_error = f"{model}: no setup answer in 15 s"
-        except (websockets.WebSocketException, OSError) as exc:
-            last_error = f"{model}: {exc}"
-    raise RuntimeError(last_error)
+    adapter = GeminiLiveAdapter(api_key)
+
+    def audio(pcm: bytes) -> None:
+        speaker.write(pcm)
+        activity[0] = loop.time()
+        emit("audio", "")
+
+    def event(kind: str, detail: str) -> None:
+        if kind == "interrupted":
+            speaker.stop()
+        elif kind == "closed":
+            stop.set()
+        elif kind == "tool":
+            activity[0] = loop.time()
+        emit(kind, detail)
+
+    adapter.on_audio(audio)
+    adapter.on_event(event)
+    await adapter.start_session(system_prompt(LIVE_EXTRA), live_context(), willie_tool_list())
+
+    async def idle_watch() -> None:
+        while not stop.is_set():
+            await asyncio.sleep(0.5)
+            if idle_timeout and loop.time() - activity[0] >= idle_timeout:
+                emit("idle", f"{idle_timeout:.0f} s without speech")
+                stop.set()
+
+    tasks = [asyncio.create_task(_microphone(adapter, speaker, stop, activity, emit)),
+             asyncio.create_task(idle_watch())]
+    try:
+        waiter = asyncio.create_task(stop.wait())
+        await asyncio.wait([waiter, *tasks], timeout=seconds, return_when=asyncio.FIRST_COMPLETED)
+        waiter.cancel()
+    finally:
+        stop.set()
+        for task in tasks:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        speaker.stop()
+        await adapter.close()
+        # A task that dies on its own leaves the session looking like a clean
+        # exit, so say which one and why.
+        for name, result in zip(("microphone", "idle"), results):
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                emit("error", f"{name}: {type(result).__name__}: {result}")
+    return adapter.model

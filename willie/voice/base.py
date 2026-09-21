@@ -128,4 +128,7 @@ def create(name: str, **kwargs) -> VoiceAdapter:
     if name == "fake":
         from willie.voice.fake import FakeAdapter
         return FakeAdapter(**kwargs)
-    raise ValueError(f"no voice adapter {name!r} yet (D4: gemini_live, D5: openai_realtime)")
+    if name == "gemini_live":
+        from willie.voice.gemini_live import GeminiLiveAdapter
+        return GeminiLiveAdapter(**kwargs)
+    raise ValueError(f"no voice adapter {name!r} yet (D5: openai_realtime)")
