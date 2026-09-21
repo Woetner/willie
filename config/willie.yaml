@@ -52,6 +52,8 @@ voice:
   wake_gain: 8.0
   search: false
   language: nl
+skills:
+  brandstof_url: http://Wouters-MacBook-Pro.local:8000
 privacy:
   mute: false
   camera_allowed: true

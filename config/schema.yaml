@@ -71,6 +71,10 @@ voice:
   search:          {type: bool, default: false, help: "Google Search in conversations. Needs a paid Gemini key for the 3.x models (free tier: quota 0)"}
   language:        {type: choice, default: nl, options: [nl, en, auto], help: "Conversation language (nl = Dutch unless you speak English)"}
 
+skills:
+  _label: Skills
+  brandstof_url:   {type: str, default: "http://Wouters-MacBook-Pro.local:8000", help: "Brandstof health monitor on the Mac (food, activity, sleep, training, air)"}
+
 privacy:
   _label: Privacy
   mute:            {type: bool, default: false, help: Mic and camera off}

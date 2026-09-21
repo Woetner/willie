@@ -487,6 +487,9 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
     async def call(name, args):
         nonlocal camera_jobs
         looking = None
+        if face and name == "gezondheid":      # Brandstof tips/air take ~10 s
+            looking = face.busy("BRANDSTOF...")
+            looking.__enter__()
         if face and name == "kijk":
             camera_jobs += 1
             face.indicators(camera=True)
@@ -504,7 +507,9 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
                 pass
             raise
         finally:
-            if looking:
+            if looking and name == "gezondheid":
+                looking.__exit__(None, None, None)
+            elif looking:
                 looking.__exit__(None, None, None)
                 camera_jobs -= 1
                 face.indicators(camera=camera_jobs > 0)
@@ -516,7 +521,7 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
         # Show the camera's photo on the face the moment it is taken, while the model is
         # still looking at it: Wouter sees what WILL-E sees (21 Sep).
         def show_look(path):
-            face.show_image(picture.from_file(path, "WAT IK ZIE"), seconds=15)
+            face.show_image(picture.from_file(path, "WAT IK ZIE"), seconds=15, flash=True)
         willie_tools.LOOK_HOOK = show_look
     wrapped = [
         Tool(d["name"], d["description"], d.get("parameters") or {"type": "object", "properties": {}},

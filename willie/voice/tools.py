@@ -358,7 +358,12 @@ def zet_volume(niveau: float) -> dict:
     return {"ok": True, "volume": niveau}
 
 
+from willie.skills import brandstof  # noqa: E402  (Wouter's health monitor on the Mac)
+
+DECLARATIONS.append(brandstof.DECLARATION)
+
 HANDLERS = {
+    "gezondheid": brandstof.gezondheid,
     "kijk": kijk,
     "lees_code": lees_code,
     "zoek_in_code": zoek_in_code,
