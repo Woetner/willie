@@ -4,8 +4,9 @@
 Run on the Pi, in an interactive terminal:
     ssh -t willie.local "cd willie && .venv/bin/python tools/wakeword/record.py"
 
-1. 50 x "Hey Willie", 2 s each, in five blocks with a different instruction per block
-   (normal, soft, from 2 m, fast, slow) - variation is what makes the model generalise.
+1. 60 wake phrases, 2 s each: "Hey Willie" and "Willie" on its own (both wake him, 21 Sep),
+   in blocks with a different instruction each (normal, soft, from 2 m, fast, slow) -
+   variation is what makes the model generalise.
 2. 2 min of normal talk (read aloud, chat) and 1 min of room sound with TV/radio:
    everyday sound that must NOT wake him.
 
@@ -22,11 +23,14 @@ from pathlib import Path
 DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
 OUT = Path(__file__).resolve().parents[2] / ".local" / "wakeword_rec"
 BLOCKS = (
-    ("normaal, zoals je hem straks roept, op ~1 m", 10),
-    ("zachter, alsof hij naast je staat", 10),
-    ("vanaf ~2 m of vanuit de andere kant van de kamer", 10),
-    ("snel en achteloos, in één adem", 10),
-    ("langzaam en duidelijk, of met iets ervoor ('hé...', 'oké, hey willie')", 10),
+    ("Zeg 'Hey Willie', normaal, zoals je hem straks roept, op ~1 m", 10),
+    ("Zeg alleen 'Willie', normaal, op ~1 m", 10),
+    ("Zeg 'Hey Willie' zachter, alsof hij naast je staat", 5),
+    ("Zeg alleen 'Willie', zachter", 5),
+    ("Zeg 'Hey Willie' vanaf ~2 m of vanuit de andere kant van de kamer", 5),
+    ("Zeg alleen 'Willie' vanaf ~2 m", 5),
+    ("Zeg 'Hey Willie' of 'Willie' snel en achteloos, wissel af", 10),
+    ("Zeg 'Willie?' vragend, of met iets ervoor ('oké Willie', 'hé Willie')", 10),
 )
 
 
@@ -54,10 +58,11 @@ def main() -> int:
             n += 1
             print(f"ok ({peak:.0f} % FS){'  - te zacht? ' if peak < 5 else ''}")
             time.sleep(0.6)
-    print(f"\n{n - start} x 'Hey Willie' opgenomen.\n")
+    print(f"\n{n - start} wake-opnames gemaakt.\n")
 
     input("--- 2 min gewoon praten: lees iets voor of vertel wat je vandaag doet, "
-          "zonder 'Hey Willie' te zeggen. Enter om te beginnen ---")
+          "zonder 'Willie' te zeggen - woorden als 'wil je', 'Willem', 'willen' zijn juist goed. "
+          "Enter om te beginnen ---")
     stamp = time.strftime("%H%M%S")
     record(OUT / "negative" / f"talk_{stamp}.wav", 120)
     input("--- 1 min kamergeluid: tv of radio aan, jij stil. Enter om te beginnen ---")

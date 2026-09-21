@@ -76,7 +76,7 @@ def main() -> int:
     # Same manifest shape as the stock pymicro-wakeword / ESPHome v2 models. 0.91 = first run's
     # synthetic test set: 24 % missed, 0.56 false wakes/h. Tune on real recordings (D2 tests).
     (OUT / "hey_willie.json").write_text(json.dumps({
-        "type": "micro", "wake_word": "hey willie", "author": "WILL-E project",
+        "type": "micro", "wake_word": "hey willie / willie", "author": "WILL-E project",
         "website": "https://github.com/woetner/willie", "model": "hey_willie.tflite",
         "trained_languages": ["en", "nl"], "version": 2,
         "micro": {"probability_cutoff": 0.91, "sliding_window_size": 5, "feature_step_size": 10,
