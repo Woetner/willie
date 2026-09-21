@@ -259,3 +259,38 @@ def test_create_from_config_name():
     assert create("gemini_live", api_key="x").name == "gemini_live"
     with pytest.raises(ValueError):
         create("nope")
+
+
+def test_web_search_tool_uses_a_second_live_session():
+    """zoek_op: a 2.5 Live session with Google Search; only its transcript comes back."""
+    from willie.voice import search
+
+    async def run():
+        seen = {}
+
+        async def fake_25(ws):
+            seen["setup"] = json.loads(await ws.recv())["setup"]
+            await ws.send(json.dumps({"setupComplete": {}}))
+            seen["question"] = json.loads(await ws.recv())["clientContent"]["turns"][0]["parts"][0]["text"]
+            await ws.send(json.dumps({"serverContent": {"groundingMetadata": {"webSearchQueries": ["x"]}}}))
+            for piece in ("De zon gaat ", "om 19:44 onder."):
+                await ws.send(json.dumps({"serverContent": {"outputTranscription": {"text": piece}}}))
+            await ws.send(json.dumps({"serverContent": {"turnComplete": True}}))
+            await ws.wait_closed()
+
+        server = await websockets.serve(fake_25, "127.0.0.1", 0)
+        url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+        result = await search.search("Zonsondergang Haarlem vandaag?", url=url)
+        assert result == {"antwoord": "De zon gaat om 19:44 onder.", "gezocht": True}
+        assert seen["question"] == "Zonsondergang Haarlem vandaag?"
+        assert {"googleSearch": {}} in seen["setup"]["tools"] and "outputAudioTranscription" in seen["setup"]
+        assert (await search.search("  ")) == {"fout": "geen vraag"}
+        server.close()
+        await server.wait_closed()
+    asyncio.run(run())
+
+
+def test_web_search_tool_only_without_native_search():
+    from willie.voice import gemini_live
+    names = lambda **kw: [t.name for t in gemini_live.willie_tool_list(**kw)]
+    assert "zoek_op" in names() and "zoek_op" not in names(web_search=False)

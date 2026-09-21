@@ -437,7 +437,17 @@ SHOW_PICTURE = Tool(
 )
 
 
-def willie_tool_list(face=None) -> list[Tool]:
+WEB_SEARCH = Tool(
+    "zoek_op",
+    "Zoek actuele informatie op internet (Google): nieuws, uitslagen, prijzen, versies, "
+    "tijden, weer, alles wat na je training veranderd kan zijn. Duurt 10 tot 20 seconden.",
+    {"type": "object", "properties": {"vraag": {
+        "type": "string", "description": "De vraag, volledig en op zichzelf te begrijpen, met plaats en datum als die ertoe doen."}},
+     "required": ["vraag"]},
+)
+
+
+def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
     """The fixed tool list (voice/tools.py) + show(), wrapped as D3 Tools. Tools run in a
     thread: rpicam-still takes seconds and the audio stream must keep flowing."""
     camera_jobs = 0
@@ -474,7 +484,12 @@ def willie_tool_list(face=None) -> list[Tool]:
     screen = Tool(SHOW.name, SHOW.description, SHOW.parameters, handler=lambda args: show(args, face))
     photo = Tool(SHOW_PICTURE.name, SHOW_PICTURE.description, SHOW_PICTURE.parameters,
                  handler=lambda args: asyncio.to_thread(show_picture, args, face))
-    return [screen, photo, *wrapped]
+    tools = [screen, photo, *wrapped]
+    if web_search:
+        from willie.voice import search
+        tools.append(Tool(WEB_SEARCH.name, WEB_SEARCH.description, WEB_SEARCH.parameters,
+                          handler=lambda args: search.search(str(args.get("vraag", "")))))
+    return tools
 
 
 def live_context() -> str:
@@ -531,7 +546,8 @@ async def session(
     stop = asyncio.Event()
     activity = [loop.time()]
     speaker = Speaker()
-    adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=configured_search())
+    native_search = configured_search()      # paid key: 3.8 searches itself, no zoek_op detour
+    adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=native_search)
 
     def audio(pcm: bytes) -> None:
         starts_at = max(loop.time(), speaker.busy_until)
@@ -553,7 +569,7 @@ async def session(
     adapter.on_audio(audio)
     adapter.on_event(event)
     try:
-        await adapter.start_session(system_prompt(LIVE_EXTRA), live_context(), willie_tool_list(face))
+        await adapter.start_session(system_prompt(LIVE_EXTRA), live_context(), willie_tool_list(face, web_search=not native_search))
     except BaseException:
         speaker.stop()
         await adapter.close()
