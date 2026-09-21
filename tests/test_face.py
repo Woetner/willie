@@ -255,3 +255,11 @@ def test_busy_shows_researching_except_while_talking(face):
         face.event("interrupted")                    # back to listening -> busy wins again
         assert face.snapshot().label == "RESEARCHING..."
     assert face.snapshot().label == "" and face.snapshot().state == "listening"
+
+
+def test_busy_can_show_the_camera(face):
+    face.event("ready")
+    with face.busy("LOOKING...", "seeing"):
+        view = face.snapshot()
+        assert view.state == "seeing" and view.label == "LOOKING..."
+    assert face.snapshot().state == "listening"

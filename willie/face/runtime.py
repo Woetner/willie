@@ -343,20 +343,21 @@ class Face:
                 self._show_until = 0
                 self.set_state("idle")
 
-    def busy(self, label):
-        """While the returned context is open, the face thinks and shows `label` whenever it
-        is not talking - so a 15 s web search does not look like a hang (or like listening)."""
+    def busy(self, label, state="thinking"):
+        """While the returned context is open, the face shows `state` ("thinking", or
+        "seeing" for the camera) with `label` whenever it is not talking - so a 15 s web
+        search or a photo upload does not look like a hang (or like listening)."""
         face = self
 
         class _Busy:
             def __enter__(self):
                 with face._lock:
-                    face._busy.append(label)
+                    face._busy.append((label, state))
                 return self
 
             def __exit__(self, *exc):
                 with face._lock:
-                    face._busy.remove(label)
+                    face._busy.remove((label, state))
                 return False
         return _Busy()
 
@@ -372,7 +373,7 @@ class Face:
                     self._return_to_listening = False
             v = replace(self._view, level=self._level)
             if self._busy and v.state not in ("talking", "error", "low_battery"):
-                v.state, v.label = "thinking", self._busy[-1]
+                v.label, v.state = self._busy[-1]
             v.pet = max(0, min(1, (self._pet_until-now)/1.4))
             if (v.battery is not None and v.battery < 20 and not v.charging
                     and v.state in ("idle", "sleep", "curious", "happy", "sad")):

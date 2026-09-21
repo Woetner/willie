@@ -160,6 +160,10 @@ class Renderer:
         if state in ("idle", "curious"):
             gx += math.sin(now*.48)*9 + math.sin(now*.17)*5
             gy += math.sin(now*.9)*2
+        if state == "seeing":
+            # Watching: eyes sweep across the scene like a slow scan.
+            gx += math.sin(now*1.6)*24
+            gy += math.sin(now*.8)*4
         if view.gaze is not None:
             gx = max(-1, min(1, view.gaze))*18
         if state == "talking":
@@ -212,10 +216,15 @@ class Renderer:
             p.text("Z", 354, 111+math.sin(now)*3, 2, dim)
             p.text("Z", 378, 95+math.sin(now+1)*3, 1, dim)
         if state == "seeing":
+            # Viewfinder corners that breathe in and out, brighter on the way in.
+            pulse = .5+.5*math.sin(now*4)
+            inset, arm = 6*pulse, 12+6*pulse
+            corner = mix(dim, eye, .35+.5*pulse)
             for x, dx in ((77,1),(403,-1)):
                 for y, dy in ((92,1),(221,-1)):
-                    p.line(x,y,x+dx*12,y,2,dim)
-                    p.line(x,y,x,y+dy*12,2,dim)
+                    cx, cy = x+dx*inset, y+dy*inset
+                    p.line(cx,cy,cx+dx*arm,cy,3,corner)
+                    p.line(cx,cy,cx,cy+dy*arm,3,corner)
         labels = {"idle":"RIGHT HERE", "curious":"OH?", "listening":"I'M LISTENING",
                   "thinking":"LET ME THINK", "talking":"SPEAKING", "happy":"THAT'S NICE",
                   "sad":"OH, WELL", "surprised":"WAIT, WHAT?", "sleep":"RECHARGING" if view.charging else "ZZZ...",

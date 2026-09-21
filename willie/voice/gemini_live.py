@@ -324,16 +324,23 @@ class Speaker:
         self.busy_until = 0.0
 
 
-# Anything below this is room tone, measured on the bench: a quiet room reads
-# about 1.5 % FS and speech at 30 cm reads 20-40 %.
-SPEECH_FS = 0.05
+# The live mic uses the same capture as the wake word (willie/audio/mic.py): left channel
+# only, x voice.wake_gain. Before 21 Sep it captured mono, which halved the INMP441's
+# already quiet signal: Wouter's voice read 2-3 % FS, below the old fixed 5 % speech
+# threshold, so the face never saw him talk (no listening -> thinking switch).
+#
+# Speech vs room is now relative: the room level is the 20th percentile of the last ~5 s
+# of chunk peaks, and a chunk counts as speech when it is well above that.
+SPEECH_OVER_ROOM = 2.5
+SPEECH_MIN = 0.10            # never call anything under 10 % FS (after gain) speech
+TURN_END_S = 0.6             # this much quiet after speech = his turn is over -> thinking
 
-# The microphone hears the speaker - there is no echo cancellation and they sit
-# on the same board. Without this the server's voice detector hears WILL-E's own
-# voice, calls it an interruption, and he stops mid-sentence every time.
-# While he is talking the uplink is gated: only genuinely loud speech gets
-# through, which is what makes barge-in still possible.
-BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "0.35"))
+# The microphone hears the speaker - there is no echo cancellation and they sit on the
+# same board. While he is talking the uplink is gated, or the server's voice detector
+# hears WILL-E himself and cuts him off. Barge-in only gets through above this level;
+# with the x8 gain his own echo clips, so it is off by default (D4: not a priority,
+# needs AEC). Set WILLIE_BARGE_IN_LEVEL (0-1) to experiment.
+BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "2.0"))
 # Keep the gate shut a moment after the audio ends, for the tail out of the cone.
 BARGE_IN_TAIL = 0.4
 
@@ -344,22 +351,46 @@ def _peak(chunk: bytes) -> float:
     return max(max(samples), -min(samples)) / 32768 if samples else 0.0
 
 
+class SpeechDetector:
+    """Is this chunk the user talking? Relative to the room, which it keeps measuring."""
+
+    def __init__(self, window: int = 50):
+        from collections import deque
+        self.recent = deque(maxlen=window)
+
+    def room(self) -> float:
+        if len(self.recent) < 5:
+            return SPEECH_MIN / SPEECH_OVER_ROOM
+        return sorted(self.recent)[len(self.recent) // 5]
+
+    def is_speech(self, peak: float) -> bool:
+        speech = peak >= max(SPEECH_MIN, self.room() * SPEECH_OVER_ROOM)
+        self.recent.append(peak)
+        return speech
+
+
 async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Event,
                       activity: list[float], on_event) -> None:
+    from willie.audio import mic
     frames = IN_RATE * CHUNK_MS // 1000
+    factor = mic.gain()
+    detector = SpeechDetector()
     sent, loudest = 0, 0.0
     user_speaking, last_speech = False, 0.0
     process = await asyncio.create_subprocess_exec(
-        "arecord", "-D", DEVICE, "-f", "S16_LE", "-r", str(IN_RATE), "-c", "1", "-t", "raw", "-q",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        *mic.command(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     loop = asyncio.get_running_loop()
     on_event("mic_active", "")
     try:
+        # The first ~0.8 s after arecord opens is the mic settling (a loud decaying bump).
+        await process.stdout.readexactly(int(IN_RATE * 0.8) * mic.FRAME)
         while not stop.is_set():
-            chunk = await process.stdout.read(frames * 2)
-            if not chunk:
+            try:
+                raw = await process.stdout.readexactly(frames * mic.FRAME)
+            except asyncio.IncompleteReadError:
                 break
+            chunk = mic.left(raw, factor)
             peak = _peak(chunk)
             # While he is speaking, swallow anything that is not clearly louder
             # than his own voice coming back through the microphone.
@@ -368,17 +399,18 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             await adapter.send_audio(chunk)
             sent += 1
             loudest = max(loudest, peak)
-            if peak >= SPEECH_FS:
+            if detector.is_speech(peak):
                 activity[0] = loop.time()
                 last_speech = loop.time()
                 if not user_speaking:
                     on_event("user_speaking", "")
                     user_speaking = True
-            elif user_speaking and loop.time()-last_speech >= 0.4:
+            elif user_speaking and loop.time() - last_speech >= TURN_END_S:
                 on_event("user_turn_end", "")
                 user_speaking = False
             if sent % 20 == 0:                       # every 2 s
-                on_event("uplink", f"{sent} chunks, loudest {loudest * 100:.1f}% FS")
+                on_event("uplink", f"{sent} chunks, loudest {loudest * 100:.1f}% FS, "
+                                   f"room {detector.room() * 100:.1f}%")
                 loudest = 0.0
     finally:
         on_event("mic_idle", "")
@@ -454,10 +486,12 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
 
     async def call(name, args):
         nonlocal camera_jobs
+        looking = None
         if face and name == "kijk":
             camera_jobs += 1
             face.indicators(camera=True)
-            face.set_state("seeing")
+            looking = face.busy("LOOKING...", "seeing")
+            looking.__enter__()
         worker = asyncio.create_task(asyncio.to_thread(willie_tools.call, name, args))
         try:
             return await asyncio.shield(worker)
@@ -470,11 +504,11 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
                 pass
             raise
         finally:
-            if face and name == "kijk":
+            if looking:
+                looking.__exit__(None, None, None)
                 camera_jobs -= 1
                 face.indicators(camera=camera_jobs > 0)
-                if camera_jobs == 0 and face.snapshot().state == "seeing":
-                    face.set_state("thinking")
+                face.set_state("thinking")           # photo sent; the answer is being made
 
     wrapped = [
         Tool(d["name"], d["description"], d.get("parameters") or {"type": "object", "properties": {}},
