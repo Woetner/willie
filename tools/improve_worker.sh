@@ -18,6 +18,7 @@ PI_DIR="${PI_DIR:-willie}"
 QUEUE=".local/improve_queue.jsonl"
 RESULTS=".local/improve_results.jsonl"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PLAN_FILE="$(dirname "$REPO")/WILL-E.md"   # master plan, one level above the repo
 WORKTREES="$REPO/.local/worktrees"
 
 command -v claude >/dev/null || { echo "claude CLI not found on this Mac"; exit 1; }
@@ -68,6 +69,7 @@ run_one() {
   prompt="${prompt//__TASK__/$task}"
   prompt="${prompt//__PLAN__/$plan}"
   prompt="${prompt//__RISK__/$risk}"
+  prompt="${prompt//__PLAN_FILE__/$PLAN_FILE}"
   # Keep what the agent said: without it a run that changes nothing is a mystery.
   local agentlog="$REPO/.local/logs/$stamp.log"
   mkdir -p "$REPO/.local/logs"
@@ -75,10 +77,12 @@ run_one() {
   # run that asks for write access just stops and reports "nothing changed".
   # It is confined to a throwaway worktree, and its work still has to survive the
   # smoke test, the health check and the rollback before it reaches the robot.
+  # The worktree is not next to WILL-E.md, so give the agent the plan's folder explicitly.
   ( cd "$tree" && claude -p "$prompt" \
+      --add-dir "$(dirname "$PLAN_FILE")" \
       --permission-mode acceptEdits \
       --allowedTools "Edit" "Write" "Read" "Grep" "Glob" "Bash(git *)" "Bash(python3 *)" \
-  ) > "$agentlog" 2>&1
+  ) < /dev/null > "$agentlog" 2>&1
   echo "   agent log: $agentlog"
 
   if [ -n "$(git -C "$tree" status --porcelain)" ]; then

@@ -5,8 +5,8 @@ Request: __TASK__
 What the robot told him it would do: __PLAN__
 Risk the robot assigned to this: __RISK__
 
-Follow the repository conventions (README.md here, and WILL-E.md in the parent
-folder if it is available). Rules:
+Follow the repository conventions: README.md here, and the master plan
+__PLAN_FILE__ (read it; do not edit it, Wouter owns it). Rules:
 
 - Change only what the request asks for. Keep it small and reviewable.
 - Never touch .env, credentials, /boot, or anything under config/wakewords.
