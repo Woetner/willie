@@ -115,7 +115,10 @@ DECLARATIONS = [
             "properties": {
                 "pad": {
                     "type": "string",
-                    "description": "Pad binnen je repository, bijvoorbeeld willie/audio/speech.py of config/persona.md.",
+                    "description": (
+                        "Pad binnen je repository, bijvoorbeeld willie/audio/speech.py of config/persona.md. "
+                        "Het masterplan van het project is WILL-E.md."
+                    ),
                 },
                 "vanaf_regel": {"type": "integer", "description": "Optioneel: begin hier (1 is het begin)."},
             },

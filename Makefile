@@ -54,8 +54,9 @@ help:
 	@echo "  make run-local    core + dashboard + fake MCU on the Mac -> http://localhost:8080"
 
 # ---------------------------------------------------------------- Pi
+# The master plan lives next to the repo; copy it along so WILL-E can read it (lees_code).
 sync:
-	$(RSYNC) ./ $(PI):$(PI_DIR)/
+	$(RSYNC) ./ ../WILL-E.md $(PI):$(PI_DIR)/
 
 setup: sync
 	ssh -t $(PI) 'bash $(PI_DIR)/tools/pi_setup.sh'

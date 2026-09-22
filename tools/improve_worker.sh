@@ -40,10 +40,14 @@ deploy_tree() {  # deploy_tree <path> [units]
   # so without it a change under systemd/ lands on disk, reports success and
   # changes nothing - what actually runs is the installed copy in
   # /etc/systemd/system.
+  # The master plan sits outside the repo; send it along unless the tree (a backup
+  # taken from the Pi) already holds a copy. Without it --delete removes it there.
+  local plan=()
+  [ -f "$1/WILL-E.md" ] || plan=("$PLAN_FILE")
   rsync -az --delete \
     --exclude .git/ --exclude .env --exclude .venv/ --exclude __pycache__/ \
     --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/ \
-    "$1/" "$PI:$PI_DIR/" >/dev/null 2>&1 || return 1
+    "$1/" "${plan[@]}" "$PI:$PI_DIR/" >/dev/null 2>&1 || return 1
   if [ "${2:-}" = "units" ]; then
     ssh "$PI" "sudo bash $PI_DIR/tools/install_service.sh" >/dev/null 2>&1 \
       || echo "   (install_service.sh failed)"
