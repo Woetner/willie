@@ -1,0 +1,18 @@
+# Mood event weights (G2, WILL-E.md §3.2). Each event adds these amounts to the five
+# mood values (0..1, clipped). Between events every value drifts back to its baseline
+# (mood.* in willie.yaml). Event names are the bus names used by the core and the
+# voice process. Edit freely; unknown mood names are ignored with a warning.
+wake:            {attention: 0.8, curiosity: 0.1, boredom: -0.5}
+user_speaking:   {attention: 0.3, happiness: 0.03, boredom: -0.3, energy: -0.005}
+talking:         {energy: -0.01, boredom: -0.2}
+task_success:    {happiness: 0.1}
+error:           {happiness: -0.1}
+pet:             {happiness: 0.25, attention: 0.3, boredom: -0.4}
+bumper.hit:      {happiness: -0.15, curiosity: 0.05, attention: 0.2}
+cliff:           {happiness: -0.1, attention: 0.3}
+new_sound:       {curiosity: 0.2, attention: 0.2, boredom: -0.2}
+person_seen:     {curiosity: 0.2, attention: 0.4, happiness: 0.05, boredom: -0.4}
+driving:         {energy: -0.01, boredom: -0.1}
+charging:        {energy: 0.02}
+battery.low:     {energy: -0.3}
+ignored:         {happiness: -0.05}

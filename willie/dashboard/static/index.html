@@ -113,8 +113,24 @@ async function loadStatus() {
     tile("Wi-Fi", w.signal_dbm == null ? "n/a" : w.signal_dbm + " dBm", (w.ssid || "") + (w.iface ? " · " + w.iface : "")) +
     tile("Core", coreTxt, c ? "up " + dur(c.uptime_s) + " · pid " + c.pid : "is willie.service running?") +
     tile("MCU link", linkV, linkS) +
+    bodyTiles(c && c.body) +
     tile("Uptime", dur(st.uptime_s), "since boot") +
     tile("Version", st.version, st.host);
+}
+
+// Body (F1) and mood (G2) from the core's state.json.
+function bodyTiles(b) {
+  if (!b) return "";
+  const bar = (k, v) => `<div style="display:flex;gap:6px;align-items:center;font-size:12px">
+    <span style="width:64px;color:var(--dim)">${k}</span>
+    <span style="flex:1;height:6px;background:var(--line);border-radius:3px">
+      <span style="display:block;height:6px;width:${Math.round(v * 100)}%;background:var(--accent);border-radius:3px"></span></span></div>`;
+  const m = b.mood || {};
+  const moodTile = `<div class="tile"><div class="k">Mood</div>${Object.entries(m).map(([k, v]) => bar(k, v)).join("")}</div>`;
+  const estop = (b.estop || []).length ? "ESTOP " + b.estop.join(", ") : (b.busy || "idle");
+  return moodTile +
+    tile("Body", estop, b.state_age_s == null ? "no MCU state" : `ToF ${b.tof_mm.join(" / ")} mm`) +
+    tile("Battery", b.battery_v == null ? "n/a" : b.battery_v.toFixed(2) + " V", b.battery);
 }
 
 // ---------- logs ----------

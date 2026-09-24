@@ -5,6 +5,11 @@
 Speaks the same protocol as firmware/src/main.cpp (WILL-E.md §5.2): ping/hello, drive/pwm/stop
 with the 200 ms watchdog and the PWM cap, look with slew, cfg, clear, stat?, and the 50 Hz `st`
 stream with simulated encoders. Sensors read as "not connected", except a fake ToF and battery.
+
+Fake-only command for tests (never sent to the real firmware):
+    sim tof <l> <c> <r>      ToF readings in mm (0 = sensor absent)
+    sim mv <millivolts>      pack voltage (INA219 then reads as present)
+    sim estop <reason>       bump_l|bump_r|cliff_l|cliff_r|tilt: brake, latch, send `estop`
 """
 import math
 import os
@@ -46,6 +51,10 @@ wd_trips = 0
 pan = tilt = 0.0
 pan_t = tilt_t = 0.0
 x = y = th = 0.0
+tof = [0, 0, 800]
+pack_mv = 12400
+ina_ok = False
+ESTOP_BITS = ("bump_l", "bump_r", "cliff_l", "cliff_r", "tilt")
 
 
 def cap(v):
@@ -65,7 +74,7 @@ def motion(left, right):
 
 
 def handle(w):
-    global pan_t, tilt_t, estop, moving, x, y, th
+    global pan_t, tilt_t, estop, moving, x, y, th, pack_mv, ina_ok
     cmd, args = w[0], w[1:]
     try:
         if cmd == "ping":
@@ -100,6 +109,15 @@ def handle(w):
         elif cmd == "stat?":
             send("stat", "pcf", 0, "mpu", 0, "ina", 0, "tof", "001", "enc", 1, "estop", "%02X" % estop,
                  "wd_trips", wd_trips, "bad_lines", 0, "i2c_err", 0)
+        elif cmd == "sim" and args[0] == "tof":
+            tof[:] = [int(a) for a in args[1:4]]
+        elif cmd == "sim" and args[0] == "mv":
+            pack_mv, ina_ok = int(args[1]), True
+        elif cmd == "sim" and args[0] == "estop":
+            estop |= 1 << ESTOP_BITS.index(args[1])
+            pwm[:] = [0, 0]
+            moving = False
+            send("estop", args[1], ms())
         elif cmd in ("led", "cal"):
             send("ok", cmd)
         else:
@@ -129,9 +147,10 @@ def tick(dt):
     step = CFG["servo_dps"] * dt
     pan += max(-step, min(step, pan_t - pan))
     tilt += max(-step, min(step, tilt_t - tilt))
-    flags = estop | 1 << 10 | 1 << 11 | int(moving) << 12  # ToF right + encoders "ok"
+    flags = (estop | int(ina_ok) << 7 | sum(1 << (8 + i) for i in range(3) if tof[i])
+             | 1 << 11 | int(moving) << 12)                  # encoders "ok"
     send("st", ms(), int(ticks[0]), int(ticks[1]), int(x), int(y), int(th * 1000),
-         int(dist / dt), int(dth / dt * 1000), 0, 0, 800, "FF", 12400, 150 + int(abs(sum(pwm)) * 10),
+         int(dist / dt), int(dth / dt * 1000), *tof, "FF", pack_mv, 150 + int(abs(sum(pwm)) * 10),
          0, 0, 1000, 0, 0, 0, 0, int(pan * 10), int(tilt * 10), int(pwm[0]), int(pwm[1]),
          "%X" % flags, 0)
 

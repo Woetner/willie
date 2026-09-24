@@ -50,7 +50,10 @@ mood:
   energy_base:     {type: float, default: 0.6, min: 0, max: 1, help: Baseline energy}
   curiosity_base:  {type: float, default: 0.7, min: 0, max: 1, help: Baseline curiosity}
   social_base:     {type: float, default: 0.6, min: 0, max: 1, help: Baseline need for company}
+  happiness_base:  {type: float, default: 0.6, min: 0, max: 1, help: Baseline happiness}
   drift_rate:      {type: float, default: 0.02, min: 0, max: 0.5, unit: /min, help: How fast moods return to baseline}
+  boredom_rate:    {type: float, default: 0.05, min: 0, max: 1, unit: /min, help: How fast boredom rises while nothing happens}
+  attention_decay: {type: float, default: 0.5, min: 0.01, max: 5, unit: /min, help: How fast attention fades after a wake word or a face}
 
 behavior:
   _label: Behaviour

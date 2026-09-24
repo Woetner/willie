@@ -56,7 +56,7 @@ def _rss_mb() -> float:
     return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20, 1)
 
 
-async def write_state(link, every_s: float = 2.0):
+async def write_state(link, body=None, every_s: float = 2.0):
     """Small JSON snapshot for the dashboard (separate process)."""
     tmp = STATE_FILE.with_suffix(".tmp")
     while True:
@@ -67,10 +67,44 @@ async def write_state(link, every_s: float = 2.0):
             "uptime_s": int(time.time() - _START),
             "rss_mb": _rss_mb(),
             "link": link.stats.summary() if link else None,
+            "body": body.state() if body else None,
         }
         tmp.write_text(json.dumps(state))
         os.replace(tmp, STATE_FILE)
         await asyncio.sleep(every_s)
+
+
+ESTOP_MOOD = {"bump_l": "bumper.hit", "bump_r": "bumper.hit", "cliff_l": "cliff", "cliff_r": "cliff"}
+
+
+def on_mcu_message(words, motion, mood, link):
+    """MCU events (§5.2). An estop has already braked the motors in the firmware."""
+    if words[0] == "estop" and len(words) >= 2:
+        reason = words[1]
+        log.warning("MCU estop: %s (while %s)", reason, motion.busy or "idle")
+        mood.event(ESTOP_MOOD.get(reason, "error"))
+        if motion.busy in ("move", "turn"):
+            asyncio.ensure_future(motion.recover(reason))       # F1: clear + back off 5 cm
+        elif reason.startswith("bump"):
+            link.send("clear")      # standing still and touched (a foot, the cat): nothing to undo
+        # cliff/tilt while idle stay latched until someone sends `clear` (control socket)
+    elif words[0] == "err" and words[1:2] != ["estop"]:
+        log.info("MCU: %s", " ".join(words))
+
+
+def safe_poweroff():
+    """Battery under cutoff for 10 s (F1): a clean shutdown protects the SD card and cells."""
+    log.critical("battery empty: powering off")
+    import subprocess
+    subprocess.Popen(["sudo", "-n", "systemctl", "poweroff"])
+
+
+async def body_loop(link, safety, mood, hz: float = 5.0):
+    """Battery rules and mood drift at 5 Hz (the MCU streams at 50 Hz; that is plenty)."""
+    while True:
+        safety.battery(link.state)
+        mood.update()
+        await asyncio.sleep(1 / hz)
 
 
 async def amain():
@@ -91,6 +125,18 @@ async def amain():
                 link.cfg(key, value)
 
     link.on_hello = push_mcu_settings        # the firmware boots with its own defaults
+
+    # F1/G2: safety gate, motion primitives, mood; reached through the control socket.
+    from willie import control
+    from willie.behavior.mood import Mood
+    from willie.motion import Motion
+    from willie.safety import Safety
+
+    safety = Safety(cfg.get, on_poweroff=safe_poweroff, on_event=lambda name, detail: mood.event(name))
+    motion = Motion(link, safety, cfg.get)
+    mood = Mood(cfg.get)
+    body = control.Body(link, safety, motion, mood)
+    link.on_message = lambda words: on_mcu_message(words, motion, mood, link)
     cfg.on_change(lambda old, new: setattr(link, "ping_hz", new["link"]["ping_hz"]))
     cfg.on_change(lambda old, new: push_mcu_settings())
 
@@ -102,7 +148,9 @@ async def amain():
     tasks = [
         asyncio.create_task(supervise("config-watch", lambda: watch_config(cfg))),
         asyncio.create_task(supervise("link", link.run)),
-        asyncio.create_task(supervise("state", lambda: write_state(link))),
+        asyncio.create_task(supervise("state", lambda: write_state(link, body))),
+        asyncio.create_task(supervise("body", lambda: body_loop(link, safety, mood))),
+        asyncio.create_task(supervise("control", lambda: control.serve(body))),
     ]
     log.info("core running, RSS %.1f MB", _rss_mb())
     await stop.wait()
