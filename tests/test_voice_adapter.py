@@ -32,6 +32,7 @@ class MockGeminiServer:
     def __init__(self, **fake_kw):
         self.fake_kw = fake_kw
         self.setup = None
+        self.texts, self.stream_ends = [], 0
         self.server = None
         self.url = ""
         self._ids = itertools.count(1)
@@ -77,10 +78,16 @@ class MockGeminiServer:
         model.on_tool_call(tool_call)
         await model.start_session("", "", [])
         await send({"setupComplete": {}})
+        if "sessionResumption" in self.setup:
+            await send({"sessionResumptionUpdate": {"newHandle": "handle-2", "resumable": True}})
         try:
             async for raw in ws:
                 msg = json.loads(raw)
-                if "realtimeInput" in msg:
+                if "clientContent" in msg:
+                    self.texts.append(msg["clientContent"]["turns"][0]["parts"][0]["text"])
+                if "realtimeInput" in msg and msg["realtimeInput"].get("audioStreamEnd"):
+                    self.stream_ends += 1
+                elif "realtimeInput" in msg:
                     blob = msg["realtimeInput"].get("audio") or msg["realtimeInput"]["mediaChunks"][0]
                     assert blob["mimeType"] == "audio/pcm;rate=16000"
                     await model.send_audio(base64.b64decode(blob["data"]))
@@ -294,3 +301,22 @@ def test_web_search_tool_only_without_native_search():
     from willie.voice import gemini_live
     names = lambda **kw: [t.name for t in gemini_live.willie_tool_list(**kw)]
     assert "zoek_op" in names() and "zoek_op" not in names(web_search=False)
+
+
+def test_gemini_resumption_text_and_stream_end():
+    """Garage mode (K1): the setup asks for resumption, the newest handle is kept, and the
+    robot's own messages and audioStreamEnd reach the server."""
+    async def main():
+        adapter = MockedGemini()
+        adapter.resume, adapter.resume_handle = True, "handle-1"
+        await adapter.start_session("persona", "", [])
+        setup = adapter.mock.setup
+        assert setup["sessionResumption"] == {"handle": "handle-1"}
+        assert "slidingWindow" in setup["contextWindowCompression"]
+        await wait_for(lambda: adapter.resume_handle == "handle-2")
+        await adapter.send_text("[timer] de lijm is droog")
+        await adapter.end_audio()
+        await wait_for(lambda: adapter.mock.texts and adapter.mock.stream_ends == 1)
+        assert adapter.mock.texts == ["[timer] de lijm is droog"]
+        await adapter.close()
+    asyncio.run(main())

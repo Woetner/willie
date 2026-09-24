@@ -23,13 +23,27 @@ log = logging.getLogger("willie.face")
 
 
 class Touch:
-    """Read BTN_TOUCH releases; petting the whole panel needs no x/y calibration."""
+    """Read BTN_TOUCH releases; petting the whole panel needs no x/y calibration.
+
+    Since K1 (pinouts) it also follows the finger: `poll()` still returns True on a release
+    (a pet), and leaves the gestures of that poll in `self.gestures`:
+      ("tap", x, y)     short touch without moving     ("long", x, y)  held >= LONG_S still
+      ("drag", dx, dy)  the finger moved (screen px)   ("release",)    after a drag
+    Screen x/y come from the raw ADC through the face.touch_* settings (calibration)."""
     EVENT = struct.Struct("llHHi")
+    MOVE_PX = 12            # more than this from the start point is a drag, not a tap
+    LONG_S = 1.0
+    raw = (None, None)
+    start = last = None
+    down_at = 0.0
+    moved = False
+    calibration: dict = {}
 
     def __init__(self, path):
         self.fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         self.pending = b""
         self.down = False
+        self.gestures: list[tuple] = []
 
     @classmethod
     def discover(cls):
@@ -44,19 +58,56 @@ class Touch:
             log.info("touch unavailable: %s", exc)
         return None
 
-    def poll(self):
+    def screen(self, raw_x, raw_y):
+        """Raw ADC -> logical 480x320 screen coordinates (face.touch_* settings)."""
+        c = self.calibration or {}
+        x0, x1 = float(c.get("touch_x_min", 900)), float(c.get("touch_x_max", 3200))
+        y0, y1 = float(c.get("touch_y_min", 580)), float(c.get("touch_y_max", 2960))
+        if c.get("touch_swap_xy"):
+            raw_x, raw_y = raw_y, raw_x
+        fx = (raw_x - x0) / ((x1 - x0) or 1)
+        fy = (raw_y - y0) / ((y1 - y0) or 1)
+        if c.get("touch_flip_x"):
+            fx = 1 - fx
+        if c.get("touch_flip_y"):
+            fy = 1 - fy
+        return max(0.0, min(480.0, fx * 480)), max(0.0, min(320.0, fy * 320))
+
+    def poll(self, now=None):
+        self.gestures = []
         try:
             self.pending += os.read(self.fd, self.EVENT.size*64)
         except BlockingIOError:
             return False
+        now = time.monotonic() if now is None else now
         tapped = False
         n = len(self.pending)//self.EVENT.size*self.EVENT.size
         for offset in range(0, n, self.EVENT.size):
             _, _, kind, code, value = self.EVENT.unpack_from(self.pending, offset)
             if kind == 0 and code == 3:  # SYN_DROPPED: discard any incomplete gesture
-                self.down = False
+                self.down, self.start = False, None
+            elif kind == 3 and code in (0, 1):                   # ABS_X / ABS_Y
+                self.raw = (value, self.raw[1]) if code == 0 else (self.raw[0], value)
+            elif kind == 0 and code == 0 and self.down and None not in self.raw:   # SYN_REPORT
+                pos = self.screen(*self.raw)
+                if self.start is None:
+                    self.start = self.last = pos
+                elif self.moved or math.dist(pos, self.start) > self.MOVE_PX:
+                    self.moved = True
+                    self.gestures.append(("drag", pos[0] - self.last[0], pos[1] - self.last[1]))
+                    self.last = pos
             if kind == 1 and code == 330:
-                tapped |= self.down and value == 0
+                if self.down and value == 0:
+                    tapped = True
+                    where = self.start or (240.0, 160.0)
+                    if self.moved:
+                        self.gestures.append(("release",))
+                    elif now - self.down_at >= self.LONG_S:
+                        self.gestures.append(("long", *where))
+                    else:
+                        self.gestures.append(("tap", *where))
+                if value and not self.down:
+                    self.down_at, self.start, self.moved = now, None, False
                 self.down = bool(value)
         self.pending = self.pending[n:]
         return tapped
@@ -128,6 +179,9 @@ class Face:
         self._shown_image = None
         self._shown_flash = False
         self._page_offset = 0
+        self._pinout = None          # K1: willie.face.pinout.Pinout while a pinout is shown
+        self._pinout_until = 0.0
+        self._last_tap = None        # (time, x, y) of a tap on the pinout: double-tap = zoom
         self._audio = deque(maxlen=1500)  # 30 s at 20 ms; amplitudes only, no stored audio
         self._audio_until = 0.0
         self._return_to_listening = False
@@ -192,7 +246,12 @@ class Face:
                     next_config = now+2
                 if self.touch:
                     try:
-                        if self.touch.poll():
+                        self.touch.calibration = self.settings
+                        released = self.touch.poll()
+                        if self._pinout_on(now):
+                            for gesture in self.touch.gestures:
+                                self.pinout_gesture(gesture, now)
+                        elif released:
                             self.pet()
                     except OSError as exc:
                         log.warning("touch disconnected: %s", exc)
@@ -236,6 +295,11 @@ class Face:
         with self._lock:
             self._view.badges = tuple(tuple(b) for b in badges)[:4]
 
+    def mode(self, name: str) -> None:
+        """A Phase K mode is on ("GARAGE", "SENTRY", ...) or "" for none: a label next to his name."""
+        with self._lock:
+            self._view.mode = str(name)[:12]
+
     def dance(self, seconds: float) -> None:
         """Dance to the music for a while - only over a resting face (idle, curious, happy)."""
         with self._lock:
@@ -259,6 +323,7 @@ class Face:
         with self._lock:
             self._shown_text = text
             self._shown_image = None
+            self._pinout_until = 0
             self._show_started = self.clock()
             pages = max(1, (len(font.lines(text, 36))+6)//7)
             self._show_until = self._show_started+max(15, pages*6)
@@ -280,6 +345,7 @@ class Face:
             self._shown_text = picture.title
             self._shown_image = prepared
             self._shown_flash = flash
+            self._pinout_until = 0
             self._show_started = self.clock()
             self._show_until = self._show_started + seconds
             self._page_offset = 0
@@ -288,6 +354,60 @@ class Face:
     def dismiss(self):
         with self._lock:
             self._show_until = 0
+            self._pinout_until = 0
+
+    # ---- pinouts (K1) -----------------------------------------------------------
+    PINOUT_S = 600.0                 # a pinout stays up this long unless closed
+
+    def show_pinout(self, data: dict, pin: str = ""):
+        """Put a pinout from the home server (hub/garage.py) on the face; `pin` lights one
+        pin up and zooms in on it."""
+        from .pinout import Layout, Pinout
+        layout = Layout.build(data)
+        if not layout.pins:
+            return {"fout": "geen pinnen in de pinout"}
+        view = Pinout(layout)
+        found = view.focus(pin) if pin else None
+        with self._lock:
+            self._pinout, self._last_tap = view, None
+            self._pinout_until = self.clock() + self.PINOUT_S
+            self._show_until = 0
+        result = {"getoond": layout.title, "pinnen": len(layout.pins)}
+        if pin:
+            result["pin"] = f"{found.nr} {found.label()}" if found else f"pin {pin} niet gevonden"
+        return result
+
+    def pinout_focus(self, pin: str):
+        with self._lock:
+            if not self._pinout_on(self.clock()):
+                return {"fout": "er staat geen pinout op het scherm"}
+            found = self._pinout.focus(pin)
+            self._pinout_until = self.clock() + self.PINOUT_S
+        return {"pin": f"{found.nr} {found.label()}"} if found else {"fout": f"pin {pin} niet gevonden"}
+
+    def _pinout_on(self, now) -> bool:
+        return self._pinout is not None and now < self._pinout_until
+
+    def pinout_gesture(self, gesture: tuple, now: float) -> None:
+        """Double-tap = next zoom step at that point, drag = pan, long press = close."""
+        with self._lock:
+            view = self._pinout
+            if view is None:
+                return
+            self._pinout_until = now + self.PINOUT_S
+            kind = gesture[0]
+            if kind == "drag":
+                view.pan(gesture[1], gesture[2])
+            elif kind == "long":
+                self._pinout_until = 0
+            elif kind == "tap":
+                _, x, y = gesture
+                last = self._last_tap
+                if last and now - last[0] < 0.45 and math.dist((x, y), last[1:]) < 60:
+                    view.zoom_step(x, min(y, 283))
+                    self._last_tap = None
+                else:
+                    self._last_tap = (now, x, y)
 
     def pet(self):
         now = self.clock()
@@ -407,7 +527,9 @@ class Face:
             # listening, errors keep their own face and get the red LIVE frame on top.
             if v.watched and v.state in ("idle", "sleep", "curious", "happy", "sad", "seeing", "dancing"):
                 v.state = "watched"
-            if now < self._show_until and v.state not in ("error", "low_battery"):
+            if self._pinout_on(now) and v.state not in ("error", "low_battery"):
+                v.state, v.pinout = "pinout", self._pinout.frozen()
+            elif now < self._show_until and v.state not in ("error", "low_battery"):
                 v.state, v.text, v.image = "show", self._shown_text, self._shown_image
                 v.image_age, v.flash = now - self._show_started, self._shown_flash
                 v.page = int((now-self._show_started)//6)+self._page_offset

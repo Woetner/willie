@@ -32,7 +32,8 @@ from ask_camera import load_env
 from willie.audio import chime, speech
 from willie.brain import memory
 from willie.face.runtime import Face
-from willie.voice import gemini_live, wake
+from willie import control
+from willie.voice import garage, gemini_live, wake
 
 # Follow-up window: voice.followup_s (20 s) unless WILLIE_IDLE_TIMEOUT overrides it (bench).
 IDLE_TIMEOUT = os.environ.get("WILLIE_IDLE_TIMEOUT")
@@ -76,6 +77,24 @@ def music_face(face, spotify) -> None:
         time.sleep(1)
 
 
+def run_garage(face, remote, key: str, sleep_now, spotify) -> None:
+    """Garage mode (K1): always listening, only to Wouter, until it is switched off."""
+    def on_event(kind: str, detail: str) -> None:
+        if kind in ("gate", "danger", "go_away", "idle", "error", "wake_again", "tool", "tool_result", "ready"):
+            print(f"  [garage] {kind} {detail}".rstrip(), flush=True)
+
+    print("garage mode: listening without the wake word", flush=True)
+    spotify.TALKING = True                     # the conversation holds the sound card
+    threading.Thread(target=spotify.pause_for_talk, daemon=True).start()
+    control.event("wake")
+    try:
+        garage.Garage(face, remote, key, sleep_now, on_event,
+                      remember=lambda t, started: remember_session(t, started, key), muted=muted).run()
+    finally:
+        threading.Thread(target=spotify.after_talk, args=(False,), daemon=True).start()
+    print("garage mode off\n", flush=True)
+
+
 def main() -> int:
     load_env(REPO / ".env")
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
@@ -113,6 +132,10 @@ def main() -> int:
         eufy.HUB_CALL = remote.hub_call
         from willie.skills import bewaak
         bewaak.HUB_CALL = remote.hub_call
+        from willie.skills import garage as garage_skill
+        garage_skill.HUB_CALL = remote.hub_call
+    from willie.skills import garage as garage_skill
+    garage_skill.FACE = face               # pinouts + step plans on the face (K1)
     # Spotify (willie/skills/spotify.py): music and his voice share one sound card.
     from willie.skills import spotify
     speech.MUSIC = spotify
@@ -132,6 +155,9 @@ def main() -> int:
                     wake_stop.clear()
                     continue
                 speech.silence(False)
+                if garage.enabled():
+                    run_garage(face, remote, gemini_key, sleep_now, spotify)
+                    continue
                 if face:
                     face.indicators(muted=False)
                     face.waiting()

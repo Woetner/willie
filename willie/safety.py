@@ -6,6 +6,7 @@ the rules that need the Pi's view of the world, and never loosens the firmware's
 
 - no fresh `st` from the MCU (> stale_s)          -> refuse
 - estop latched in the firmware                    -> refuse (motion.recover() clears it)
+- garage mode on (K1: he stands on the workbench)   -> refuse
 - battery under cutoff for battery_hold_s           -> refuse + ask for a safe poweroff
 - something closer than tof_stop_mm in front        -> no forward speed (turn/reverse ok)
 - closer than 2 x tof_stop_mm                       -> forward speed scaled down (F6)
@@ -75,6 +76,13 @@ class Safety:
             self.on_poweroff()
         return new
 
+    def _garage(self) -> bool:
+        """Garage mode (K1): he stands on the workbench, and F1's cliff rule is not proven."""
+        try:
+            return bool(self.get("modes.garage"))
+        except (KeyError, TypeError):
+            return False
+
     # ---- motion gate ---------------------------------------------------------
     def front_mm(self, state: dict) -> int | None:
         """Nearest reading of the ToF sensors that answered (0 = no reading)."""
@@ -89,6 +97,8 @@ class Safety:
             return Verdict(0.0, 0.0, "noodstop: " + ", ".join(state["estop"]))
         if self.battery_state == "cutoff":
             return Verdict(0.0, 0.0, "batterij leeg")
+        if self._garage():
+            return Verdict(0.0, 0.0, "garagemodus: ik sta op de werkbank")
         reason = ""
         vmax = self.get("drive.max_speed")
         if abs(v) > vmax:

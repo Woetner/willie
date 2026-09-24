@@ -86,9 +86,12 @@ class GeminiLiveAdapter(VoiceAdapter):
 
     def __init__(self, api_key: str | None = None, model: str = "",
                  url: str | None = None, setup_timeout: float = 15.0, language: str = "nl",
-                 search: bool = False):
+                 search: bool = False, resume: bool = False, resume_handle: str = ""):
         """`model` = one entry of MODELS (or any Live model; empty = try MODELS in order).
-        `url` replaces the Google endpoint - the tests point it at a local mock server."""
+        `url` replaces the Google endpoint - the tests point it at a local mock server.
+        `resume` (garage mode, K1): ask for session resumption + a sliding context window,
+        so a conversation outlives Google's connection limit; `resume_handle` continues an
+        earlier one. The newest handle is kept in `self.resume_handle`."""
         super().__init__()
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.models = [(m, s) for m, s in MODELS if m == model] or ([(model, "audio")] if model else list(MODELS))
@@ -104,6 +107,8 @@ class GeminiLiveAdapter(VoiceAdapter):
         self._speaking = False           # "speaking" already sent for the current model turn
         self._dropping = False           # interrupt() was called: discard the rest of this turn
         self._closing = False
+        self.resume = resume
+        self.resume_handle = resume_handle
 
     # ---- lifecycle -------------------------------------------------------------
     async def start_session(self, persona: str, context: str, tools: list[Tool]) -> None:
@@ -177,6 +182,9 @@ class GeminiLiveAdapter(VoiceAdapter):
             tools.append({"googleSearch": {}})
         if tools:
             setup["tools"] = tools
+        if self.resume:
+            setup["sessionResumption"] = {"handle": self.resume_handle} if self.resume_handle else {}
+            setup["contextWindowCompression"] = {"slidingWindow": {}}
         return {"setup": setup}
 
     async def send_audio(self, pcm: bytes) -> None:
@@ -186,6 +194,26 @@ class GeminiLiveAdapter(VoiceAdapter):
         inner = {"audio": blob} if self._shape == "audio" else {"mediaChunks": [blob]}
         try:
             await self._socket.send(json.dumps({"realtimeInput": inner}))
+        except websockets.ConnectionClosed as exc:
+            raise ConnectionError(f"session closed: {exc}") from exc
+
+    async def end_audio(self) -> None:
+        """The mic stream pauses (garage mode's gate closed): let the server's detector end
+        the turn now instead of waiting for more audio."""
+        if self.is_open and self._socket is not None:
+            try:
+                await self._socket.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
+            except websockets.ConnectionClosed:
+                pass
+
+    async def send_text(self, text: str) -> None:
+        """A message from the robot itself (a timer, a danger he saw) as a user turn: the
+        model answers it out loud in the same conversation."""
+        if not self.is_open or self._socket is None:
+            raise ConnectionError("session closed")
+        turn = {"turns": [{"role": "user", "parts": [{"text": text}]}], "turnComplete": True}
+        try:
+            await self._socket.send(json.dumps({"clientContent": turn}))
         except websockets.ConnectionClosed as exc:
             raise ConnectionError(f"session closed: {exc}") from exc
 
@@ -236,8 +264,15 @@ class GeminiLiveAdapter(VoiceAdapter):
             for function in _get(call, "functionCalls", "function_calls") or []:
                 asyncio.create_task(self._answer_tool(function))
             return
+        update = _get(message, "sessionResumptionUpdate", "session_resumption_update")
+        if update:
+            handle = _get(update, "newHandle", "new_handle")
+            if handle and update.get("resumable", True):
+                self.resume_handle = handle
+            return
         if _get(message, "goAway", "go_away"):
-            await self._emit("error", "server will end the session soon (goAway)")
+            # With resumption this is routine: the runner reconnects with the handle.
+            await self._emit("go_away" if self.resume else "error", "server will end the session soon (goAway)")
             return
         server = _get(message, "serverContent", "server_content") or {}
         heard = (_get(server, "inputTranscription", "input_transcription") or {}).get("text")
@@ -402,11 +437,13 @@ class Standby:
 
 async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Event,
                       activity: list[float], on_event, ready: asyncio.Event | None = None,
-                      recorder: subprocess.Popen | None = None, standby: Standby | None = None) -> None:
+                      recorder: subprocess.Popen | None = None, standby: Standby | None = None,
+                      gate=None) -> None:
     """Mic -> adapter. Starts before the session is open: what Wouter says straight after
     "Hey Willie" is kept (`ready` not set yet) and sent the moment the session is ready, so
     "Hey Willie, hoe laat is het?" works in one breath (23 Sep). `recorder` is the wake
-    word's own arecord, handed over still running, so not a word falls in the gap."""
+    word's own arecord, handed over still running, so not a word falls in the gap.
+    `gate` (garage mode, K1: willie/voice/gate.py) decides per utterance what goes up."""
     from collections import deque
     from willie.audio import mic
     frames = IN_RATE * CHUNK_MS // 1000
@@ -460,15 +497,26 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             # than his own voice coming back through the microphone.
             if speaker.speaking(loop.time()) and peak < BARGE_IN_FS:
                 continue
-            await adapter.send_audio(chunk)
+            now = loop.time()
+            speech = detector.is_speech(peak)
+            if gate is None:
+                await adapter.send_audio(chunk)
+            else:
+                from willie.voice.gate import END
+                for out in gate.feed(chunk, speech, now):
+                    if out == END:
+                        await adapter.end_audio()
+                    else:
+                        await adapter.send_audio(out)
             sent += 1
             loudest = max(loudest, peak)
-            now = loop.time()
-            if detector.is_speech(peak):
+            if speech:
                 last_speech = now
                 if not user_speaking:
                     user_speaking, speech_start = True, now
-                if not turn_open and now - speech_start >= SPEECH_MIN_S:
+                # Garage mode: only a voice the gate let through makes the face listen.
+                if (not turn_open and now - speech_start >= SPEECH_MIN_S
+                        and (gate is None or gate.state == "open")):
                     turn_open = True
                     on_event("user_speaking", "")
             elif user_speaking and now - last_speech >= TURN_END_S:
@@ -691,6 +739,11 @@ async def session(
     cancel=None,
     recorder: subprocess.Popen | None = None,
     transcript: list | None = None,
+    gate=None,
+    resume: dict | None = None,
+    extra_prompt: str = "",
+    until=None,
+    control: dict | None = None,
 ) -> str:
     """Hold a live conversation on the Pi's sound card. Returns the model name that worked.
 
@@ -701,6 +754,13 @@ async def session(
     (22 Sep, Wouter). `recorder` is the wake word's still-running arecord (one-breath
     questions). `transcript` gets (who, text) turns appended, "user"/"willie", for memory;
     a turn the model judged not for him (niet_voor_mij) is left out.
+
+    Garage mode (K1) adds: `gate` (only Wouter's voice goes up; niet_voor_mij is not
+    offered, the gate does that job), `resume` ({"handle": ...}: continue the conversation
+    across reconnects; the newest handle is written back), `extra_prompt` (the workshop
+    instructions), `until()` (checked every 2 s; False ends the session) and `control`
+    (filled with "say": a thread-safe fn(text) that makes him say something in this
+    conversation - a timer, a danger he saw).
     """
     from willie.face.runtime import Face
     owns_face = face is None
@@ -720,7 +780,8 @@ async def session(
     activity = [loop.time()]
     speaker = Speaker()
     native_search = configured_search()      # paid key: 3.8 searches itself, no zoek_op detour
-    adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=native_search)
+    adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=native_search,
+                                resume=resume is not None, resume_handle=(resume or {}).get("handle", ""))
     turns = transcript if transcript is not None else []
     # Face: "thinking" only once the server has heard words in this turn. The mic's own
     # level detector says when the turn *ends*; the transcription says it *was speech*.
@@ -816,12 +877,21 @@ async def session(
 
     adapter.on_audio(audio)
     adapter.on_event(event)
+    if gate is not None:
+        gate.on_event = lambda kind, detail="": event(kind, detail) if kind == "wake_again" else emit(kind, detail)
     # The mic runs from the start: whatever he hears while the session opens is kept.
-    mic_task = asyncio.create_task(_microphone(adapter, speaker, stop, activity, event, ready, recorder, standby))
+    mic_task = asyncio.create_task(_microphone(adapter, speaker, stop, activity, event, ready, recorder,
+                                               standby, gate))
     tools = willie_tool_list(face, web_search=not native_search)
-    tools.append(Tool(NOT_FOR_ME.name, NOT_FOR_ME.description, NOT_FOR_ME.parameters, handler=not_for_me))
+    if gate is None:
+        tools.append(Tool(NOT_FOR_ME.name, NOT_FOR_ME.description, NOT_FOR_ME.parameters, handler=not_for_me))
+    if control is not None:
+        def say_in_session(text: str) -> None:
+            asyncio.run_coroutine_threadsafe(adapter.send_text(text), loop)
+        control["say"] = say_in_session
+    prompt = system_prompt(LIVE_EXTRA) + (f"\n\n{extra_prompt}" if extra_prompt else "")
     try:
-        await adapter.start_session(system_prompt(LIVE_EXTRA), live_context(), tools)
+        await adapter.start_session(prompt, live_context(), tools)
     except BaseException:
         stop.set()
         mic_task.cancel()
@@ -835,12 +905,19 @@ async def session(
     ready.set()
 
     async def idle_watch() -> None:
+        next_until = loop.time() + 2
         while not stop.is_set():
             await asyncio.sleep(0.5)
             if cancel is not None and cancel.is_set():
                 emit("idle", "sleep mode")
                 stop.set()
                 break
+            if until is not None and loop.time() >= next_until:
+                next_until = loop.time() + 2
+                if not await asyncio.to_thread(until):
+                    emit("idle", "mode ended")
+                    stop.set()
+                    break
             if standby.on:
                 if loop.time() - standby.since >= standby_s:
                     emit("idle", f"{standby_s:.0f} s standby without 'Hey Willie'")
@@ -873,6 +950,10 @@ async def session(
         results = await asyncio.gather(*tasks, return_exceptions=True)
         speaker.stop()
         await adapter.close()
+        if control is not None:
+            control.pop("say", None)
+        if resume is not None:
+            resume["handle"] = adapter.resume_handle
         if face and owns_face:
             face.close()
         # A task that dies on its own leaves the session looking like a clean

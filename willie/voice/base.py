@@ -91,6 +91,14 @@ class VoiceAdapter(abc.ABC):
     async def close(self) -> None:
         """End the session and release everything. Safe to call twice."""
 
+    # ---- optional (garage mode, K1) ------------------------------------------
+    async def end_audio(self) -> None:
+        """The mic stream pauses: the turn is over. Adapters without this ignore it."""
+
+    async def send_text(self, text: str) -> None:
+        """A message from the robot itself that the model should answer out loud."""
+        raise NotImplementedError
+
     # ---- helpers for implementations -----------------------------------------
     def _register_tools(self, tools: list[Tool]) -> None:
         self.tools = {t.name: t for t in tools}

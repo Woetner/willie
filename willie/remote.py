@@ -21,6 +21,7 @@ Topics (WILL-E.md Phase S):
        willie/cmd/photo    {}                   one still -> willie/photo
        willie/cmd/video    {"on": true|false}   live view; must be repeated every few seconds
        willie/cmd/mode     {"mode": "idle"|"sleep"}  sleep = mic off + sleep face (privacy.mute)
+                           {"mode": "garage"|"garage_off"}  garage mode (K1)
        willie/cmd/power    {"action": "off"|"restart"}  the app asked "are you sure?" already
        willie/tool/call    {"id", "name", "args"}
        willie/hub/result   {"id", "result"}     answer to willie/hub/call
@@ -71,6 +72,7 @@ class Remote:
         self._health: dict = {}
         self._health_at = 0.0
         self._hub_calls: dict[str, dict] = {}     # id -> {"done": Event, "result": ...}
+        self.garage_control: dict | None = None  # garage mode (K1): {"say": fn(text)} while connected
 
     # ---------------------------------------------------------------- lifecycle
     @classmethod
@@ -185,6 +187,12 @@ class Remote:
         text = str(data.get("text", "")).strip()[:500]
         if not text:
             return
+        say_in_session = (self.garage_control or {}).get("say")
+        if say_in_session:
+            # Garage mode is one long conversation: say it inside it, in his own voice.
+            say_in_session(f"[ROBOT] Zeg dit nu hardop tegen Wouter: {text}")
+            self._publish("willie/event/say", {"ok": True, "text": text, "how": "in the garage conversation"})
+            return
         if self.session_active:
             self._publish("willie/event/say", {"ok": False, "text": text, "why": "in a conversation"})
             return
@@ -207,6 +215,14 @@ class Remote:
         """Idle (awake, listening for "Hey Willie") or sleep (mic off, sleep face). Stored as
         privacy.mute, so it survives a restart and the dashboard shows the same switch."""
         mode = str(data.get("mode", ""))
+        if mode in ("garage", "garage_off"):
+            # Garage mode (K1) from the app: the voice loop picks it up within 2 s.
+            from willie.voice import garage
+            garage.set_enabled(mode == "garage")
+            if mode == "garage" and self.wake_stop:
+                self.wake_stop.set()
+            self._publish("willie/event/mode", {"mode": mode})
+            return
         if mode not in ("idle", "sleep"):
             return
         from willie.config import Config
@@ -404,12 +420,15 @@ class Remote:
             v = self.face.snapshot()
             face = {"state": v.state, "mic": v.mic, "camera": v.camera, "muted": v.muted,
                     "watched": v.watched, "battery": v.battery}
+        garage = False
         try:
             from willie.config import Config
-            mode = "sleep" if Config().get("privacy.mute") else "idle"
+            cfg = Config()
+            mode = "sleep" if cfg.get("privacy.mute") else "idle"
+            garage = bool(cfg.get("modes.garage"))
         except Exception:
             mode = None
-        return {"time": time.time(), "face": face, "mode": mode, "pi": self._health, "core": core,
+        return {"time": time.time(), "face": face, "mode": mode, "garage": garage, "pi": self._health, "core": core,
                 "talking": self.session_active, "video": self._video_running(),
                 "voice_rss_mb": _rss_mb()}
 

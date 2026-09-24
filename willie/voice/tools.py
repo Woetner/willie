@@ -246,6 +246,15 @@ DECLARATIONS = [
         },
     },
     {
+        "name": "garagemodus",
+        "description": (
+            "Zet de garagemodus aan of uit. Aan: je luistert zonder 'Hey Willie' (alleen naar Wouters stem), "
+            "je bent zijn werkplaatsmaatje (pinouts, onderdelen, stappenplannen, gevaren) en je rijdt niet, "
+            "want je staat op de werkbank. Alleen als Wouter erom vraagt."
+        ),
+        "parameters": {"type": "object", "properties": {"aan": {"type": "boolean"}}, "required": ["aan"]},
+    },
+    {
         "name": "zet_volume",
         "description": "Zet je eigen spreekvolume. 0.05 is fluisteren, 0.15 is normaal, 0.5 is hard.",
         "parameters": {
@@ -437,8 +446,8 @@ def lijst_code(map: str = "") -> dict:
 # --- The master plan (WILL-E.md) --------------------------------------------
 # rsync puts it inside the repo on the Pi; on the Mac it sits one level up.
 PLAN_CANDIDATES = (REPO / "WILL-E.md", REPO.parent / "WILL-E.md")
-STEP = re.compile(r"^[A-JS]\d{1,2}$", re.I)
-OPEN_STEP = re.compile(r"^- \[ \] \*\*([A-JS]\d{1,2})\b")
+STEP = re.compile(r"^[A-KS]\d{1,2}$", re.I)
+OPEN_STEP = re.compile(r"^- \[ \] \*\*([A-KS]\d{1,2})\b")
 
 
 def _plan_lines() -> list[str] | None:
@@ -606,6 +615,18 @@ def zet_uit(actie: str = "uit", bevestigd: bool = False) -> dict:
             "let_op": "Na uitzetten kan hij alleen met de schakelaar weer aan." if actie == "uit" else "Terug over ongeveer een minuut."}
 
 
+def garagemodus(aan: bool) -> dict:
+    """K1. Switching on from a normal conversation ends it after his answer; the voice loop
+    then opens the garage conversation. Switching off ends the garage conversation."""
+    from willie.voice import garage
+
+    garage.set_enabled(bool(aan))
+    WRAP_UP.set()
+    if aan:
+        return {"ok": True, "zeg": "Kort: garagemodus aan, ik luister nu zonder 'Hey Willie', alleen naar jou."}
+    return {"ok": True, "zeg": "Kort: garagemodus uit, zeg weer 'Hey Willie'."}
+
+
 def zet_volume(niveau: float) -> dict:
     from willie.audio import speech
 
@@ -632,6 +653,7 @@ HANDLERS = {
     "herinner": herinner,
     "status": status,
     "zet_volume": zet_volume,
+    "garagemodus": garagemodus,
     "zet_uit": zet_uit,
     "verbeter_jezelf": verbeter_jezelf,
     "verbeteringen_status": verbeteringen_status,

@@ -47,6 +47,13 @@ face:
   blink_rate:  {type: float, default: 4.0, min: 0.5, max: 20, unit: /min, help: Average blinks per minute}
   dance_every_s: {type: int, default: 60, min: 0, max: 900, unit: s, help: "While Spotify plays on his speaker: average time between dances (0 = never dance)"}
   dance_s:     {type: float, default: 8, min: 2, max: 60, unit: s, help: How long one dance lasts}
+  touch_x_min: {type: int, default: 900, min: 0, max: 4095, help: "Touch calibration (K1 pinout zoom/drag): raw ADC at the left edge"}
+  touch_x_max: {type: int, default: 3200, min: 0, max: 4095, help: Raw ADC at the right edge}
+  touch_y_min: {type: int, default: 580, min: 0, max: 4095, help: Raw ADC at the top edge}
+  touch_y_max: {type: int, default: 2960, min: 0, max: 4095, help: Raw ADC at the bottom edge}
+  touch_swap_xy: {type: bool, default: false, help: "Swap the touch axes (dragging left moves the drawing up/down)"}
+  touch_flip_x: {type: bool, default: false, help: Dragging left/right moves the drawing the wrong way}
+  touch_flip_y: {type: bool, default: false, help: Dragging up/down moves the drawing the wrong way}
 
 mood:
   _label: Mood
@@ -82,6 +89,17 @@ voice:
   language:        {type: choice, default: nl, options: [nl, en, auto], help: "Conversation language (nl = Dutch unless you speak English)"}
   followup_s:      {type: float, default: 20, min: 3, max: 60, unit: s, help: "After the last words he keeps listening this long without 'Hey Willie', then sleeps"}
   standby_s:       {type: float, default: 60, min: 0, max: 600, unit: s, help: "When he decides talk is not for him he stays connected but silent this long; 'Hey Willie' then answers instantly"}
+
+modes:
+  _label: Modes (Phase K)
+  garage:          {type: bool, default: false, help: "Garage mode (K1): always listening without 'Hey Willie' but only to Wouter's voice, workshop tools, danger watch, no driving (he stands on the workbench)"}
+
+garage:
+  _label: Garage mode (K1)
+  voice_check:     {type: choice, default: wouter, options: [wouter, iedereen], help: "wouter = only Wouter's voice reaches the model (checked on the home server); iedereen = everything he hears"}
+  profile:         {type: str, default: wouter, help: "Voice profile on the home server (make voice-enroll)"}
+  verify_s:        {type: float, default: 1.0, min: 0.5, max: 2.0, unit: s, help: "Speech sent to the voice check before anything reaches the model (longer = surer, slower)"}
+  watch_s:         {type: int, default: 120, min: 0, max: 1800, unit: s, help: "Danger watch: one photo + the air values to the home server this often (0 = off)"}
 
 memory:
   _label: Memory

@@ -12,7 +12,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test improve improve-watch improve-install spotify-setup spotify-login spotify-logs
+        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test voice-enroll garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs
 
 help:
 	@echo "Pi"
@@ -38,6 +38,9 @@ help:
 	@echo "  make voices       play the voice samples one after another on the Mac"
 	@echo "  make wake-record  record 'Hey Willie' + everyday sound through the robot's mic (D2 round 2)"
 	@echo "  make wake-fetch   copy those recordings to the Mac training workspace"
+	@echo "Garage mode (K1)"
+	@echo "  make voice-enroll  teach the home server your voice (NEW=1 starts over); do it in the garage"
+	@echo "  make garage ON=1   garage mode on (ON=0 off) - or say 'garagemodus aan'"
 	@echo "Spotify"
 	@echo "  make spotify-setup  install librespot: WILL-E becomes a Spotify speaker"
 	@echo "  make spotify-login  link the Web API (asks for the app id/secret on the Pi, opens nothing)"
@@ -151,6 +154,12 @@ wake-test: sync
 
 live-talk: sync
 	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/live_talk.py $(S)'
+
+voice-enroll: sync
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && NEW=$(NEW) .venv/bin/python tools/voice_enroll.py'
+
+garage:
+	ssh $(PI) 'cd $(PI_DIR) && .venv/bin/python -c "from willie.voice import garage; garage.set_enabled($(if $(filter 0,$(ON)),False,True)); print(\"garage mode\", garage.enabled())"'
 
 # Wake word round 2 (D2): record Wouter through the robot's mic, fetch for training on the Mac.
 wake-record: sync

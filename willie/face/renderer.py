@@ -11,7 +11,7 @@ from .framebuffer import Recorder, changed_bands
 
 STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
           "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting", "watched",
-          "dancing")
+          "dancing", "pinout")
 # Where a picture goes, in logical 480x320 coordinates: the whole screen except a 36 px bar
 # at the bottom for the title and the mic/camera flags, which stay visible (D17).
 PICTURE_BOX = (0, 0, 480, 284)
@@ -44,6 +44,8 @@ class View:
     flash: bool = False         # the picture is a camera photo: shutter flash first
     music: str = ""             # Spotify on his speaker: "TITLE - ARTIST" on the bottom line
     badges: tuple = ()          # background jobs from the hub (willie/activity): ((icon, text, level), ...)
+    mode: str = ""              # Phase K mode on: "GARAGE", "SENTRY", ... next to his name
+    pinout: tuple | None = None # K1: Pinout.frozen() while a pinout is on screen
 
 
 def colour(value, fallback):
@@ -151,6 +153,9 @@ class Renderer:
         if state == "show" and hasattr(surface, "layout") and (view.image or {}).get(surface.layout()):
             self._photo(p, view, base, dim, bg)
             return
+        if state == "pinout" and view.pinout:
+            self._pinout(p, view, base, dim, bg)
+            return
         # Fixed layout: the animated eye band stays close to B5's measured 138 rows.
         targets = {
             "idle": (100, 106, 100, 106, 0, 0),
@@ -169,6 +174,7 @@ class Renderer:
             "connecting": (96, 90, 96, 90, 0, 0),
             "watched": (104, 104, 104, 104, 0, 0),
             "dancing": (99, 28, 99, 28, 0, 0),
+            "pinout": (100, 106, 100, 106, 0, 0),
         }
         dt = .04 if self.last_time is None else max(0, min(.1, now-self.last_time))
         self.last_time = now
@@ -334,6 +340,26 @@ class Renderer:
         mic = "MUTED" if view.muted else "MIC" if view.mic else "MIC OFF"
         p.text(mic, 414, 298, 1, AMBER if view.muted else eye if view.mic else dim)
 
+    def _pinout(self, p, view, eye, dim, bg):
+        """K1: a zoomable pin drawing over the picture box, the pin detail in the bottom bar."""
+        from . import pinout
+        pinout.draw(p, view.pinout, {"eye": eye, "dim": dim, "bg": bg, "white": WHITE, "amber": AMBER, "red": RED})
+        layout = view.pinout[0]
+        p.rect(0, 286, 480, 1, dim)
+        p.text(font.normalise(pinout.detail(view.pinout))[:30], 10, 292, 1, WHITE)
+        checked = ("NOT CHECKED", "FUNCTIONS CHECKED", "DATASHEET OK")[max(0, min(2, layout.checked))]
+        p.text(checked, 10, 306, 1, eye if layout.checked == 2 else AMBER)
+        p.text("2X TAP ZOOM - DRAG", 128, 306, 1, dim)
+        if view.watched:
+            self._watched_frame(p, time.monotonic())
+        if view.camera:
+            p.ellipse(372, 302, 3, 3, RED)
+            p.text("CAM", 380, 298, 1, WHITE)
+        mic = "MUTED" if view.muted else "MIC" if view.mic else "MIC OFF"
+        p.text(mic, 414, 298, 1, AMBER if view.muted else eye if view.mic else dim)
+        if view.level > 0.05:                       # he is talking about it: a small pulse
+            p.ellipse(402, 302, 2 + round(view.level * 3), 2 + round(view.level * 3), eye)
+
     @staticmethod
     def _note(p, x, y, c, small=False):
         """A quaver: head, stem, flag. (x, y) is the centre of the head."""
@@ -345,6 +371,11 @@ class Renderer:
     def _status_bar(self, p, view, base, dim, bg, now):
         p.rect(23, 23, 5, 13, AMBER)
         p.text("WILL-E", 37, 23, 2, WHITE)
+        if view.mode:
+            # A mode (K1-K5) changes how he listens or moves: always visible (D17, D25).
+            label = font.normalise(view.mode)[:9]
+            p.round_rect(117, 21, len(label)*6+10, 17, 3, AMBER)
+            p.text(label, 122, 26, 1, (0, 0, 0))
         # Unknown is explicitly unknown, never a fabricated battery or connection.
         link = "LINK --" if view.connected is None else "LINK OK" if view.connected else "OFFLINE"
         p.text(link, 229, 25, 1, dim if view.connected is None else base if view.connected else AMBER)
