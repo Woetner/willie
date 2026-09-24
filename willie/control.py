@@ -9,6 +9,7 @@ one JSON object per line, and get one JSON object back. Robot-local, so no MQTT 
     {"cmd": "turn", "deg": -90}
     {"cmd": "stop"} | {"cmd": "clear"} | {"cmd": "look", "pan": 30, "tilt": 10}
     {"cmd": "event", "name": "wake"}      -> mood event from another process
+    {"cmd": "event", "name": "mission_start"|"mission_end"}   a Phase K mission owns the wheels
     {"cmd": "mood"}                       -> values + the AI context line + resting face
 
 CLI (on the Pi, with the core running):
@@ -40,6 +41,7 @@ class Body:
     def __init__(self, link, safety, motion, mood):
         self.link, self.safety, self.motion, self.mood = link, safety, motion, mood
         self.conversation = False       # a voice session is open: behaviours sit still (G3)
+        self.mission = False            # a Phase K mission drives him: behaviours sit still
         self.last_command = 0.0         # monotonic time of the last move/turn from outside
         self.behaviours = None          # behavior.tree.Behaviours, set by core
 
@@ -57,6 +59,8 @@ class Body:
             "battery": self.safety.battery_state,
             "busy": self.motion.busy,
             "conversation": self.conversation,
+            "mission": self.mission,
+            "imu": {"acc_mg": [st.get("ax"), st.get("ay"), st.get("az")]} if st.get("az") is not None else None,
             "behaviour": self.behaviours.current if self.behaviours else None,
             "mood": self.mood.snapshot(),
         }
@@ -84,6 +88,9 @@ class Body:
             name = str(req.get("name", ""))
             if name in ("conversation_start", "conversation_end"):
                 self.conversation = name == "conversation_start"
+                return {"ok": True}
+            if name in ("mission_start", "mission_end"):
+                self.mission = name == "mission_start"
                 return {"ok": True}
             return {"ok": self.mood.event(name)}
         if cmd == "mood":

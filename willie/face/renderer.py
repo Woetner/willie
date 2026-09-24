@@ -11,7 +11,7 @@ from .framebuffer import Recorder, changed_bands
 
 STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
           "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting", "watched",
-          "dancing", "pinout", "confirm")
+          "dancing", "pinout", "confirm", "sentry")
 # Where a picture goes, in logical 480x320 coordinates: the whole screen except a 36 px bar
 # at the bottom for the title and the mic/camera flags, which stay visible (D17).
 PICTURE_BOX = (0, 0, 480, 284)
@@ -182,13 +182,14 @@ class Renderer:
             "dancing": (99, 28, 99, 28, 0, 0),
             "pinout": (100, 106, 100, 106, 0, 0),
             "confirm": (100, 106, 100, 106, 0, 0),
+            "sentry": (104, 104, 104, 104, 0, 0),
         }
         dt = .04 if self.last_time is None else max(0, min(.1, now-self.last_time))
         self.last_time = now
         ease = 1-math.exp(-dt*13)
         target = targets[state]
         self.pose = [v+(t-v)*ease for v,t in zip(self.pose, target)]
-        target_colour = RED if state == "error" else WATCHED if state == "watched" else AMBER if state in ("thinking", "low_battery", "connecting") else base
+        target_colour = RED if state == "error" else WATCHED if state in ("watched", "sentry") else AMBER if state in ("thinking", "low_battery", "connecting") else base
         self.eye_colour = mix(self.eye_colour, target_colour, ease)
         eye = self.eye_colour
         if state == "sleep":
@@ -237,8 +238,11 @@ class Renderer:
         style = settings.get("eye_style", "round")
         for side, (cx, w, h) in enumerate(((158+gx,w1,h1),(322+gx,w2,h2))):
             cy = 157+gy
-            if state == "watched":
+            if state in ("watched", "sentry"):
                 # Two camera lenses looking back at the viewer: ring, iris, a glint.
+                # Sentry (K5, Wouter): the same lenses, sweeping slowly left and right.
+                if state == "sentry":
+                    cx += math.sin(now*.6)*22
                 focus = 1+.06*math.sin(now*2.2+side)
                 p.ellipse(cx, cy, 52, 52, eye)
                 p.ellipse(cx, cy, 43, 43, bg)
@@ -301,10 +305,13 @@ class Renderer:
                   "thinking":"LET ME THINK", "talking":"SPEAKING", "happy":"THAT'S NICE",
                   "sad":"OH, WELL", "surprised":"WAIT, WHAT?", "sleep":"RECHARGING" if view.charging else "ZZZ...",
                   "low_battery":"TIME TO RECHARGE", "error":"OOPS", "seeing":"TAKING A LOOK",
-                  "connecting":"CONNECTING", "watched":"WOUTER IS WATCHING", "dancing":"GROOVING"}
+                  "connecting":"CONNECTING", "watched":"WOUTER IS WATCHING", "dancing":"GROOVING",
+                  "sentry":"ON GUARD"}
         # Asleep from the phone app = muted + sleep face: the Zzz label, the MIC MUTED flag stays on top.
         label = "MIC MUTED" if view.muted and state != "sleep" else view.label or labels.get(state, "RIGHT HERE")
-        p.centre(label, 271, 2, eye if state in ("error","low_battery","watched") else WHITE)
+        p.centre(label, 271, 2, eye if state in ("error","low_battery","watched","sentry") else WHITE)
+        if state == "sentry" and not view.watched:
+            self._sentry_frame(p, now)
         detail = view.code[:48] if state == "error" else view.text[:48]
         if view.music and state != "error":
             # Now playing: small, on the bottom line, a note in front of it.
@@ -527,6 +534,13 @@ class Renderer:
         if int(now*2) % 2 == 0:
             p.ellipse(346, 60, 4, 4, WHITE)
         p.text("LIVE VIEW", 355, 54, 1, WHITE)
+
+    def _sentry_frame(self, p, now):
+        """Sentry mode (K5): the live view's red frame, slower (Wouter: the same animation)."""
+        pulse = .5+.5*math.sin(now*1.5)
+        edge = mix((0, 0, 0), WATCHED, .35+.45*pulse)
+        for x, y, w, h in ((0, 0, 480, 4), (0, 316, 480, 4), (0, 0, 4, 320), (476, 0, 4, 320)):
+            p.rect(x, y, w, h, edge)
 
     def _card(self, p, view, eye, dim, bg):
         picture = (view.image or {}).get(p.fb.layout()) if hasattr(p.fb, "layout") else None

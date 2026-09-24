@@ -101,6 +101,19 @@ garage:
   verify_s:        {type: float, default: 1.0, min: 0.5, max: 2.0, unit: s, help: "Speech sent to the voice check before anything reaches the model (longer = surer, slower)"}
   watch_s:         {type: int, default: 120, min: 0, max: 1800, unit: s, help: "Danger watch: one photo + the air values to the home server this often (0 = off)"}
 
+search:
+  _label: Search mode (K3)
+  max_min:         {type: int, default: 10, min: 1, max: 60, unit: min, help: "Give up after this long (he also stops when the battery gets low)"}
+
+adventure:
+  _label: Adventure mode (K4)
+  max_stops:       {type: int, default: 40, min: 3, max: 200, help: "Stops (4-direction scans) per adventure"}
+  max_min:         {type: int, default: 30, min: 5, max: 120, unit: min, help: Longest adventure}
+
+sentry:
+  _label: Sentry mode (K5)
+  look_s:          {type: int, default: 20, min: 5, max: 600, unit: s, help: "Daytime: one photo to the home server this often to spot changes and people"}
+
 memory:
   _label: Memory
   context_chars:   {type: int, default: 24000, min: 2000, max: 200000, help: "How much long-term memory (facts + recent conversations) goes into every conversation. More = knows more without searching, but a slower start and more tokens per turn. Older things stay findable with herinner"}

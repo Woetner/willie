@@ -140,8 +140,14 @@ def main() -> int:
         bewaak.HUB_CALL = remote.hub_call
         from willie.skills import garage as garage_skill
         garage_skill.HUB_CALL = remote.hub_call
+        from willie.skills import herkennen
+        herkennen.HUB_CALL = remote.hub_call
+        from willie import missions
+        missions.HUB_CALL = remote.hub_call
     from willie.skills import garage as garage_skill
     garage_skill.FACE = face               # pinouts + step plans on the face (K1)
+    from willie import missions
+    missions.FACE = face                   # search / adventure / sentry faces (K3-K5)
     # Spotify (willie/skills/spotify.py): music and his voice share one sound card.
     from willie.skills import spotify
     speech.MUSIC = spotify

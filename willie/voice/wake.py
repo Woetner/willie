@@ -56,6 +56,11 @@ def listen_for_wake(stop_after: float | None = None, on_tick=None, stop=None) ->
     return True
 
 
+# fn(chunk) called with every mic chunk while waiting for the wake word (K5 sentry: sound
+# triggers without a second recorder on the one mic).
+LEVEL_HOOK = None
+
+
 def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> subprocess.Popen | None:
     """Block until the wake word is heard. On a detection the arecord process is returned
     still running (23 Sep), so the live session keeps listening without a gap and hears
@@ -78,6 +83,11 @@ def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> s
             if len(raw) < CHUNK * mic.FRAME:
                 return None
             chunk = mic.left(raw, factor)
+            if LEVEL_HOOK is not None:
+                try:
+                    LEVEL_HOOK(chunk)            # sentry mode (K5) hears the room through this
+                except Exception:
+                    pass
             elapsed += CHUNK / mic.RATE
             for frame in features.process_streaming(chunk):
                 probability = model.process_streaming_prob(frame)

@@ -459,7 +459,13 @@ class Remote:
             garage = bool(cfg.get("modes.garage"))
         except Exception:
             mode = None
-        return {"time": time.time(), "face": face, "mode": mode, "garage": garage, "pi": self._health, "core": core,
+        try:
+            from willie import missions
+            mission = missions.status()
+        except Exception:
+            mission = None
+        return {"time": time.time(), "face": face, "mode": mode, "garage": garage, "mission": mission,
+                "pi": self._health, "core": core,
                 "talking": self.session_active, "video": self._video_running(),
                 "voice_rss_mb": _rss_mb()}
 

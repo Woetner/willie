@@ -5,6 +5,7 @@ when the winner changes, the running one is cancelled (its motion stops with it)
 
     hold      estop latched, no MCU state, or battery empty  -> never move by himself
     talk      a conversation is open                          -> sit still, face the person
+    mission   search/adventure/sentry (Phase K) drives him    -> hands off the wheels
     respect   someone drove him in the last behavior.respect_s -> leave him where he was put
     quiet     quiet hours (behavior.quiet_start..quiet_end)   -> no wandering
     nap       mood energy < NAP_ENERGY                        -> rest (G6 adds: drive to the dock)
@@ -53,6 +54,8 @@ class Behaviours:
             return "hold"
         if body.conversation:
             return "talk"
+        if getattr(body, "mission", False):
+            return "mission"
         if body.last_command and self.clock() - body.last_command < self.get("behavior.respect_s"):
             return "respect"
         if in_quiet_hours(self.now(), self.get("behavior.quiet_start"), self.get("behavior.quiet_end")):

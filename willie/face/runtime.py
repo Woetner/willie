@@ -596,6 +596,9 @@ class Face:
             # listening, errors keep their own face and get the red LIVE frame on top.
             if v.watched and v.state in ("idle", "sleep", "curious", "happy", "sad", "seeing", "dancing"):
                 v.state = "watched"
+            # Sentry mode (K5): on guard is the resting face while it runs.
+            if v.mode == "SENTRY" and v.state in ("idle", "sleep", "curious", "happy", "sad"):
+                v.state = "sentry"
             confirm = self._confirm_view(now)
             if confirm is not None:
                 # A question waiting for his finger wins over everything: it is why he stopped.
