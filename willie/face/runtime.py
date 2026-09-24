@@ -466,7 +466,7 @@ class Face:
 # The hub's activity list (homeserver hub/activity.py, MQTT willie/activity) -> face badges.
 # Only what he is actively doing for Wouter; the always-on eufy watch would be a permanent
 # icon that says nothing, so it stays in the app.
-FACE_ICONS = {"printer", "search", "eye", "bell", "timer"}
+FACE_ICONS = {"printer", "search", "eye", "bell", "timer", "air"}
 BELL_WITHIN_S = 3600
 
 
@@ -487,7 +487,7 @@ def activity_badges(snapshot: dict, now: float | None = None) -> list[tuple[str,
                 left = datetime.fromisoformat(item["at_iso"]).timestamp() - now
             except ValueError:
                 continue
-            if left > BELL_WITHIN_S:
+            if icon == "bell" and left > BELL_WITHIN_S:
                 continue                        # a reminder next week is not "doing something"
             text = f"{max(0, round(left/60))}M"
         out.append((icon, text, level))

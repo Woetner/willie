@@ -411,6 +411,9 @@ class Renderer:
             p.ellipse(x+8, y+8, 4, 4, bg)
             p.line(x+8, y+8, x+8, y+5, 1, c)
             p.rect(x+6, y, 4, 2, c)
+        elif icon == "air":
+            for dy in (2, 7, 12):
+                p.line(x+1, y+dy, x+15, y+dy, 2, c)
         else:
             p.ellipse(x+8, y+7, 3, 3, c)
 

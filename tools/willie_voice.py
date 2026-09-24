@@ -111,6 +111,8 @@ def main() -> int:
         bambu.HUB_CALL = remote.hub_call
         from willie.skills import eufy
         eufy.HUB_CALL = remote.hub_call
+        from willie.skills import bewaak
+        bewaak.HUB_CALL = remote.hub_call
     # Spotify (willie/skills/spotify.py): music and his voice share one sound card.
     from willie.skills import spotify
     speech.MUSIC = spotify
