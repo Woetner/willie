@@ -128,6 +128,14 @@ def playing() -> bool:
     return _state("player") == "playing" or card_busy()
 
 
+def now_playing() -> str:
+    """"TITLE - ARTIST" while music plays on WILL-E and no conversation holds it, else ""."""
+    if TALKING or _state("player") != "playing":
+        return ""
+    title, _, artists = _state("track").partition("\n")
+    return f"{title} - {artists}" if artists else title
+
+
 def configured() -> bool:
     return all(os.environ.get(k) for k in ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_REFRESH_TOKEN"))
 

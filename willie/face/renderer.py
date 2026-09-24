@@ -10,7 +10,8 @@ from . import font
 from .framebuffer import Recorder, changed_bands
 
 STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
-          "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting", "watched")
+          "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting", "watched",
+          "dancing")
 # Where a picture goes, in logical 480x320 coordinates: the whole screen except a 36 px bar
 # at the bottom for the title and the mic/camera flags, which stay visible (D17).
 PICTURE_BOX = (0, 0, 480, 284)
@@ -41,6 +42,7 @@ class View:
     label: str = ""             # replaces the state's caption, e.g. "RESEARCHING..." (Face.busy)
     image_age: float = 99.0     # seconds since the picture appeared (drives the reveal)
     flash: bool = False         # the picture is a camera photo: shutter flash first
+    music: str = ""             # Spotify on his speaker: "TITLE - ARTIST" on the bottom line
 
 
 def colour(value, fallback):
@@ -165,6 +167,7 @@ class Renderer:
             "show": (100, 106, 100, 106, 0, 0),
             "connecting": (96, 90, 96, 90, 0, 0),
             "watched": (104, 104, 104, 104, 0, 0),
+            "dancing": (99, 28, 99, 28, 0, 0),
         }
         dt = .04 if self.last_time is None else max(0, min(.1, now-self.last_time))
         self.last_time = now
@@ -195,6 +198,11 @@ class Renderer:
             gy += math.sin(now*.8)*4
         if view.gaze is not None:
             gx = max(-1, min(1, view.gaze))*18
+        if state == "dancing":
+            # Music (Spotify): sway on the bar, bob on the beat, at a fixed 120 BPM - the
+            # Web API gives no beat any more, and a steady groove reads as dancing anyway.
+            gx += math.sin(now*math.pi)*26
+            gy -= abs(math.sin(now*math.pi*2))*12
         if state == "talking":
             bounce = max(0, min(1, view.level))
             gy -= bounce*9
@@ -203,7 +211,7 @@ class Renderer:
         period = 60/max(.5, float(settings.get("blink_rate", 4)))
         phase = (now+period*.27) % period
         blink = max(.035, abs(phase-.13)/.13) if phase < .26 else 1
-        if state in ("sleep", "happy", "error"):
+        if state in ("sleep", "happy", "error", "dancing"):
             blink = 1
         h1, h2 = h1*blink, h2*blink
         if state == "listening":
@@ -230,6 +238,11 @@ class Renderer:
                 # An unmistakable ^ ^ smile, with a small asymmetry.
                 p.line(cx-39, cy+12, cx, cy-18-side*3, 12, eye)
                 p.line(cx, cy-18-side*3, cx+39, cy+12, 12, eye)
+            elif state == "dancing":
+                # The same ^ ^, the two eyes rocking against each other like a head tilt.
+                tilt = math.sin(now*math.pi)*9*(1 if side else -1)
+                p.line(cx-39, cy+12+tilt, cx, cy-18-tilt, 12, eye)
+                p.line(cx, cy-18-tilt, cx+39, cy+12-tilt, 12, eye)
             else:
                 if style == "visor":
                     h *= .72
@@ -252,6 +265,11 @@ class Renderer:
         if state in ("thinking", "connecting"):
             for i in range(3):
                 p.ellipse(221+i*19, 230, 3, 3, eye if int(now*3)%3 == i else dim)
+        if state == "dancing":
+            # Two notes drifting up beside the eyes, inside the eye band (D6: few rows).
+            for x, offset in ((62, 0.0), (418, 0.5)):
+                rise = ((now*.5+offset) % 1)
+                self._note(p, x+math.sin(now*3+offset*6)*4, 205-rise*95, mix(bg, eye, 1-rise*.7))
         if state == "sleep":
             p.text("Z", 354, 111+math.sin(now)*3, 2, dim)
             p.text("Z", 378, 95+math.sin(now+1)*3, 1, dim)
@@ -269,12 +287,17 @@ class Renderer:
                   "thinking":"LET ME THINK", "talking":"SPEAKING", "happy":"THAT'S NICE",
                   "sad":"OH, WELL", "surprised":"WAIT, WHAT?", "sleep":"RECHARGING" if view.charging else "ZZZ...",
                   "low_battery":"TIME TO RECHARGE", "error":"OOPS", "seeing":"TAKING A LOOK",
-                  "connecting":"CONNECTING", "watched":"WOUTER IS WATCHING"}
+                  "connecting":"CONNECTING", "watched":"WOUTER IS WATCHING", "dancing":"GROOVING"}
         # Asleep from the phone app = muted + sleep face: the Zzz label, the MIC MUTED flag stays on top.
         label = "MIC MUTED" if view.muted and state != "sleep" else view.label or labels.get(state, "RIGHT HERE")
         p.centre(label, 271, 2, eye if state in ("error","low_battery","watched") else WHITE)
         detail = view.code[:48] if state == "error" else view.text[:48]
-        if detail:
+        if view.music and state != "error":
+            # Now playing: small, on the bottom line, a note in front of it.
+            music = view.music[:44]
+            p.centre(music, 299, 1, mix(dim, eye, .5))
+            self._note(p, 240-len(music)*3-12, 304, mix(dim, eye, .5), small=True)
+        elif detail:
             p.centre(detail, 299, 1, dim)
         else:
             p.line(225, 302, 255, 302, 2, dim)
@@ -309,6 +332,14 @@ class Renderer:
             p.text("CAM", 380, 298, 1, WHITE)
         mic = "MUTED" if view.muted else "MIC" if view.mic else "MIC OFF"
         p.text(mic, 414, 298, 1, AMBER if view.muted else eye if view.mic else dim)
+
+    @staticmethod
+    def _note(p, x, y, c, small=False):
+        """A quaver: head, stem, flag. (x, y) is the centre of the head."""
+        k = .45 if small else 1
+        p.ellipse(x, y, 7*k, 5*k, c)
+        p.line(x+6*k, y, x+6*k, y-22*k, max(1, 3*k), c)
+        p.line(x+6*k, y-22*k, x+14*k, y-14*k, max(1, 3*k), c)
 
     def _status_bar(self, p, view, base, dim, bg, now):
         p.rect(23, 23, 5, 13, AMBER)

@@ -123,6 +123,7 @@ class Face:
         self._thread = None
         self._closed = False
         self._pet_until = self._show_until = self._show_started = 0.0
+        self._dance_until = 0.0
         self._shown_text = ""
         self._shown_image = None
         self._shown_flash = False
@@ -224,6 +225,16 @@ class Face:
             self._view.state, self._view.text, self._view.code = state, str(text), str(code)
             if state == "error":
                 self._show_until = 0
+
+    def music(self, now_playing: str) -> None:
+        """Spotify on his speaker: "TITLE - ARTIST", or "" when no music plays."""
+        with self._lock:
+            self._view.music = str(now_playing)[:80]
+
+    def dance(self, seconds: float) -> None:
+        """Dance to the music for a while - only over a resting face (idle, curious, happy)."""
+        with self._lock:
+            self._dance_until = self.clock()+max(0.0, float(seconds))
 
     def indicators(self, **values):
         """Report real device state. This API does not operate or mute a microphone."""
@@ -383,11 +394,13 @@ class Face:
             if (v.battery is not None and v.battery < 20 and not v.charging
                     and v.state in ("idle", "sleep", "curious", "happy", "sad")):
                 v.state = "low_battery"
+            if now < self._dance_until and v.music and v.state in ("idle", "curious", "happy"):
+                v.state = "dancing"
             if v.pet and v.state in ("idle", "happy", "sleep", "curious"):
                 v.state = "happy"
             # Live view (S8): the resting expressions give way to the "watched" lenses; talking,
             # listening, errors keep their own face and get the red LIVE frame on top.
-            if v.watched and v.state in ("idle", "sleep", "curious", "happy", "sad", "seeing"):
+            if v.watched and v.state in ("idle", "sleep", "curious", "happy", "sad", "seeing", "dancing"):
                 v.state = "watched"
             if now < self._show_until and v.state not in ("error", "low_battery"):
                 v.state, v.text, v.image = "show", self._shown_text, self._shown_image

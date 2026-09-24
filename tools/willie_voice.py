@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import signal
 import sys
 import threading
@@ -48,6 +49,31 @@ def muted() -> bool:
         return bool(Config().get("privacy.mute"))
     except Exception:
         return False
+
+
+def music_face(face, spotify) -> None:
+    """While Spotify plays on his speaker: the track on the face, and now and then a dance
+    (face.dance_every_s on average, face.dance_s long; the face only dances when it rests)."""
+    from willie.config import Config
+    config, next_dance = Config(), 0.0
+    while True:
+        track = spotify.now_playing()
+        face.music(track)
+        now = time.monotonic()
+        if not track:
+            next_dance = 0.0
+        else:
+            try:
+                config.reload()
+                every, length = float(config.get("face.dance_every_s")), float(config.get("face.dance_s"))
+            except Exception:
+                every, length = 60.0, 8.0
+            if not next_dance:                   # music just started: a first dance soon
+                next_dance = now + random.uniform(3, 10)
+            if every and now >= next_dance:
+                face.dance(length)
+                next_dance = now + length + every*random.uniform(0.5, 1.5)
+        time.sleep(1)
 
 
 def main() -> int:
@@ -84,6 +110,8 @@ def main() -> int:
     # Spotify (willie/skills/spotify.py): music and his voice share one sound card.
     from willie.skills import spotify
     speech.MUSIC = spotify
+    if face:
+        threading.Thread(target=music_face, args=(face, spotify), name="music-face", daemon=True).start()
     try:
         while True:
             try:

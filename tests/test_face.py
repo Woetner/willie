@@ -285,3 +285,26 @@ def test_busy_can_show_the_camera(face):
         view = face.snapshot()
         assert view.state == "seeing" and view.label == "LOOKING..."
     assert face.snapshot().state == "listening"
+
+
+def test_dance_only_with_music_and_only_over_a_resting_face(face):
+    face.dance(8)
+    assert face.snapshot().state == "idle"                 # no music: no dance
+    face.music("Bohemian Rhapsody - Queen")
+    face.dance(8)
+    assert face.snapshot().state == "dancing"
+    assert face.snapshot().music == "Bohemian Rhapsody - Queen"
+    face.set_state("listening")
+    assert face.snapshot().state == "listening"            # talking/listening always wins
+    face.set_state("idle")
+    face.clock.now += 9
+    assert face.snapshot().state == "idle"                 # the dance ends by itself
+    face.indicators(watched=True)
+    face.dance(8)
+    assert face.snapshot().state == "watched"              # privacy frame beats the dance (D17)
+
+
+def test_now_playing_line_renders():
+    fb = Framebuffer.canvas()
+    Renderer().draw(fb, View(state="dancing", music="Around the World - Daft Punk"), 1.0)
+    assert any(fb.memory)
