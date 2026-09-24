@@ -19,7 +19,8 @@ fi
 systemctl disable --now raspotify 2>/dev/null || true
 
 install -m 644 "$REPO/config/asound.conf" /etc/asound.conf
-install -d -o "$U" -g "$U" "$REPO/.local" "$REPO/.local/librespot"
+id willie >/dev/null 2>&1 || bash "$REPO/tools/service_user.sh"   # services run as user willie
+install -d -o "$U" -g willie -m 2770 "$REPO/.local" "$REPO/.local/librespot"
 sed -e "s#@USER@#$U#g" -e "s#@HOME@#$H#g" "$REPO/systemd/willie-spotify.service" \
   > /etc/systemd/system/willie-spotify.service
 

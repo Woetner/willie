@@ -6,6 +6,9 @@ U=$(stat -c %U "$REPO")
 H=$(getent passwd "$U" | cut -d: -f6)
 [ "$REPO" = "$H/willie" ] || { echo "repo must be at $H/willie (is $REPO)"; exit 1; }
 
+# The services run as their own user `willie` (security audit, 25 Sep).
+bash "$REPO/tools/service_user.sh"
+
 for unit in willie.service willie-voice.service willie-dashboard.service willie-dashboard.socket; do
   sed -e "s#@USER@#$U#g" -e "s#@HOME@#$H#g" "$REPO/systemd/$unit" > "/etc/systemd/system/$unit"
 done

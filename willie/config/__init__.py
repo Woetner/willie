@@ -120,6 +120,9 @@ class Config:
     def _write(self, values: dict):
         header = "# WILL-E live settings — edit in the dashboard (schema: config/schema.yaml)\n"
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".willie-", suffix=".yaml")
+        # Group-readable/-writable: the services run as user willie, Wouter's tools as woetner,
+        # both in group willie (tools/service_user.sh, security audit 25 Sep).
+        os.fchmod(fd, 0o660)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(header)
             yaml.safe_dump(values, f, sort_keys=False, allow_unicode=True)

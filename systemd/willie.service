@@ -7,7 +7,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=@USER@
+User=willie
+Group=willie
+# Own user without sudo (tools/service_user.sh, security audit 25 Sep); the code stays
+# @USER@'s and read-only for it. Group willie shares the runtime state with @USER@.
+UMask=0007
+Environment=WILLIE_CONFIG=@HOME@/.config/willie/willie.yaml
+Environment=WILLIE_DATA=@HOME@/.local/share/willie
 WorkingDirectory=@HOME@/willie
 EnvironmentFile=-@HOME@/willie/.env
 Environment=PYTHONUNBUFFERED=1

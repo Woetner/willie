@@ -12,7 +12,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=@USER@
+User=willie
+Group=willie
+# Own user without sudo (tools/service_user.sh, security audit 25 Sep); the code stays
+# @USER@'s and read-only for it. Group willie shares the runtime state with @USER@.
+UMask=0007
+Environment=WILLIE_CONFIG=@HOME@/.config/willie/willie.yaml
+Environment=WILLIE_DATA=@HOME@/.local/share/willie
 SupplementaryGroups=audio
 # willie_music (config/asound.conf): stereo -> mono, 44.1 -> 48 kHz for the MAX98357A.
 # The sink is closed while paused, so his voice can open the card (--emit-sink-events
