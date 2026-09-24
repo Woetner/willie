@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import math
 import time
+import weakref
 from dataclasses import dataclass
 
 from . import font
+from .framebuffer import Recorder, changed_bands
 
 STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
           "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting", "watched")
@@ -56,10 +58,11 @@ def mix(a, b, t):
 
 class Painter:
     """Draw at logical 480x320 coordinates on the actual framebuffer geometry."""
-    def __init__(self, surface, brightness):
+    def __init__(self, surface, brightness, text_cache=None):
         self.fb = surface
         self.sx, self.sy = surface.width / 480, surface.height / 320
         self.brightness = brightness
+        self.text_cache = {} if text_cache is None else text_cache
 
     def ink(self, c):
         return tuple(round(v * self.brightness) for v in c)
@@ -74,11 +77,9 @@ class Painter:
 
     def round_rect(self, x, y, w, h, r, c):
         r = max(1, min(r, w/2, h/2))
-        self.rect(x+r, y, w-2*r, h, c)
-        self.rect(x, y+r, w, h-2*r, c)
-        for cx in (x+r, x+w-r):
-            for cy in (y+r, y+h-r):
-                self.ellipse(cx, cy, r, r, c)
+        x0, y0 = round(x*self.sx), round(y*self.sy)
+        x1, y1 = max(x0+1, round((x+w)*self.sx)), max(y0+1, round((y+h)*self.sy))
+        self.fb.round_rect(x0, y0, x1, y1, max(1, round(r*min(self.sx, self.sy))), self.ink(c))
 
     def line(self, x1, y1, x2, y2, width, c):
         count = max(1, int(max(abs(x2-x1), abs(y2-y1))))
@@ -87,8 +88,24 @@ class Painter:
             self.ellipse(x1+(x2-x1)*t, y1+(y2-y1)*t, width/2, width/2, c)
 
     def text(self, text, x, y, scale, c):
-        # FONT calls rect(), keeping the same coordinate transform as the eyes.
-        font.draw(self, text, x, y, scale, c)
+        # FONT calls rect(), keeping the same coordinate transform as the eyes. A string
+        # is hundreds of small rects, so its ops are built once and reused as one group.
+        x, y = round(x), round(y)
+        key = (str(text), x, y, scale, self.ink(c))
+        op = self.text_cache.get(key)
+        if op is None:
+            fb, self.fb = self.fb, Recorder(self.fb)
+            try:
+                font.draw(self, text, x, y, scale, c)
+                ops = tuple(self.fb.ops)
+            finally:
+                fb, self.fb = self.fb, fb
+            op = ("g", min(o[1] for o in ops), max(o[2] for o in ops), ops) if ops else ()
+            if len(self.text_cache) > 400:
+                self.text_cache.clear()
+            self.text_cache[key] = op
+        if op:
+            self.fb.ops.append(op)
 
     def centre(self, text, y, scale, c):
         self.text(text, (480-len(font.normalise(text))*6*scale)/2, y, scale, c)
@@ -99,11 +116,28 @@ class Renderer:
         self.last_time = None
         self.pose = [100.0, 110.0, 100.0, 110.0, 0.0, 0.0]
         self.eye_colour = CYAN
+        self.bands: list[tuple[int, int]] = []   # rows repainted by the last draw()
+        self._ops = None
+        self._surface = lambda: None
+        self._text_cache: dict = {}
 
-    def draw(self, surface, view: View, now: float, settings: dict | None = None):
-        settings = settings or {}
+    def draw(self, surface, view: View, now: float, settings: dict | None = None) -> int:
+        """Compose the frame as draw calls, then repaint only the rows whose calls changed
+        since the last frame on this surface. Returns the number of rows repainted (0 =
+        the frame is identical, nothing to send to the panel); `self.bands` has them."""
+        recorder = Recorder(surface)
+        self._compose(recorder, view, now, settings or {})
+        ops = recorder.ops
+        previous = self._ops if self._surface() is surface else None
+        self.bands = changed_bands(previous, ops, surface.height)
+        if self.bands:
+            surface.paint(ops, self.bands)
+        self._ops, self._surface = ops, weakref.ref(surface)
+        return sum(hi - lo for lo, hi in self.bands)
+
+    def _compose(self, surface, view: View, now: float, settings: dict):
         brightness = max(.05, min(1, float(settings.get("brightness", 80))/100))
-        p = Painter(surface, brightness)
+        p = Painter(surface, brightness, self._text_cache)
         bg = colour(settings.get("bg_color"), (0, 0, 0))
         base = colour(settings.get("eye_color"), CYAN)
         dim = mix(bg, base, .28)
@@ -173,7 +207,8 @@ class Renderer:
             blink = 1
         h1, h2 = h1*blink, h2*blink
         if state == "listening":
-            ring = mix(bg, base, .22+.12*(1+math.sin(now*3)))
+            # Pulse in 8 steps: a smooth pulse repainted two 130-row rings every frame (D6).
+            ring = mix(bg, base, .22+.12*round(4*(1+math.sin(now*3)))/4)
             for cx in (158, 322):
                 p.ellipse(cx, 157, 65, 64, ring)
                 p.ellipse(cx, 157, 62, 61, bg)

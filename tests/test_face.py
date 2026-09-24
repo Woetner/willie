@@ -136,6 +136,26 @@ def test_static_rows_are_not_sent_repeatedly():
     assert display.memory == buffer.memory
 
 
+def test_incremental_repaint_matches_a_full_repaint():
+    """D6: only changed rows are repainted. Every frame must still equal a fresh full
+    render of the same view, in every state, through state changes, blinks and text."""
+    incremental, buffer = Renderer(), Framebuffer.canvas()
+    skipped = 0
+    for i in range(len(STATES)*25):
+        state = STATES[i//25]
+        now = 100+i*.04
+        view = View(state=state, text="M3 = 0.5 MM" if i % 50 < 25 else "", level=(i % 7)/7,
+                    battery=15 if i % 3 else 80, mic=i % 11 < 5,
+                    watched=state == "idle" and i % 25 > 20, pet=.5 if i % 13 == 0 else 0)
+        fresh = Renderer()   # same animation state as the incremental one before this frame
+        fresh.pose, fresh.eye_colour, fresh.last_time = list(incremental.pose), incremental.eye_colour, incremental.last_time
+        skipped += incremental.draw(buffer, view, now) == 0
+        full = Framebuffer.canvas()
+        fresh.draw(full, view, now)
+        assert buffer.memory == full.memory, f"frame {i} ({state}) differs from a full repaint"
+    assert skipped > 0   # static states really skip frames
+
+
 def test_frame_layout_mismatch_is_rejected():
     with pytest.raises(ValueError,match="layout mismatch"):
         Framebuffer.canvas().present(Framebuffer.canvas(320,480))

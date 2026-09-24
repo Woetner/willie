@@ -199,8 +199,8 @@ class Face:
                 render_started = self.clock()
                 view = self.snapshot(now)
                 for renderer, buffer, display in zip(renderers, buffers, self.displays):
-                    renderer.draw(buffer, view, now, self.settings)
-                    self.dirty_rows += display.present(buffer)
+                    if renderer.draw(buffer, view, now, self.settings):   # 0 = same frame
+                        self.dirty_rows += display.present(buffer, renderer.bands)
                 elapsed = self.clock()-render_started
                 self.render_seconds += elapsed
                 self.max_render_seconds = max(self.max_render_seconds, elapsed)

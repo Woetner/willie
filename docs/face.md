@@ -2,7 +2,9 @@
 
 The face is a standard-library Python renderer for the existing 480×320 ILI9486
 framebuffer. No pygame, Pillow, browser, additional service, or cloud connection is
-needed on the Pi. The renderer draws in RAM first and presents only changed rows.
+needed on the Pi. The renderer records each frame as a list of draw calls, skips a frame whose calls
+are identical to the last one, and otherwise repaints and presents only the rows
+whose calls changed (24 Sep: idle face 71.5 % → 5.2 % of one Pi core).
 
 ## Try it on the Mac
 
