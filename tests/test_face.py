@@ -4,6 +4,7 @@ import asyncio
 import os
 import struct
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -308,3 +309,38 @@ def test_now_playing_line_renders():
     fb = Framebuffer.canvas()
     Renderer().draw(fb, View(state="dancing", music="Around the World - Daft Punk"), 1.0)
     assert any(fb.memory)
+
+
+def test_activity_badges_show_real_jobs_only():
+    from datetime import datetime, timedelta
+    from willie.face.runtime import activity_badges
+    now = time.time()
+    soon = (datetime.now().astimezone() + timedelta(minutes=12)).isoformat()
+    later = (datetime.now().astimezone() + timedelta(days=3)).isoformat()
+    snap = {"background": [
+        {"id": "printer", "icon": "printer", "progress": .42, "level": "ok"},
+        {"id": "eufy", "icon": "eye", "level": "ok"},
+        {"id": "w1", "icon": "eye", "level": "warn"},
+        {"id": "reminder", "icon": "bell", "at_iso": later, "level": "ok"},
+        {"id": "r2", "icon": "bell", "at_iso": soon, "level": "warn"},
+        {"id": "x", "icon": "rocket", "level": "ok"},
+    ]}
+    assert activity_badges(snap, now) == [("printer", "42%", "ok"), ("eye", "", "warn"), ("bell", "12M", "warn")]
+    assert activity_badges(None) == [] and activity_badges({}) == []
+
+
+def test_badges_render_and_never_reach_the_camera_flag(face):
+    face.activity([("printer", "100%", "ok"), ("search", "", "ok"), ("eye", "", "bad"),
+                   ("bell", "59M", "warn"), ("timer", "5M", "ok")])
+    assert len(face.snapshot().badges) == 4
+    fb = Framebuffer.canvas()
+    Renderer().draw(fb, replace(face.snapshot(), mic=True, camera=True), 0)
+    empty = Framebuffer.canvas()
+    Renderer().draw(empty, View(mic=True, camera=True), 0)
+    assert fb.memory != empty.memory
+    # Nothing drawn right of the badge area on the flag row except what the plain frame has.
+    for y in range(49, 72):
+        row = slice(y*fb.stride + Renderer.BADGE_X1*2, y*fb.stride + 334*2)
+        assert fb.memory[row] == empty.memory[row]
+    face.activity([])
+    assert face.snapshot().badges == ()

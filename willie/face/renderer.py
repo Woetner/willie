@@ -43,6 +43,7 @@ class View:
     image_age: float = 99.0     # seconds since the picture appeared (drives the reveal)
     flash: bool = False         # the picture is a camera photo: shutter flash first
     music: str = ""             # Spotify on his speaker: "TITLE - ARTIST" on the bottom line
+    badges: tuple = ()          # background jobs from the hub (willie/activity): ((icon, text, level), ...)
 
 
 def colour(value, fallback):
@@ -366,6 +367,52 @@ class Renderer:
         elif view.camera:
             p.ellipse(336, 59, 3, 3, RED)
             p.text("CAM LIVE", 349, 53, 2, WHITE)
+        self._badges(p, view, base, dim, bg)
+
+    # Background jobs (activity from the hub) as small icons between the MIC and CAM flags.
+    BADGE_X0, BADGE_X1 = 160, 326
+
+    def _badges(self, p, view, base, dim, bg):
+        x = self.BADGE_X0
+        for icon, text, level in view.badges[:4]:
+            text = font.normalise(str(text))[:5]
+            width = 16 + (len(text)*6 + 4 if text else 0)
+            if x + width > self.BADGE_X1:
+                break
+            c = RED if level == "bad" else AMBER if level == "warn" else base
+            self._icon(p, icon, x, 53, c, bg)
+            if text:
+                p.text(text, x+20, 57, 1, WHITE)
+            x += width + 10
+
+    @staticmethod
+    def _icon(p, icon, x, y, c, bg):
+        """16x14 line icons at (x, y) = top left, drawn with the same primitives as the eyes."""
+        if icon == "printer":
+            p.rect(x+4, y, 8, 4, c)                    # spool / top
+            p.round_rect(x, y+4, 16, 6, 2, c)          # body
+            p.rect(x+4, y+10, 8, 4, c)                 # the print
+            p.rect(x+5, y+11, 6, 2, bg)
+        elif icon == "search":
+            p.ellipse(x+6, y+6, 6, 6, c)
+            p.ellipse(x+6, y+6, 4, 4, bg)
+            p.line(x+10, y+10, x+15, y+14, 2, c)
+        elif icon == "eye":
+            p.ellipse(x+8, y+7, 8, 5, c)
+            p.ellipse(x+8, y+7, 6, 3, bg)
+            p.ellipse(x+8, y+7, 2, 2, c)
+        elif icon == "bell":
+            p.ellipse(x+8, y+5, 5, 5, c)
+            p.rect(x+3, y+5, 10, 5, c)
+            p.rect(x+1, y+10, 14, 2, c)
+            p.ellipse(x+8, y+13, 2, 1, c)
+        elif icon == "timer":
+            p.ellipse(x+8, y+8, 6, 6, c)
+            p.ellipse(x+8, y+8, 4, 4, bg)
+            p.line(x+8, y+8, x+8, y+5, 1, c)
+            p.rect(x+6, y, 4, 2, c)
+        else:
+            p.ellipse(x+8, y+7, 3, 3, c)
 
     def _watched_frame(self, p, now):
         """Live view is open (S8): a red frame round the whole screen and a blinking LIVE

@@ -231,6 +231,11 @@ class Face:
         with self._lock:
             self._view.music = str(now_playing)[:80]
 
+    def activity(self, badges) -> None:
+        """Background jobs from the hub as small icons in the status row (see activity_badges)."""
+        with self._lock:
+            self._view.badges = tuple(tuple(b) for b in badges)[:4]
+
     def dance(self, seconds: float) -> None:
         """Dance to the music for a while - only over a resting face (idle, curious, happy)."""
         with self._lock:
@@ -456,3 +461,35 @@ class Face:
                 display.close()
         if self.console:
             self.console.restore()
+
+
+# The hub's activity list (homeserver hub/activity.py, MQTT willie/activity) -> face badges.
+# Only what he is actively doing for Wouter; the always-on eufy watch would be a permanent
+# icon that says nothing, so it stays in the app.
+FACE_ICONS = {"printer", "search", "eye", "bell", "timer"}
+BELL_WITHIN_S = 3600
+
+
+def activity_badges(snapshot: dict, now: float | None = None) -> list[tuple[str, str, str]]:
+    from datetime import datetime
+
+    now = time.time() if now is None else now
+    out = []
+    for item in (snapshot or {}).get("background") or []:
+        icon, level = item.get("icon"), item.get("level") or "ok"
+        if item.get("id") == "eufy" or icon not in FACE_ICONS:
+            continue
+        text = ""
+        if item.get("id") == "printer" and isinstance(item.get("progress"), (int, float)):
+            text = f"{round(item['progress']*100)}%"
+        elif item.get("at_iso"):
+            try:
+                left = datetime.fromisoformat(item["at_iso"]).timestamp() - now
+            except ValueError:
+                continue
+            if left > BELL_WITHIN_S:
+                continue                        # a reminder next week is not "doing something"
+            text = f"{max(0, round(left/60))}M"
+        out.append((icon, text, level))
+    return out[:4]
+

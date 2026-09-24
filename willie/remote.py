@@ -24,6 +24,8 @@ Topics (WILL-E.md Phase S):
        willie/cmd/power    {"action": "off"|"restart"}  the app asked "are you sure?" already
        willie/tool/call    {"id", "name", "args"}
        willie/hub/result   {"id", "result"}     answer to willie/hub/call
+       willie/activity     {"time", "now", "background"} (retained, hub every <= 60 s):
+                           background jobs -> small icons on his face
 """
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ log = logging.getLogger("willie.remote")
 
 STATE_EVERY_S = 2.0
 HEALTH_EVERY_S = 10.0
+ACTIVITY_STALE_S = 180.0    # no fresh activity list from the hub: the icons go (hub down)
 VIDEO_LEASE_S = 10.0        # live view stops by itself when the hub stops asking (S8)
 VIDEO_SIZE, VIDEO_FPS, VIDEO_QUALITY = (640, 480), 10, 60
 
@@ -58,6 +61,7 @@ class Remote:
         self.sleep_now = sleep_now           # threading.Event: end a running conversation now
         self.host, self.port, self.user, self.password = host, port, user, password
         self.session_active = False          # set by the voice loop: the speaker is taken
+        self._activity_at = 0.0              # monotonic time of the last fresh willie/activity
         self.client = None
         self._stop = threading.Event()
         self._camera = threading.Lock()      # one owner of the camera at a time (S8 design point)
@@ -96,6 +100,7 @@ class Remote:
         client.max_queued_messages_set(20)         # broker gone: drop, never pile up
         client.on_connect = self._on_connect
         client.on_message = self._on_message
+        client.on_disconnect = lambda *a, **k: self._activity(None)
         self.client = client
         client.connect_async(self.host, self.port, keepalive=15)
         client.loop_start()
@@ -126,7 +131,8 @@ class Remote:
             log.warning("MQTT refused: %s", reason)
             return
         log.info("MQTT connected")
-        client.subscribe([("willie/cmd/#", 1), ("willie/tool/call", 1), ("willie/hub/result", 1)])
+        client.subscribe([("willie/cmd/#", 1), ("willie/tool/call", 1), ("willie/hub/result", 1),
+                          ("willie/activity", 1)])
         self._publish("willie/online", "1", retain=True, qos=1)
         try:
             from willie.voice import tools
@@ -148,6 +154,9 @@ class Remote:
             if waiter:
                 waiter["result"] = data.get("result")
                 waiter["done"].set()
+            return
+        if message.topic == "willie/activity":
+            self._activity(data)                     # cheap: sets a tuple on the face
             return
         handler = {
             "willie/cmd/say": self._say,
@@ -363,8 +372,18 @@ class Remote:
         self._publish("willie/tool/result", {"id": call_id, "name": name, "result": result}, qos=1)
 
     # ---------------------------------------------------------------- state
+    def _activity(self, data: dict | None) -> None:
+        if not self.face:
+            return
+        from willie.face.runtime import activity_badges
+        fresh = isinstance(data, dict) and time.time() - float(data.get("time") or 0) < ACTIVITY_STALE_S
+        self._activity_at = time.monotonic() if fresh else 0.0
+        self.face.activity(activity_badges(data) if fresh else [])
+
     def _state_loop(self) -> None:
         while not self._stop.wait(STATE_EVERY_S):
+            if self._activity_at and time.monotonic() - self._activity_at > ACTIVITY_STALE_S:
+                self._activity(None)
             try:
                 self._publish("willie/state", self.state())
             except Exception:
