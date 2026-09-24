@@ -31,7 +31,8 @@ async def search(question: str, api_key: str | None = None, timeout: float = 30.
     question = question.strip()
     if not question:
         return {"fout": "geen vraag"}
-    key = api_key or os.environ.get("GEMINI_API_KEY", "")
+    from willie.voice import talk_key
+    key = api_key or talk_key()
     try:
         return await asyncio.wait_for(_ask(question, key, url), timeout)
     except asyncio.TimeoutError:

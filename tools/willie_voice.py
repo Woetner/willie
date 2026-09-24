@@ -98,7 +98,8 @@ def run_garage(face, remote, key: str, sleep_now, spotify) -> None:
 def main() -> int:
     load_env(REPO / ".env")
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
-    gemini_key = os.environ.get("GEMINI_API_KEY")
+    from willie.voice import talk_key
+    gemini_key = talk_key()                  # talking: the free key when set (willie/voice/__init__.py)
     if not gemini_key:
         print("GEMINI_API_KEY missing from .env", file=sys.stderr)
         return 2

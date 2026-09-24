@@ -226,7 +226,8 @@ def speak(text: str, voice: str = VOICE, api_key: str | None = None) -> str:
     text = text.strip()
     if not text:
         return ""
-    key = api_key or os.environ.get("GEMINI_API_KEY")
+    from willie.voice import talk_key
+    key = api_key or talk_key()
     if key:
         for model in (TTS_MODEL, TTS_FALLBACK_MODEL):
             try:

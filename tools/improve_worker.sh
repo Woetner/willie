@@ -169,9 +169,13 @@ ask_one() {  # ask_one <question>  - read-only Claude Code, answer goes back to 
   echo "?? $question"
   # Read-only and scoped to the project folder: the Read/Grep/Glob rules with ./**
   # stop it reading anything outside, and .env / the Onshape key are denied inside.
+  # Security audit (24 Sep): it keeps web search and web pages (datasheets), so it must
+  # never be able to read a secret it could put in a URL. The Onshape keys moved out of
+  # the project (~/.config/willie/onshape.env), and every env/key file is denied by name.
   answer="$( cd "$project" && claude -p "$prompt" \
       --allowedTools "Read(./**)" "Grep(./**)" "Glob(./**)" "WebSearch" "WebFetch" \
-      --disallowedTools "Read(**/.env)" "Read(**/.env.*)" "Read(./Onshape key.docx)" \
+      --disallowedTools "Read(**/.env)" "Read(**/.env.*)" "Read(**/*.env)" "Read(**/.onshape*)" \
+        "Grep(**/.env)" "Grep(**/*.env)" "Grep(**/.onshape*)" "Read(**/*.pem)" \
     < /dev/null 2>&1 | head -c 4000 )"
   [ -n "$answer" ] || answer="Claude gaf geen antwoord."
   line="$(python3 -c 'import json,sys; from datetime import datetime; print(json.dumps({"tijd": datetime.now().isoformat(timespec="seconds"), "vraag": sys.argv[1], "antwoord": sys.argv[2]}, ensure_ascii=False))' "$question" "$answer")"

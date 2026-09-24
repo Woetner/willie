@@ -18,6 +18,7 @@ Audio contract:
 
 from __future__ import annotations
 
+from willie.voice import talk_key
 import array
 import asyncio
 import base64
@@ -93,7 +94,7 @@ class GeminiLiveAdapter(VoiceAdapter):
         so a conversation outlives Google's connection limit; `resume_handle` continues an
         earlier one. The newest handle is kept in `self.resume_handle`."""
         super().__init__()
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        self.api_key = api_key or talk_key()
         self.models = [(m, s) for m, s in MODELS if m == model] or ([(model, "audio")] if model else list(MODELS))
         self.voice = VOICE
         self.language = language
