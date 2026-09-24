@@ -10,6 +10,7 @@
 #include "pins.h"
 #include "motors.h"
 #include "encoders.h"
+#include "wheels.h"
 #include "servos.h"
 #include "sensors.h"
 
@@ -177,15 +178,16 @@ static void handleLine(char *line) {
     float v = argf(ok), w = argf(ok);
     if (!ok) { sendLine(Link, "err args"); return; }
     if (!motionAllowed()) { motorsBrake(); return; }
-    float half = w * cfg("track") / 2000.0f;        // m/s at each wheel from turning
-    float full = cfg("v_full") / 1000.0f;
-    motorsSet((v - half) / full * 100, (v + half) / full * 100);
+    float half = w * cfg("track") / 2.0f;           // mm/s at each wheel from turning
+    wheelsDrive(v * 1000 - half, v * 1000 + half);  // F2: closed loop when pid_on, else open
   } else if (!strcmp(cmd, "pwm")) {                // pwm <left %> <right %>, bench (B12)
     float l = argf(ok), r = argf(ok);
     if (!ok) { sendLine(Link, "err args"); return; }
     if (!motionAllowed()) { motorsBrake(); return; }
+    wheelsOpen();
     motorsSet(l, r);
   } else if (!strcmp(cmd, "stop")) {
+    wheelsOpen();
     motorsBrake();
   } else if (!strcmp(cmd, "look")) {               // look <pan deg> <tilt deg>
     float p = argf(ok), t = argf(ok);
@@ -257,6 +259,7 @@ void setup() {
   Link.setTxBufferSize(2048);
   Link.begin(LINK_BAUD, SERIAL_8N1, PIN_LINK_RX, PIN_LINK_TX);
   encodersInit();
+  wheelsInit();                                     // after the encoders: reads their counts
   servosInit();
   sensorsInit();
   odoReset();
@@ -280,6 +283,10 @@ void loop() {
   if (tOdo.due(now)) odoUpdate();
   if (tServo.due(now)) servosUpdate();
 
+  if (pidSignFault) {                               // set by the wheel task (wheels.h)
+    pidSignFault = false;
+    sendLine(Link, "err pid_sign");
+  }
   if (wdTripped) {                                  // set by the watchdog task, reported here
     wdTripped = false;
     sendf("ev wd %lu", (unsigned long)millis());

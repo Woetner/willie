@@ -9,9 +9,10 @@ drive:
   max_speed:      {type: float, default: 0.25, min: 0.05, max: 0.6, unit: m/s, help: Top driving speed}
   accel:          {type: float, default: 0.5, min: 0.1, max: 2.0, unit: m/s², help: Acceleration limit}
   pwm_cap:        {type: int, default: 50, min: 10, max: 50, unit: "%", help: Hard motor PWM cap (6 V motors on 12.6 V). Never above 50.}
-  pid_kp:         {type: float, default: 1.0, min: 0, max: 20, help: Wheel speed PID – P}
-  pid_ki:         {type: float, default: 0.2, min: 0, max: 20, help: Wheel speed PID – I}
-  pid_kd:         {type: float, default: 0.0, min: 0, max: 5, help: Wheel speed PID – D}
+  pid_on:         {type: bool, default: false, help: "Wheel speed loop in the firmware (F2). Turn on after B12 confirmed the encoder directions; it switches itself off on a sign fault"}
+  pid_kp:         {type: float, default: 1.0, min: 0, max: 20, help: "Wheel speed PID – P, on the speed error in duty % (unitless)"}
+  pid_ki:         {type: float, default: 2.0, min: 0, max: 20, unit: 1/s, help: Wheel speed PID – I}
+  pid_kd:         {type: float, default: 0.0, min: 0, max: 5, unit: s, help: Wheel speed PID – D}
   wheel_diameter: {type: float, default: 100.0, min: 60, max: 140, unit: mm, help: Calibrated in F3}
   track_width:    {type: float, default: 170.0, min: 100, max: 250, unit: mm, help: Wheel centre to centre, calibrated in F3}
   encoder_cpr:    {type: int, default: 960, min: 1, max: 10000, unit: counts/rev, help: Counts per wheel revolution, measured in B12}

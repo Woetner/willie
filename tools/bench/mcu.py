@@ -4,6 +4,7 @@
     make bench-mcu T=sensors    B10 50 Hz stream for 10 min: rate, I2C errors, live values
     make bench-mcu T=io         B11 cliff/bumper events with Pi-side latency
     make bench-mcu T=motors     B12 both wheels both ways, counts per revolution, watchdog stop time
+    make bench-mcu T=pid        F2  wheel speed loop: open vs closed loop at two speeds, then tune kp/ki/kd
     make bench-mcu T=watch      print every line from the MCU
 
 Directly on the Pi (core stopped):  .venv/bin/python tools/bench/mcu.py servo [--port /dev/serial0]
@@ -181,13 +182,52 @@ async def t_spin(link: Link, pct: float):
         pass
 
 
+# ---------------------------------------------------------------- F2 wheel speed loop
+async def wheel_speeds(link: Link, v: float, seconds: float, mm_per_tick: float) -> tuple[float, float]:
+    """Drive at v m/s; mean speed per wheel (mm/s) over the second half of the run."""
+    await repeat(link, lambda: link.drive(v, 0), seconds / 2)
+    a, ta = link.state, link.state_t
+    await repeat(link, lambda: link.drive(v, 0), seconds / 2)
+    b, tb = link.state, link.state_t
+    dt = max(tb - ta, 1e-3)
+    return ((b["ticks_l"] - a["ticks_l"]) * mm_per_tick / dt, (b["ticks_r"] - a["ticks_r"]) * mm_per_tick / dt)
+
+
+async def t_pid(link: Link, wheel_d: float, cpr: float):
+    await ainput("F2: WHEELS OFF THE GROUND (then again on the floor and on a rug). Run B12 first: the loop "
+                 "needs the right einv_* signs. Enter = go ")
+    link.send("clear")
+    mm_per_tick = 3.14159 * wheel_d / cpr
+    while True:
+        for pid in (0, 1):
+            link.cfg("pid_on", pid)
+            for v in (0.15, 0.08):
+                left, right = await wheel_speeds(link, v, 3.0, mm_per_tick)
+                link.stop()
+                await asyncio.sleep(0.5)
+                target = v * 1000
+                print(f"  {'closed' if pid else 'open  '} {target:4.0f} mm/s   L {left:6.0f} ({(left - target) / target:+5.0%})"
+                      f"   R {right:6.0f} ({(right - target) / target:+5.0%})")
+        print("Closed loop should land within a few % on both wheels; open loop shows the motor spread.")
+        line = (await ainput('Tune with "cfg kp 1.5" (kp/ki/kd/v_full), Enter = run again, "q" = done: ')).strip()
+        if line == "q":
+            break
+        if line.startswith("cfg "):
+            _, key, value = line.split()
+            link.cfg(key, float(value))
+            await asyncio.sleep(0.2)
+    print("Write the gains in willie.yaml (drive.pid_kp/ki/kd) and set drive.pid_on: true; the core pushes them.")
+
+
 async def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("test", choices=["servo", "sensors", "io", "motors", "spin", "watch"])
+    ap.add_argument("test", choices=["servo", "sensors", "io", "motors", "spin", "pid", "watch"])
     ap.add_argument("--port", default="/dev/serial0")
     ap.add_argument("--baud", type=int, default=921600)
     ap.add_argument("--minutes", type=float, default=10)
     ap.add_argument("--pct", type=float, default=30, help="motor duty for B12 (firmware caps at 50)")
+    ap.add_argument("--wheel-d", type=float, default=100, help="mm, for T=pid")
+    ap.add_argument("--cpr", type=float, default=960, help="counts per wheel revolution (B12), for T=pid")
     a = ap.parse_args()
 
     events: list = []
@@ -210,6 +250,8 @@ async def main():
             await t_motors(link, a.pct)
         elif a.test == "spin":
             await t_spin(link, a.pct)
+        elif a.test == "pid":
+            await t_pid(link, a.wheel_d, a.cpr)
         else:
             link.send("stat?")
             await asyncio.sleep(3600)

@@ -17,7 +17,11 @@ struct Setting {
 static Setting SETTINGS[] = {
   {"pwm_cap",      50,    0,   PWM_CAP_HARD},  // % duty, soft cap below the hard cap
   {"wd_ms",        200,   50,  1000},          // no drive/pwm command for this long = brake
-  {"v_full",       600,   50,  3000},          // mm/s of a wheel at 100 % duty (open-loop drive until F2 PID)
+  {"v_full",       600,   50,  3000},          // mm/s of a wheel at 100 % duty (the PID's feedforward)
+  {"pid_on",       0,     0,   1},             // F2 wheel speed loop (wheels.h); on after B12 checked einv_*
+  {"kp",           1.0,   0,   20},            // PID gains on the speed error in duty % (unitless)
+  {"ki",           2.0,   0,   20},            // 1/s
+  {"kd",           0.0,   0,   5},             // s
   {"wheel_d",      100,   30,  200},           // mm
   {"track",        170,   50,  400},           // mm between wheel contact lines
   {"cpr",          960,   1,   100000},        // encoder counts per WHEEL revolution (measure in B12)
