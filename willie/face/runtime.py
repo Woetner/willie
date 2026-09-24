@@ -132,6 +132,7 @@ class Face:
         self._return_to_listening = False
         self._busy: list[str] = []   # labels of running background jobs (Face.busy)
         self._level = 0.0
+        self.on_pet = None           # fn() on every accepted touch (mood event, G2)
         self.failure = None
         self.console = None
         self.frames = self.dirty_rows = 0
@@ -286,6 +287,8 @@ class Face:
                     self._show_started = now
                     self._show_until = now+max(15,pages*6)
             self._pet_until = now+1.4
+        if self.on_pet:
+            self.on_pet()
 
     def audio(self, pcm: bytes, rate=24000, *, starts_at=None):
         """Queue 20 ms RMS envelopes at playback time, rather than at network arrival."""

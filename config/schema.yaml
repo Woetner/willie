@@ -58,6 +58,9 @@ mood:
 behavior:
   _label: Behaviour
   wander:          {type: bool, default: false, help: Wander around on his own}
+  wander_pause_s:  {type: int, default: 90, min: 5, max: 1800, unit: s, help: "Average pause between wander trips (shorter when curious and awake)"}
+  wander_max_m:    {type: float, default: 0.6, min: 0.1, max: 2.0, unit: m, help: Longest single wander leg}
+  respect_s:       {type: int, default: 120, min: 0, max: 3600, unit: s, help: "No wandering this long after someone drove him (voice, app, CLI)"}
   quiet_start:     {type: time, default: "23:00", help: Quiet hours start}
   quiet_end:       {type: time, default: "07:30", help: Quiet hours end}
   patrol_list:     {type: str, default: "printer, garage door, kitchen", help: Comma-separated place names}

@@ -47,4 +47,8 @@ def test_move_turn_and_mood_through_the_socket(core):
     assert ask("event", name="pet") == {"ok": True}
     assert ask("mood")["context"].startswith("stemming: ")
     assert "onbekend" in ask("dans")["fout"]
+    assert ask("state")["behaviour"] == "respect"            # just driven: he stays put
+    assert ask("event", name="conversation_start") == {"ok": True}
+    time.sleep(0.7)
+    assert ask("state")["behaviour"] == "talk"
     assert "antwoordt niet" in control.request("state", path=core.parent / "nope.sock")["fout"]

@@ -616,8 +616,10 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
 
 def live_context() -> str:
     now = datetime.now()
+    from willie import control
+    body = control.context_line()          # mood + battery from the core (G2); "" if it is down
     return (f"Het is nu {DAYS[now.weekday()]} {now.day} {MONTHS[now.month - 1]} {now.year}, "
-            f"{now:%H:%M}.{willie_tools.remembered()}")
+            f"{now:%H:%M}.{f' Jouw toestand: {body}.' if body else ''}{willie_tools.remembered()}")
 
 
 def configured_search() -> bool:

@@ -72,6 +72,9 @@ def main() -> int:
     wake_stop = threading.Event()        # set by the phone app's idle/sleep switch
     sleep_now = threading.Event()        # set by sleep mode: ends a conversation right away
     remote = Remote.from_env(face, wake_stop, sleep_now)
+    from willie import control              # mood events + resting face from the core (G2)
+    if face:
+        face.on_pet = lambda: control.event("pet")
     speech.silence(muted())              # started asleep: stay quiet until woken
     if remote:
         willie_tools.FRAME_SOURCE = remote.latest_frame
@@ -95,6 +98,9 @@ def main() -> int:
                 if face:
                     face.indicators(muted=False)
                     face.waiting()
+                    resting = control.request("mood", timeout=0.3).get("face", "idle")
+                    if resting != "idle":                    # tired, sad, curious... (G2)
+                        face.set_state(resting, "SAY HEY WILLIE")
                     face.indicators(mic=True)
                 try:
                     # Re-check mute every 30 s while waiting.
@@ -107,6 +113,8 @@ def main() -> int:
                     continue
                 if face:
                     face.set_state("curious")
+                control.event("wake")
+                control.request("event", timeout=0.3, name="conversation_start")
                 print("wake!", flush=True)
                 # A local chime instead of a spoken "Ja?" (23 Sep): the cloud TTS took ~1 s
                 # and the mic heard it. The recorder keeps running, so a question said
@@ -123,7 +131,12 @@ def main() -> int:
                     elapsed = time.monotonic() - started
                     if kind == "user_turn_end":
                         turn_end[:] = [elapsed]
+                        control.event("user_speaking")
                     elif kind == "audio" and turn_end:
+                        control.event("talking")
+                    elif kind == "error":
+                        control.event("error")
+                    if kind == "audio" and turn_end:
                         # End of Wouter's speech -> first sound back (Gate G1, target < 0.8 s).
                         print(f"  [{elapsed:5.1f}s] reply delay {elapsed - turn_end[0]:.2f} s")
                         turn_end.clear()
@@ -151,6 +164,7 @@ def main() -> int:
                                                     face=face, cancel=sleep_now, recorder=recorder,
                                                     transcript=transcript))
                 finally:
+                    control.event("conversation_end")
                     if remote:
                         remote.session_active = False
                     if transcript:

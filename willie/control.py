@@ -39,6 +39,9 @@ class Body:
 
     def __init__(self, link, safety, motion, mood):
         self.link, self.safety, self.motion, self.mood = link, safety, motion, mood
+        self.conversation = False       # a voice session is open: behaviours sit still (G3)
+        self.last_command = 0.0         # monotonic time of the last move/turn from outside
+        self.behaviours = None          # behavior.tree.Behaviours, set by core
 
     def state(self) -> dict:
         st = self.link.state or {}
@@ -53,6 +56,8 @@ class Body:
             "battery_v": None if not st.get("mv") else st["mv"] / 1000,
             "battery": self.safety.battery_state,
             "busy": self.motion.busy,
+            "conversation": self.conversation,
+            "behaviour": self.behaviours.current if self.behaviours else None,
             "mood": self.mood.snapshot(),
         }
 
@@ -61,8 +66,10 @@ class Body:
         if cmd == "state":
             return self.state()
         if cmd == "move":
+            self.last_command = time.monotonic()
             return await self.motion.move(float(req["m"]), req.get("speed"))
         if cmd == "turn":
+            self.last_command = time.monotonic()
             return await self.motion.turn(float(req["deg"]), req.get("speed"))
         if cmd == "stop":
             self.motion.stop()
@@ -74,7 +81,11 @@ class Body:
             self.link.look(float(req.get("pan", 0)), float(req.get("tilt", 0)))
             return {"ok": True}
         if cmd == "event":
-            return {"ok": self.mood.event(str(req.get("name", "")))}
+            name = str(req.get("name", ""))
+            if name in ("conversation_start", "conversation_end"):
+                self.conversation = name == "conversation_start"
+                return {"ok": True}
+            return {"ok": self.mood.event(name)}
         if cmd == "mood":
             return {"values": self.mood.snapshot(), "context": self.mood.context(), "face": self.mood.face()}
         return {"fout": f"onbekend commando {cmd!r}"}
@@ -122,6 +133,27 @@ def request(cmd: str, timeout: float = 30.0, path=SOCKET, **args) -> dict:
         return json.loads(data)
     except (OSError, ValueError) as exc:
         return {"fout": f"het lichaam (willie.service) antwoordt niet: {exc}"}
+
+
+def event(name: str) -> None:
+    """Fire-and-forget mood event from another process (never blocks the caller; with the
+    core down the event is simply lost - mood is a nicety, D22-style)."""
+    import threading
+    threading.Thread(target=request, args=("event",), kwargs={"timeout": 0.5, "name": name},
+                     daemon=True).start()
+
+
+def context_line(timeout: float = 0.3) -> str:
+    """Mood + battery for the AI's live context, or "" when the core does not answer."""
+    mood = request("mood", timeout=timeout)
+    if "context" not in mood:
+        return ""
+    state = request("state", timeout=timeout)
+    volts = state.get("battery_v")
+    line = mood["context"]
+    if volts and state.get("battery") != "unknown":
+        line += f"; batterij {volts:.1f} V ({state['battery']})"
+    return line
 
 
 def main():

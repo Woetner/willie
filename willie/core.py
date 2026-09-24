@@ -136,6 +136,8 @@ async def amain():
     motion = Motion(link, safety, cfg.get)
     mood = Mood(cfg.get)
     body = control.Body(link, safety, motion, mood)
+    from willie.behavior.tree import Behaviours
+    body.behaviours = Behaviours(body, cfg.get)
     link.on_message = lambda words: on_mcu_message(words, motion, mood, link)
     cfg.on_change(lambda old, new: setattr(link, "ping_hz", new["link"]["ping_hz"]))
     cfg.on_change(lambda old, new: push_mcu_settings())
@@ -151,6 +153,7 @@ async def amain():
         asyncio.create_task(supervise("state", lambda: write_state(link, body))),
         asyncio.create_task(supervise("body", lambda: body_loop(link, safety, mood))),
         asyncio.create_task(supervise("control", lambda: control.serve(body))),
+        asyncio.create_task(supervise("behaviour", body.behaviours.run)),
     ]
     log.info("core running, RSS %.1f MB", _rss_mb())
     await stop.wait()
