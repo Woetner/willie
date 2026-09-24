@@ -1,0 +1,23 @@
+# Gate G1 test sheet (D8): 20 fixed questions, Dutch + English. `tool` = the tool the model
+# should call (none = answer without a tool, any = search or an honest "weet ik niet").
+# `expect` = words of which at least one must be in the spoken answer (lower case).
+- {id: tijd,       text: "Hoe laat is het?",                                             tool: none}
+- {id: scherm,     text: "Zet tweeënveertig op je scherm.",                              tool: toon}
+- {id: kijk,       text: "Wat zie je nu voor je?",                                       tool: kijk}
+- {id: onthoud,    text: "Onthoud dat de bougie van mijn Tomos een NGK B7HS is.",       tool: onthoud}
+- {id: slaap,      text: "Hoe heb ik vannacht geslapen?",                                tool: gezondheid}
+- {id: herinner,   text: "Herinner me morgen om negen uur aan de Teams-meeting.",       tool: herinnering_maak}
+- {id: waarom,     text: "Waarom heb ik een level shifter nodig tussen vijf volt encoders en een ESP32?", tool: none, expect: ["3,3", "3.3", "drie komma drie", "volt"]}
+- {id: kever,      text: "Met welk aanhaalmoment draai ik een bougie in een Kever-motor?", tool: none, expect: ["nm", "newtonmeter"]}
+- {id: rijden,     text: "Rij een halve meter naar voren.",                              tool: rijden}
+- {id: draaien,    text: "Draai je eens om.",                                            tool: draaien}
+- {id: stop,       text: "Stop, sta stil.",                                              tool: stilstaan}
+- {id: gevoel,     text: "Hoe voel je je vandaag?",                                      tool: none}
+- {id: mongolie,   text: "Wat is de hoofdstad van Mongolië?",                            tool: none, expect: ["ulaanbaatar", "oelan", "ulan"]}
+- {id: rekenen,    text: "Wat is zeven keer achtenveertig?",                             tool: none, expect: ["336", "driehonderdzesendertig"]}
+- {id: temp,       text: "Hoe warm is je processor?",                                    tool: status}
+- {id: agenda,     text: "Wat staat er vandaag in mijn agenda?",                         tool: agenda}
+- {id: i2c,        text: "Which GPIO pins are the I2C pins on a Raspberry Pi?",          tool: none, expect: ["2", "3", "two", "three"]}
+- {id: kever_foto, text: "Show me a picture of a Volkswagen Beetle on your screen.",     tool: toon_afbeelding}
+- {id: metric,     text: "Remember that I always want metric units.",                    tool: onthoud}
+- {id: weer,       text: "What will the weather be like tomorrow in Haarlem?",           tool: any}

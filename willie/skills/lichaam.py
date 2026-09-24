@@ -29,7 +29,10 @@ DECLARATIONS = [
     },
     {
         "name": "draaien",
-        "description": "Draai op de plek: positief = linksom, negatief = rechtsom, in graden (max 360).",
+        "description": (
+            "Draai je hele lijf op de plek: positief = linksom, negatief = rechtsom, in graden "
+            "(max 360). 'Draai je om' = 180 graden, 'kijk naar links' = 90."
+        ),
         "parameters": {
             "type": "object",
             "properties": {"graden": {"type": "number", "description": "Graden, -360 tot 360."}},
