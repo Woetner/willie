@@ -45,12 +45,23 @@ def _load():
     return _detector
 
 
-def listen_for_wake(stop_after: float | None = None, on_tick=None) -> bool:
+def listen_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> bool:
     """Block until the wake word is heard. True on a detection, False on timeout.
+    The microphone is released before returning."""
+    recorder = wait_for_wake(stop_after, on_tick, stop)
+    if recorder is None:
+        return False
+    recorder.terminate()
+    recorder.wait(timeout=2)
+    return True
 
-    The microphone is released before returning, so the live session that
-    follows can open it. `on_tick(elapsed, probability)` is called about every
-    half second with the highest probability seen, for bench tuning.
+
+def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> subprocess.Popen | None:
+    """Block until the wake word is heard. On a detection the arecord process is returned
+    still running (23 Sep), so the live session keeps listening without a gap and hears
+    the question said straight after "Hey Willie". None on timeout (mic released). `on_tick(elapsed, probability)` is called about every
+    half second with the highest probability seen, for bench tuning. `stop` (a
+    threading.Event) ends the wait early, e.g. when the phone app puts him to sleep.
     """
     if not available():
         raise RuntimeError("pymicro-wakeword missing - make deps")
@@ -60,11 +71,12 @@ def listen_for_wake(stop_after: float | None = None, on_tick=None) -> bool:
     factor = mic.gain()
     recorder = subprocess.Popen(mic.command(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     elapsed, loudest, next_tick = 0.0, 0.0, 0.5
+    detected = False
     try:
         while True:
             raw = recorder.stdout.read(CHUNK * mic.FRAME) if recorder.stdout else b""
             if len(raw) < CHUNK * mic.FRAME:
-                return False
+                return None
             chunk = mic.left(raw, factor)
             elapsed += CHUNK / mic.RATE
             for frame in features.process_streaming(chunk):
@@ -73,12 +85,39 @@ def listen_for_wake(stop_after: float | None = None, on_tick=None) -> bool:
                     continue
                 loudest = max(loudest, probability)
                 if probability > model.probability_cutoff:
-                    return True
+                    detected = True
+                    return recorder
             if on_tick and elapsed >= next_tick:
                 on_tick(elapsed, loudest)
                 loudest, next_tick = 0.0, next_tick + 0.5
             if stop_after and elapsed >= stop_after:
-                return False
+                return None
+            if stop is not None and stop.is_set():
+                return None
     finally:
-        recorder.terminate()
-        recorder.wait(timeout=2)
+        if not detected:
+            recorder.terminate()
+            recorder.wait(timeout=2)
+
+
+class Spotter:
+    """The wake word on audio someone else already captures: the live session feeds it its
+    own mic chunks (16 kHz mono S16, gain applied) while it stands by (23 Sep), so "Hey
+    Willie" wakes him again without closing and reopening the connection. Shares the loaded
+    model with wait_for_wake(); both never run at the same time."""
+
+    def __init__(self) -> None:
+        self.model, self.features = _load()
+        self.reset()
+
+    def reset(self) -> None:
+        self.model.reset()
+        self.features.reset()
+
+    def feed(self, chunk: bytes) -> bool:
+        for frame in self.features.process_streaming(chunk):
+            probability = self.model.process_streaming_prob(frame)
+            if probability is not None and probability > self.model.probability_cutoff:
+                self.reset()
+                return True
+        return False

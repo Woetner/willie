@@ -2,18 +2,21 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 
 from . import font
 
 STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
-          "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting")
+          "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting", "watched")
 # Where a picture goes, in logical 480x320 coordinates: the whole screen except a 36 px bar
 # at the bottom for the title and the mic/camera flags, which stay visible (D17).
 PICTURE_BOX = (0, 0, 480, 284)
 REVEAL_S = .45              # the photo opens like an eyelid from its centre line
 FLASH_S = .12               # camera photos start with a short shutter flash
 CYAN, AMBER, RED, WHITE = (57, 208, 255), (255, 190, 72), (255, 99, 105), (221, 238, 242)
+# Someone is looking through his camera from the phone app (S8). Its own colour, used for
+WATCHED = (255, 60, 90)    # nothing else, so it can never be mistaken for a mood (D17).
 
 
 @dataclass
@@ -27,6 +30,7 @@ class View:
     mic: bool = False
     camera: bool = False
     muted: bool = False
+    watched: bool = False       # live view open on the phone (S8): red frame on every state
     level: float = 0.0
     gaze: float | None = None
     pet: float = 0.0
@@ -126,39 +130,23 @@ class Renderer:
             "seeing": (100, 110, 100, 110, 0, -3),
             "show": (100, 106, 100, 106, 0, 0),
             "connecting": (96, 90, 96, 90, 0, 0),
+            "watched": (104, 104, 104, 104, 0, 0),
         }
         dt = .04 if self.last_time is None else max(0, min(.1, now-self.last_time))
         self.last_time = now
         ease = 1-math.exp(-dt*13)
         target = targets[state]
         self.pose = [v+(t-v)*ease for v,t in zip(self.pose, target)]
-        target_colour = RED if state == "error" else AMBER if state in ("thinking", "low_battery", "connecting") else base
+        target_colour = RED if state == "error" else WATCHED if state == "watched" else AMBER if state in ("thinking", "low_battery", "connecting") else base
         self.eye_colour = mix(self.eye_colour, target_colour, ease)
         eye = self.eye_colour
         if state == "sleep":
             eye = mix(bg, eye, .35)
-        p.rect(23, 23, 5, 13, AMBER)
-        p.text("WILL-E", 37, 23, 2, WHITE)
-        # Unknown is explicitly unknown, never a fabricated battery or connection.
-        link = "LINK --" if view.connected is None else "LINK OK" if view.connected else "OFFLINE"
-        p.text(link, 229, 25, 1, dim if view.connected is None else base if view.connected else AMBER)
-        battery = "--" if view.battery is None else f"{view.battery}%"
-        p.text(battery, 357, 23, 2, AMBER if view.battery is not None and view.battery < 20 else WHITE)
-        p.round_rect(418, 21, 34, 17, 3, dim)
-        p.rect(421, 24, 28, 11, bg)
-        p.rect(453, 26, 3, 7, dim)
-        if view.battery is not None:
-            fill = max(0, min(100, view.battery))*24/100
-            if fill:
-                p.rect(423, 26, fill, 7, AMBER if view.battery < 20 else base)
-        if view.charging:
-            p.text("+", 407, 23, 1, AMBER)
-        # These flags report actual device activity, independently of expression.
-        privacy = "MIC MUTED" if view.muted else "MIC LIVE" if view.mic else "MIC OFF"
-        p.text(privacy, 24, 53, 2, AMBER if view.muted else base if view.mic else dim)
-        if view.camera:
-            p.ellipse(336, 59, 3, 3, RED)
-            p.text("CAM LIVE", 349, 53, 2, WHITE)
+        # Asleep (22 Sep, Wouter): only the sleeping eyes, no status bar, flags or captions.
+        # The privacy flags come back the moment the mic or camera is actually on (D17).
+        bare = state == "sleep" and not (view.mic or view.camera or view.watched)
+        if not bare:
+            self._status_bar(p, view, base, dim, bg, now)
 
         if state == "show":
             self._card(p, view, base, dim, bg)
@@ -192,7 +180,15 @@ class Renderer:
         style = settings.get("eye_style", "round")
         for side, (cx, w, h) in enumerate(((158+gx,w1,h1),(322+gx,w2,h2))):
             cy = 157+gy
-            if state == "error":
+            if state == "watched":
+                # Two camera lenses looking back at the viewer: ring, iris, a glint.
+                focus = 1+.06*math.sin(now*2.2+side)
+                p.ellipse(cx, cy, 52, 52, eye)
+                p.ellipse(cx, cy, 43, 43, bg)
+                p.ellipse(cx, cy, 30*focus, 30*focus, mix(bg, eye, .55))
+                p.ellipse(cx, cy, 15*focus, 15*focus, bg)
+                p.ellipse(cx-13, cy-14, 6, 6, WHITE)
+            elif state == "error":
                 p.line(cx-24, cy-29, cx+24, cy+29, 12, eye)
                 p.line(cx-24, cy+29, cx+24, cy-29, 12, eye)
             elif state == "happy":
@@ -216,6 +212,8 @@ class Renderer:
                 y -= (1-view.pet)*14
                 p.line(x-size, y, x+size, y, 2, AMBER)
                 p.line(x, y-size, x, y+size, 2, AMBER)
+        if bare:
+            return
         if state in ("thinking", "connecting"):
             for i in range(3):
                 p.ellipse(221+i*19, 230, 3, 3, eye if int(now*3)%3 == i else dim)
@@ -236,9 +234,10 @@ class Renderer:
                   "thinking":"LET ME THINK", "talking":"SPEAKING", "happy":"THAT'S NICE",
                   "sad":"OH, WELL", "surprised":"WAIT, WHAT?", "sleep":"RECHARGING" if view.charging else "ZZZ...",
                   "low_battery":"TIME TO RECHARGE", "error":"OOPS", "seeing":"TAKING A LOOK",
-                  "connecting":"CONNECTING"}
-        label = "MIC MUTED" if view.muted else view.label or labels.get(state, "RIGHT HERE")
-        p.centre(label, 271, 2, eye if state in ("error","low_battery") else WHITE)
+                  "connecting":"CONNECTING", "watched":"WOUTER IS WATCHING"}
+        # Asleep from the phone app = muted + sleep face: the Zzz label, the MIC MUTED flag stays on top.
+        label = "MIC MUTED" if view.muted and state != "sleep" else view.label or labels.get(state, "RIGHT HERE")
+        p.centre(label, 271, 2, eye if state in ("error","low_battery","watched") else WHITE)
         detail = view.code[:48] if state == "error" else view.text[:48]
         if detail:
             p.centre(detail, 299, 1, dim)
@@ -268,11 +267,51 @@ class Renderer:
         # Bottom bar: title left, the privacy flags right (they must stay visible, D17).
         p.rect(0, 286, 480, 1, dim)
         p.text(font.normalise(view.text)[:28], 14, 296, 2, WHITE)
+        if view.watched:
+            self._watched_frame(p, time.monotonic())
         if view.camera:
             p.ellipse(372, 302, 3, 3, RED)
             p.text("CAM", 380, 298, 1, WHITE)
         mic = "MUTED" if view.muted else "MIC" if view.mic else "MIC OFF"
         p.text(mic, 414, 298, 1, AMBER if view.muted else eye if view.mic else dim)
+
+    def _status_bar(self, p, view, base, dim, bg, now):
+        p.rect(23, 23, 5, 13, AMBER)
+        p.text("WILL-E", 37, 23, 2, WHITE)
+        # Unknown is explicitly unknown, never a fabricated battery or connection.
+        link = "LINK --" if view.connected is None else "LINK OK" if view.connected else "OFFLINE"
+        p.text(link, 229, 25, 1, dim if view.connected is None else base if view.connected else AMBER)
+        battery = "--" if view.battery is None else f"{view.battery}%"
+        p.text(battery, 357, 23, 2, AMBER if view.battery is not None and view.battery < 20 else WHITE)
+        p.round_rect(418, 21, 34, 17, 3, dim)
+        p.rect(421, 24, 28, 11, bg)
+        p.rect(453, 26, 3, 7, dim)
+        if view.battery is not None:
+            fill = max(0, min(100, view.battery))*24/100
+            if fill:
+                p.rect(423, 26, fill, 7, AMBER if view.battery < 20 else base)
+        if view.charging:
+            p.text("+", 407, 23, 1, AMBER)
+        # These flags report actual device activity, independently of expression.
+        privacy = "MIC MUTED" if view.muted else "MIC LIVE" if view.mic else "MIC OFF"
+        p.text(privacy, 24, 53, 2, AMBER if view.muted else base if view.mic else dim)
+        if view.watched:
+            self._watched_frame(p, now)
+        elif view.camera:
+            p.ellipse(336, 59, 3, 3, RED)
+            p.text("CAM LIVE", 349, 53, 2, WHITE)
+
+    def _watched_frame(self, p, now):
+        """Live view is open (S8): a red frame round the whole screen and a blinking LIVE
+        badge, over every expression, so a viewer can never be missed (D17)."""
+        pulse = .6+.4*math.sin(now*3)
+        edge = mix((0, 0, 0), WATCHED, pulse)
+        for x, y, w, h in ((0, 0, 480, 5), (0, 315, 480, 5), (0, 0, 5, 320), (475, 0, 5, 320)):
+            p.rect(x, y, w, h, edge)
+        p.round_rect(334, 49, 124, 22, 4, WATCHED)
+        if int(now*2) % 2 == 0:
+            p.ellipse(346, 60, 4, 4, WHITE)
+        p.text("LIVE VIEW", 355, 54, 1, WHITE)
 
     def _card(self, p, view, eye, dim, bg):
         picture = (view.image or {}).get(p.fb.layout()) if hasattr(p.fb, "layout") else None

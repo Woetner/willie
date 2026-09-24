@@ -17,6 +17,8 @@ PI="${PI:-willie.local}"
 PI_DIR="${PI_DIR:-willie}"
 QUEUE=".local/improve_queue.jsonl"
 RESULTS=".local/improve_results.jsonl"
+QUESTIONS=".local/claude_questions.jsonl"   # vraag_claude
+ANSWERS=".local/claude_answers.jsonl"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PLAN_FILE="$(dirname "$REPO")/WILL-E.md"   # master plan, one level above the repo
 WORKTREES="$REPO/.local/worktrees"
@@ -141,6 +143,35 @@ run_one() {
   rm -rf "$backup"
 }
 
+ask_one() {  # ask_one <question>  - read-only Claude Code, answer goes back to the Pi
+  local question="$1" prompt answer project line
+  project="$(dirname "$PLAN_FILE")"
+  prompt="$(cat "$REPO/tools/ask_prompt.txt")"
+  prompt="${prompt//__QUESTION__/$question}"
+  echo "?? $question"
+  # Read-only and scoped to the project folder: the Read/Grep/Glob rules with ./**
+  # stop it reading anything outside, and .env / the Onshape key are denied inside.
+  answer="$( cd "$project" && claude -p "$prompt" \
+      --allowedTools "Read(./**)" "Grep(./**)" "Glob(./**)" "WebSearch" "WebFetch" \
+      --disallowedTools "Read(**/.env)" "Read(**/.env.*)" "Read(./Onshape key.docx)" \
+    < /dev/null 2>&1 | head -c 4000 )"
+  [ -n "$answer" ] || answer="Claude gaf geen antwoord."
+  line="$(python3 -c 'import json,sys; from datetime import datetime; print(json.dumps({"tijd": datetime.now().isoformat(timespec="seconds"), "vraag": sys.argv[1], "antwoord": sys.argv[2]}, ensure_ascii=False))' "$question" "$answer")"
+  ssh -n "$PI" "printf '%s\n' $(printf '%q' "$line") >> $PI_DIR/$ANSWERS" 2>/dev/null || true
+  echo "   -> answered (${#answer} chars)"
+}
+
+ask_pass() {
+  # Questions first: they are quick and someone is waiting for the answer.
+  local fetched
+  fetched="$(ssh "$PI" "test -s $PI_DIR/$QUESTIONS && cat $PI_DIR/$QUESTIONS && : > $PI_DIR/$QUESTIONS" 2>/dev/null)"
+  [ -n "$fetched" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    ask_one "$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("vraag",""))' 2>/dev/null)"
+  done <<< "$fetched"
+}
+
 pass() {
   # Crash-safe handover: the queue is moved to a local file BEFORE the Pi's copy
   # is cleared, and each line is removed only once it has been dealt with. Losing
@@ -176,7 +207,7 @@ pass() {
 mkdir -p "$WORKTREES"
 if [ "${1:-}" = "--watch" ]; then
   echo "watching $PI - Ctrl-C to stop"
-  while true; do pass; sleep 20; done
+  while true; do ask_pass; pass; sleep 20; done
 else
-  pass; echo "done"
+  ask_pass; pass; echo "done"
 fi

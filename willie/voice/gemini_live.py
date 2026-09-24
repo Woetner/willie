@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 from datetime import datetime
 
 import websockets
@@ -148,9 +149,16 @@ class GeminiLiveAdapter(VoiceAdapter):
                     "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
                     "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
                     "prefixPaddingMs": 300,
-                    "silenceDurationMs": 800,
+                    # 800 -> 600 ms (23 Sep, Wouter): answers sooner; lower risks cutting
+                    # him off mid-thought.
+                    "silenceDurationMs": 600,
                 }
             },
+            # Text of both sides: the face only shows "thinking" once real words were heard
+            # (not a cough or a click), the follow-up window runs on words rather than noise,
+            # and the conversation goes into long-term memory (willie/brain/memory.py).
+            "inputAudioTranscription": {},
+            "outputAudioTranscription": {},
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}},
@@ -232,6 +240,12 @@ class GeminiLiveAdapter(VoiceAdapter):
             await self._emit("error", "server will end the session soon (goAway)")
             return
         server = _get(message, "serverContent", "server_content") or {}
+        heard = (_get(server, "inputTranscription", "input_transcription") or {}).get("text")
+        if heard:
+            await self._emit("heard", heard)
+        said = (_get(server, "outputTranscription", "output_transcription") or {}).get("text")
+        if said and not self._dropping:
+            await self._emit("said", said)
         if server.get("interrupted"):                # the user talked over him (server VAD)
             if self._speaking:
                 await self._emit("interrupted")
@@ -333,7 +347,9 @@ class Speaker:
 # of chunk peaks, and a chunk counts as speech when it is well above that.
 SPEECH_OVER_ROOM = 2.5
 SPEECH_MIN = 0.10            # never call anything under 10 % FS (after gain) speech
-TURN_END_S = 0.6             # this much quiet after speech = his turn is over -> thinking
+TURN_END_S = 0.8             # this much quiet after speech = his turn is over -> thinking
+SPEECH_MIN_S = 0.4           # shorter bursts (a cough, a click, a cup on the desk) are no turn
+PREROLL_MAX_S = 15.0         # audio kept while the session opens (the one-breath question)
 
 # The microphone hears the speaker - there is no echo cancellation and they sit on the
 # same board. While he is talking the uplink is gated, or the server's voice detector
@@ -369,29 +385,75 @@ class SpeechDetector:
         return speech
 
 
+class Standby:
+    """Not-for-me mode (23 Sep, Wouter): the session stays connected but nothing reaches the
+    model; the wake word runs locally on the same mic chunks, and "Hey Willie" resumes the
+    conversation at once - no reconnect, and the model still has the context."""
+
+    def __init__(self) -> None:
+        from collections import deque
+        self.on = False
+        self.since = 0.0
+        self.spotter = None
+        self.recent: deque[bytes] = deque(maxlen=15)     # 1.5 s: "Hey Willie" itself goes up too
+
+
 async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Event,
-                      activity: list[float], on_event) -> None:
+                      activity: list[float], on_event, ready: asyncio.Event | None = None,
+                      recorder: subprocess.Popen | None = None, standby: Standby | None = None) -> None:
+    """Mic -> adapter. Starts before the session is open: what Wouter says straight after
+    "Hey Willie" is kept (`ready` not set yet) and sent the moment the session is ready, so
+    "Hey Willie, hoe laat is het?" works in one breath (23 Sep). `recorder` is the wake
+    word's own arecord, handed over still running, so not a word falls in the gap."""
+    from collections import deque
     from willie.audio import mic
     frames = IN_RATE * CHUNK_MS // 1000
     factor = mic.gain()
     detector = SpeechDetector()
     sent, loudest = 0, 0.0
-    user_speaking, last_speech = False, 0.0
-    process = await asyncio.create_subprocess_exec(
-        *mic.command(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-    )
+    user_speaking, speech_start, last_speech, turn_open = False, 0.0, 0.0, False
+    preroll: deque[bytes] = deque(maxlen=int(PREROLL_MAX_S * 1000 / CHUNK_MS))
     loop = asyncio.get_running_loop()
+    if recorder is not None:
+        async def read(size: int) -> bytes:
+            data = await asyncio.to_thread(recorder.stdout.read, size)
+            if len(data) < size:
+                raise asyncio.IncompleteReadError(data, size)
+            return data
+    else:
+        process = await asyncio.create_subprocess_exec(
+            *mic.command(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        read = process.stdout.readexactly
     on_event("mic_active", "")
     try:
-        # The first ~0.8 s after arecord opens is the mic settling (a loud decaying bump).
-        await process.stdout.readexactly(int(IN_RATE * 0.8) * mic.FRAME)
+        if recorder is None:
+            # The first ~0.8 s after arecord opens is the mic settling (a loud decaying bump).
+            await read(int(IN_RATE * 0.8) * mic.FRAME)
         while not stop.is_set():
             try:
-                raw = await process.stdout.readexactly(frames * mic.FRAME)
+                raw = await read(frames * mic.FRAME)
             except asyncio.IncompleteReadError:
                 break
             chunk = mic.left(raw, factor)
             peak = _peak(chunk)
+            if ready is not None and not ready.is_set():
+                preroll.append(chunk)
+                continue
+            while preroll:
+                await adapter.send_audio(preroll.popleft())
+            if standby is not None:
+                standby.recent.append(chunk)
+                if standby.on:
+                    if standby.spotter is None:
+                        from willie.voice import wake
+                        standby.spotter = wake.Spotter()
+                    if standby.spotter.feed(chunk):
+                        standby.on = False
+                        on_event("wake_again", "")
+                        for held in standby.recent:
+                            await adapter.send_audio(held)
+                    continue
             # While he is speaking, swallow anything that is not clearly louder
             # than his own voice coming back through the microphone.
             if speaker.speaking(loop.time()) and peak < BARGE_IN_FS:
@@ -399,24 +461,31 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             await adapter.send_audio(chunk)
             sent += 1
             loudest = max(loudest, peak)
+            now = loop.time()
             if detector.is_speech(peak):
-                activity[0] = loop.time()
-                last_speech = loop.time()
+                last_speech = now
                 if not user_speaking:
+                    user_speaking, speech_start = True, now
+                if not turn_open and now - speech_start >= SPEECH_MIN_S:
+                    turn_open = True
                     on_event("user_speaking", "")
-                    user_speaking = True
-            elif user_speaking and loop.time() - last_speech >= TURN_END_S:
-                on_event("user_turn_end", "")
+            elif user_speaking and now - last_speech >= TURN_END_S:
                 user_speaking = False
+                if turn_open:
+                    turn_open = False
+                    on_event("user_turn_end", "")
             if sent % 20 == 0:                       # every 2 s
                 on_event("uplink", f"{sent} chunks, loudest {loudest * 100:.1f}% FS, "
                                    f"room {detector.room() * 100:.1f}%")
                 loudest = 0.0
     finally:
         on_event("mic_idle", "")
-        if process.returncode is None:
+        if recorder is not None:
+            recorder.terminate()
+            await asyncio.to_thread(recorder.wait)
+        elif process.returncode is None:
             process.terminate()
-        await process.wait()
+            await process.wait()
 
 
 def show(args: dict, face=None) -> dict:
@@ -571,17 +640,63 @@ def configured_language() -> str:
         return "nl"
 
 
+NOT_FOR_ME = Tool(
+    "niet_voor_mij",
+    "Alleen als het DUIDELIJK niet voor jou is: Wouter praat al een paar zinnen met iemand "
+    "anders in de kamer, zit aan de telefoon, of je hoort alleen tv of radio. Dan zeg je niets "
+    "en roep je dit aan; het gesprek stopt en je luistert weer naar 'Hey Willie'. Twijfel je, "
+    "of kan het een vraag of opmerking aan jou zijn (ook een nieuw onderwerp), dan is het "
+    "wel voor jou en antwoord je gewoon.",
+    {"type": "object", "properties": {"reden": {"type": "string", "description": "Een paar woorden, voor het logboek."}}},
+)
+
+
+def _chime(kind: str) -> None:
+    try:
+        from willie.audio import chime
+        chime.play(kind)
+    except Exception:                               # a missing ding must not end a conversation
+        pass
+
+
+def configured_followup() -> float:
+    """voice.followup_s: how long he keeps listening without the wake word after the last
+    words (his or Wouter's)."""
+    try:
+        from willie.config import Config
+        return float(Config().get("voice.followup_s"))
+    except Exception:
+        return 20.0
+
+
+def configured_standby() -> float:
+    """voice.standby_s: after niet_voor_mij, how long he stays connected but silent."""
+    try:
+        from willie.config import Config
+        return float(Config().get("voice.standby_s"))
+    except Exception:
+        return 60.0
+
+
 async def session(
     api_key: str,
     seconds: float | None = None,
     idle_timeout: float | None = None,
     on_event=None,
     face=None,
+    cancel=None,
+    recorder: subprocess.Popen | None = None,
+    transcript: list | None = None,
 ) -> str:
     """Hold a live conversation on the Pi's sound card. Returns the model name that worked.
 
-    `idle_timeout` closes the session after that many seconds with neither side
-    making a sound, which is what the wake-word loop uses to go back to sleep.
+    `idle_timeout` is the follow-up window (23 Sep: voice.followup_s, 20 s): the session
+    closes that long after the last *words* - Wouter's as transcribed by the server, or the
+    end of WILL-E's own audio. Noise does not keep it open. `cancel` (a threading.Event)
+    ends it within half a second, mid-sentence: sleep mode from the phone app always wins
+    (22 Sep, Wouter). `recorder` is the wake word's still-running arecord (one-breath
+    questions). `transcript` gets (who, text) turns appended, "user"/"willie", for memory;
+    a turn the model judged not for him (niet_voor_mij) is left out.
     """
     from willie.face.runtime import Face
     owns_face = face is None
@@ -597,12 +712,27 @@ async def session(
 
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
+    ready = asyncio.Event()
     activity = [loop.time()]
     speaker = Speaker()
     native_search = configured_search()      # paid key: 3.8 searches itself, no zoek_op detour
     adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=native_search)
+    turns = transcript if transcript is not None else []
+    # Face: "thinking" only once the server has heard words in this turn. The mic's own
+    # level detector says when the turn *ends*; the transcription says it *was speech*.
+    turn = {"heard": False, "ended": False}
+    standby = Standby()
+    standby_s = configured_standby()
+
+    def add_turn(who: str, text: str) -> None:
+        if turns and turns[-1][0] == who:
+            turns[-1] = (who, turns[-1][1] + text)
+        else:
+            turns.append((who, text))
 
     def audio(pcm: bytes) -> None:
+        if standby.on:                             # he said he would stay quiet
+            return
         starts_at = max(loop.time(), speaker.busy_until)
         speaker.write(pcm)
         if face:
@@ -611,34 +741,107 @@ async def session(
         emit("audio", "")
 
     def event(kind: str, detail: str) -> None:
+        if standby.on and kind in ("speaking", "turn_complete", "said", "heard",
+                                   "user_speaking", "user_turn_end", "interrupted"):
+            return
+        if kind == "wake_again":
+            activity[0] = loop.time()
+            turn["heard"] = turn["ended"] = False
+            threading.Thread(target=_chime, args=("idle",), daemon=True).start()
+            if face:
+                face.indicators(mic=True)
+                face.set_state("listening")
+            if on_event:
+                on_event(kind, detail)
+            return
         if kind == "interrupted":
             speaker.stop()
         elif kind == "closed":
             stop.set()
         elif kind == "tool":
             activity[0] = loop.time()
+        elif kind == "heard":
+            activity[0] = loop.time()
+            add_turn("user", detail)
+            turn["heard"] = True
+            if turn["ended"]:                      # the words arrived after the quiet
+                turn["ended"] = False
+                emit("user_turn_end", "")
+            if on_event:
+                on_event(kind, detail)
+            return
+        elif kind == "said":
+            add_turn("willie", detail)
+            if on_event:
+                on_event(kind, detail)
+            return
+        elif kind == "user_speaking":
+            turn["heard"] = turn["ended"] = False
+        elif kind == "user_turn_end":
+            if not turn["heard"]:
+                turn["ended"] = True               # wait for words before "thinking"
+                return
+            turn["heard"] = False
+        elif kind in ("speaking", "turn_complete"):
+            turn["heard"] = turn["ended"] = False
         emit(kind, detail)
+
+    def not_for_me(args: dict) -> dict:
+        # Too eager on 23 Sep (Wouter): the first thing said after "Hey Willie" is always for
+        # him, so the tool is refused until he has answered at least once.
+        if not any(who == "willie" for who, _ in turns):
+            return {"genegeerd": "Je bent net gewekt: dit is voor jou. Beantwoord het."}
+        # Drop what he heard that was not meant for him, then stand by: connected, silent,
+        # deaf to the room until "Hey Willie" (Standby).
+        if turns and turns[-1][0] == "user":
+            turns.pop()
+        speaker.stop()
+        standby.on, standby.since = True, loop.time()
+        if face:
+            face.set_state("idle", "SAY HEY WILLIE")
+        emit("standby", f"not for me: {args.get('reden', '')}".strip())
+        return {"ok": True, "opdracht": "Zeg niets. Je hoort pas weer iets als hij 'Hey Willie' zegt; "
+                                        "ga dan gewoon verder met het gesprek."}
 
     adapter.on_audio(audio)
     adapter.on_event(event)
+    # The mic runs from the start: whatever he hears while the session opens is kept.
+    mic_task = asyncio.create_task(_microphone(adapter, speaker, stop, activity, event, ready, recorder, standby))
+    tools = willie_tool_list(face, web_search=not native_search)
+    tools.append(Tool(NOT_FOR_ME.name, NOT_FOR_ME.description, NOT_FOR_ME.parameters, handler=not_for_me))
     try:
-        await adapter.start_session(system_prompt(LIVE_EXTRA), live_context(), willie_tool_list(face, web_search=not native_search))
+        await adapter.start_session(system_prompt(LIVE_EXTRA), live_context(), tools)
     except BaseException:
+        stop.set()
+        mic_task.cancel()
+        await asyncio.gather(mic_task, return_exceptions=True)
         speaker.stop()
         await adapter.close()
         if face and owns_face:
             face.close()
         raise
+    activity[0] = loop.time()
+    ready.set()
 
     async def idle_watch() -> None:
         while not stop.is_set():
             await asyncio.sleep(0.5)
-            if idle_timeout and loop.time() - activity[0] >= idle_timeout:
-                emit("idle", f"{idle_timeout:.0f} s without speech")
+            if cancel is not None and cancel.is_set():
+                emit("idle", "sleep mode")
+                stop.set()
+                break
+            if standby.on:
+                if loop.time() - standby.since >= standby_s:
+                    emit("idle", f"{standby_s:.0f} s standby without 'Hey Willie'")
+                    stop.set()
+                continue
+            # The window starts when his voice has finished playing, not when it arrived.
+            last = max(activity[0], speaker.busy_until)
+            if idle_timeout and loop.time() - last >= idle_timeout:
+                emit("idle", f"{idle_timeout:.0f} s without words")
                 stop.set()
 
-    tasks = [asyncio.create_task(_microphone(adapter, speaker, stop, activity, emit)),
-             asyncio.create_task(idle_watch())]
+    tasks = [mic_task, asyncio.create_task(idle_watch())]
     try:
         waiter = asyncio.create_task(stop.wait())
         await asyncio.wait([waiter, *tasks], timeout=seconds, return_when=asyncio.FIRST_COMPLETED)

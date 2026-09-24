@@ -226,7 +226,7 @@ class Face:
 
     def indicators(self, **values):
         """Report real device state. This API does not operate or mute a microphone."""
-        allowed = {"battery", "charging", "connected", "mic", "camera", "muted", "gaze"}
+        allowed = {"battery", "charging", "connected", "mic", "camera", "muted", "gaze", "watched"}
         if set(values)-allowed:
             raise ValueError("unknown face indicator")
         if values.get("battery") is not None and "battery" in values:
@@ -382,6 +382,10 @@ class Face:
                 v.state = "low_battery"
             if v.pet and v.state in ("idle", "happy", "sleep", "curious"):
                 v.state = "happy"
+            # Live view (S8): the resting expressions give way to the "watched" lenses; talking,
+            # listening, errors keep their own face and get the red LIVE frame on top.
+            if v.watched and v.state in ("idle", "sleep", "curious", "happy", "sad", "seeing"):
+                v.state = "watched"
             if now < self._show_until and v.state not in ("error", "low_battery"):
                 v.state, v.text, v.image = "show", self._shown_text, self._shown_image
                 v.image_age, v.flash = now - self._show_started, self._shown_flash

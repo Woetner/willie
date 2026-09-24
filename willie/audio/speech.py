@@ -67,12 +67,32 @@ CARD_RATE = 48_000
 # The MAX98357A has no mixer control of its own (checked with amixer on 20 Sep),
 # so volume is done here by scaling samples. 0.0 is silence, 1.0 is as loud as
 # the amp goes, which is far too loud on a desk.
-VOLUME = float(os.environ.get("WILLIE_VOLUME", "0.15"))
+# Saved as voice.volume in willie.yaml (22 Sep, Wouter: louder, permanently), so the
+# dashboard, the phone app and the zet_volume tool all change the same number.
+# WILLIE_VOLUME in the environment still wins, for benches.
+VOLUME = None
+_cached = (0.0, 0.35)          # (read at, value): the live audio calls this per chunk
+
+
+def volume() -> float:
+    global _cached
+    if VOLUME is not None:
+        return VOLUME
+    if os.environ.get("WILLIE_VOLUME"):
+        return float(os.environ["WILLIE_VOLUME"])
+    now = time.monotonic()
+    if now - _cached[0] > 2.0:
+        try:
+            from willie.config import Config
+            _cached = (now, float(Config().get("voice.volume")))
+        except Exception:
+            _cached = (now, _cached[1])
+    return _cached[1]
 
 
 def scale(pcm: bytes, gain: float = None) -> bytes:
     """Apply the software volume. Returns the PCM unchanged at gain 1.0."""
-    gain = VOLUME if gain is None else gain
+    gain = volume() if gain is None else gain
     if gain >= 0.999:
         return pcm
     samples = array.array("h")
@@ -97,14 +117,42 @@ def _upsample(pcm: bytes, rate: int) -> bytes:
     return out.tobytes()
 
 
+_players: set = set()          # running aplay processes, so stop() can cut them off
+_silenced = False              # asleep: speak() stays quiet, even if its audio arrives later
+
+
 def _play_pcm(pcm: bytes, rate: int, channels: int = 1) -> None:
     pcm = scale(pcm)
     if channels == 1 and rate < CARD_RATE:
         pcm, rate = _upsample(pcm, rate), CARD_RATE
-    subprocess.run(
+    player = subprocess.Popen(
         ["aplay", "-q", "-D", DEVICE, "-f", "S16_LE", "-r", str(rate), "-c", str(channels), "-t", "raw"],
-        input=pcm, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+    _players.add(player)
+    try:
+        player.communicate(pcm)
+    except (BrokenPipeError, OSError):
+        pass
+    finally:
+        _players.discard(player)
+
+
+def silence(on: bool) -> None:
+    """Sleep mode: no speech until it is switched off again (chimes still play)."""
+    global _silenced
+    _silenced = on
+    if on:
+        stop()
+
+
+def stop() -> None:
+    """Cut off whatever he is saying right now (sleep mode from the phone app)."""
+    for player in list(_players):
+        try:
+            player.terminate()
+        except OSError:
+            pass
 
 
 def gemini_pcm(text: str, api_key: str, model: str = TTS_MODEL, timeout: float = 30.0,
@@ -173,6 +221,8 @@ def speak(text: str, voice: str = VOICE, api_key: str | None = None) -> str:
                 pcm = gemini_pcm(text, key, model)
                 latency = time.monotonic() - started
                 os.environ["WILLIE_TTS_LAST_MS"] = f"{latency * 1000:.0f}"
+                if _silenced:                 # fell asleep while the sentence was being made
+                    return ""
                 _play_pcm(pcm, TTS_RATE)
                 return "gemini"
             except RuntimeError:

@@ -46,14 +46,19 @@ behavior:
 voice:
   adapter: gemini_live
   model: ''
+  volume: 0.35
   speed: 1.0
   robot_filter: 0.3
   wake_sensitivity: 0.5
   wake_gain: 8.0
-  search: false
+  search: true
   language: nl
+  followup_s: 20
+  standby_s: 60
+memory:
+  context_chars: 24000
 skills:
-  brandstof_url: http://Wouters-MacBook-Pro.local:8000
+  brandstof_url: http://192.168.2.151:8000  # home server (S5)
 privacy:
   mute: false
   camera_allowed: true

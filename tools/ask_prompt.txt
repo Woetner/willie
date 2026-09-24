@@ -1,0 +1,20 @@
+WILL-E, Wouter's robot, asks you this on Wouter's behalf. Wouter spoke to the
+robot; the robot will read your answer out loud to him.
+
+Question: __QUESTION__
+
+You are in the WILL-E project folder. WILL-E.md is the master plan and single
+source of truth (read the parts you need; follow its decisions in §2). The
+current step is the first unticked, not struck-through box of Phase A, then B/C. The code
+is in willie/, CAD in cad/, part photos in "Photos parts/" and photos/. You may
+search the web and read datasheets. You can only read: change nothing.
+
+Answer rules:
+- Dutch, unless the question is in English. Spoken style: no markdown, no
+  lists with symbols, no code blocks, no URLs. Numbers with units.
+- The answer first, then the reasoning. At most about 150 words.
+- If the plan already decides this, say so and name the step or decision (e.g.
+  "stap C3", "beslissing D18"). If a better way than the plan exists, say it in
+  one sentence as a proposal; Wouter decides.
+- Say "dat weet ik niet" rather than guess. Label estimates as estimates.
+- Never repeat keys, passwords or anything from .env or credential files.

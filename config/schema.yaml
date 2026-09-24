@@ -64,12 +64,19 @@ voice:
   _label: Voice
   adapter:         {type: choice, default: gemini_live, options: [gemini_live, openai_realtime], restart: true, help: Chosen at Gate G1}
   model:           {type: str, default: "", restart: true, help: Model id (empty = adapter default)}
+  volume:          {type: float, default: 0.35, min: 0.02, max: 0.8, help: "Speaker volume for voice and chimes (0.15 = quiet desk, 0.35 = room, 0.8 = max)"}
   speed:           {type: float, default: 1.0, min: 0.7, max: 1.5, help: Speaking speed}
   robot_filter:    {type: float, default: 0.3, min: 0, max: 1, help: Amount of robot voice filter}
   wake_sensitivity: {type: float, default: 0.5, min: 0.1, max: 0.95, help: Wake-word threshold}
   wake_gain:       {type: float, default: 8.0, min: 1, max: 32, help: "Digital mic gain for wake word + recorder (INMP441 is quiet; left channel only)"}
   search:          {type: bool, default: false, help: "Google Search in conversations. Needs a paid Gemini key for the 3.x models (free tier: quota 0)"}
   language:        {type: choice, default: nl, options: [nl, en, auto], help: "Conversation language (nl = Dutch unless you speak English)"}
+  followup_s:      {type: float, default: 20, min: 3, max: 60, unit: s, help: "After the last words he keeps listening this long without 'Hey Willie', then sleeps"}
+  standby_s:       {type: float, default: 60, min: 0, max: 600, unit: s, help: "When he decides talk is not for him he stays connected but silent this long; 'Hey Willie' then answers instantly"}
+
+memory:
+  _label: Memory
+  context_chars:   {type: int, default: 24000, min: 2000, max: 200000, help: "How much long-term memory (facts + recent conversations) goes into every conversation. More = knows more without searching, but a slower start and more tokens per turn. Older things stay findable with herinner"}
 
 skills:
   _label: Skills

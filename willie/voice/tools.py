@@ -14,14 +14,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
-from datetime import date
 from pathlib import Path
 
+from willie.brain import memory
+
 REPO = Path(__file__).resolve().parents[2]
-MEMORY_FILE = Path(os.environ.get("WILLIE_MEMORY", REPO / "config" / "memory.md"))
 
 DECLARATIONS = [
     {
@@ -54,6 +55,21 @@ DECLARATIONS = [
                 "notitie": {"type": "string", "description": "Eén korte zin, concreet geformuleerd."},
             },
             "required": ["notitie"],
+        },
+    },
+    {
+        "name": "herinner",
+        "description": (
+            "Zoek in je eigen geheugen: alles wat ooit in een gesprek met Wouter is gezegd, "
+            "plus je notities. Gebruik dit als hij naar een eerder gesprek vraagt ('wat zei ik "
+            "gisteren over...', 'weet je nog...') of als je iets van vroeger niet meer precies weet."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "zoekterm": {"type": "string", "description": "Een paar kernwoorden, bijvoorbeeld 'Tomos carburateur'."},
+            },
+            "required": ["zoekterm"],
         },
     },
     {
@@ -146,9 +162,87 @@ DECLARATIONS = [
         },
     },
     {
+        "name": "lees_plan",
+        "description": (
+            "Lees het masterplan WILL-E.md: de huidige stap, een stap (A7, B12, D2), een "
+            "beslissing (D18), een paragraaf (5.2, §9.4) of een onderwerp (RAM, voeding). "
+            "Gebruik dit altijd als het over het plan, de volgende stap, een beslissing of "
+            "een meting gaat, voordat je antwoordt."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "onderdeel": {
+                    "type": "string",
+                    "description": "Leeg = de huidige stap en per fase de eerstvolgende. Anders een stap-ID, paragraafnummer of zoekwoord.",
+                }
+            },
+        },
+    },
+    {
+        "name": "lees_logs",
+        "description": (
+            "Lees je eigen logboek van de Pi (journalctl): wat je hoorde, deed en welke fouten "
+            "er waren. Gebruik dit als Wouter vraagt wat er misging of wat je net deed."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dienst": {
+                    "type": "string",
+                    "enum": ["willie-voice", "willie"],
+                    "description": "willie-voice = het praten en de wake word, willie = de kern.",
+                },
+                "zoek": {"type": "string", "description": "Optioneel: alleen regels met dit woord, bijvoorbeeld 'error'."},
+            },
+        },
+    },
+    {
+        "name": "vraag_claude",
+        "description": (
+            "Stel een lastige vraag aan Claude Code op Wouters laptop. Claude ziet alles van het "
+            "project: het hele plan, de code, de CAD, de foto's van onderdelen, en kan op internet "
+            "zoeken en datasheets lezen. Alleen lezen, hij verandert niets. Gebruik dit voor vragen "
+            "over hoe iets gebouwd of aangepakt moet worden, waar jouw eigen kennis of het plan "
+            "tekortschiet. Duurt 1 tot 5 minuten; het antwoord haal je op met antwoord_claude."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "vraag": {
+                    "type": "string",
+                    "description": "De vraag, volledig en op zichzelf te begrijpen voor iemand die dit gesprek niet hoorde.",
+                }
+            },
+            "required": ["vraag"],
+        },
+    },
+    {
+        "name": "antwoord_claude",
+        "description": "Haal de antwoorden op van vragen die je aan Claude hebt gesteld, en hoeveel er nog lopen.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
         "name": "status",
         "description": "Lees de toestand van de Pi: temperatuur, vrij geheugen, voeding, uptime.",
         "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "zet_uit",
+        "description": (
+            "Zet jezelf helemaal uit (actie 'uit') of herstart jezelf (actie 'herstart'). "
+            "Vraag Wouter altijd eerst of hij het zeker weet; roep dit pas aan met "
+            "bevestigd=true nadat hij ja heeft gezegd. Na 'uit' kun je alleen met je "
+            "aan/uit-schakelaar weer aan, niet via de app."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "actie": {"type": "string", "enum": ["uit", "herstart"]},
+                "bevestigd": {"type": "boolean", "description": "True alleen na Wouters expliciete ja."},
+            },
+            "required": ["actie"],
+        },
     },
     {
         "name": "zet_volume",
@@ -165,6 +259,9 @@ DECLARATIONS = [
 # Called with the photo's path right after kijk() captures it, before it goes to the model,
 # so the face can show what he is looking at (set by the live session when a face exists).
 LOOK_HOOK = None
+# While the phone's live view holds the camera (S8), kijk() looks at its newest frame
+# instead of fighting rpicam for the sensor. Set by willie/remote.py.
+FRAME_SOURCE = None
 
 
 def kijk(waar_op_letten: str = "") -> dict:
@@ -180,7 +277,11 @@ def kijk(waar_op_letten: str = "") -> dict:
     try:
         with tempfile.TemporaryDirectory(prefix="willie-look-") as tmp:
             image = Path(tmp) / "view.jpg"
-            capture(image, quiet=True)
+            frame = FRAME_SOURCE() if FRAME_SOURCE else None
+            if frame:
+                image.write_bytes(frame)
+            else:
+                capture(image, quiet=True)
             if LOOK_HOOK:
                 try:
                     LOOK_HOOK(image)
@@ -192,17 +293,11 @@ def kijk(waar_op_letten: str = "") -> dict:
 
 
 def onthoud(notitie: str) -> dict:
-    notitie = " ".join(notitie.split())
-    if not notitie:
-        return {"fout": "lege notitie"}
-    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if not MEMORY_FILE.exists():
-        MEMORY_FILE.write_text("# Wat WILL-E onthoudt\n\n", encoding="utf-8")
-    existing = MEMORY_FILE.read_text(encoding="utf-8")
-    if notitie.lower() in existing.lower():
-        return {"ok": True, "opmerking": "wist ik al"}
-    MEMORY_FILE.write_text(f"{existing.rstrip()}\n- {date.today().isoformat()}: {notitie}\n", encoding="utf-8")
-    return {"ok": True}
+    return memory.note(notitie)
+
+
+def herinner(zoekterm: str) -> dict:
+    return memory.search(zoekterm)
 
 
 QUEUE_FILE = Path(os.environ.get("WILLIE_IMPROVE_QUEUE", REPO / ".local" / "improve_queue.jsonl"))
@@ -335,6 +430,131 @@ def lijst_code(map: str = "") -> dict:
     return {"map": map or ".", "bestanden": entries[:40]}
 
 
+# --- The master plan (WILL-E.md) --------------------------------------------
+# rsync puts it inside the repo on the Pi; on the Mac it sits one level up.
+PLAN_CANDIDATES = (REPO / "WILL-E.md", REPO.parent / "WILL-E.md")
+STEP = re.compile(r"^[A-JS]\d{1,2}$", re.I)
+OPEN_STEP = re.compile(r"^- \[ \] \*\*([A-JS]\d{1,2})\b")
+
+
+def _plan_lines() -> list[str] | None:
+    for path in PLAN_CANDIDATES:
+        if path.is_file():
+            return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return None
+
+
+def _clip(text: str, first_line: int) -> dict:
+    out = {"regel": first_line, "tekst": text[:MAX_CHARS]}
+    if len(text) > MAX_CHARS:
+        out["afgekapt"] = f"lees verder met lees_code pad WILL-E.md vanaf_regel {first_line + text[:MAX_CHARS].count(chr(10))}"
+    return out
+
+
+def _section(lines: list[str], start: int) -> str:
+    level = len(lines[start]) - len(lines[start].lstrip("#"))
+    end = start + 1
+    while end < len(lines):
+        head = lines[end]
+        if head.startswith("#") and len(head) - len(head.lstrip("#")) <= level:
+            break
+        end += 1
+    return "\n".join(lines[start:end]).strip()
+
+
+def lees_plan(onderdeel: str = "") -> dict:
+    lines = _plan_lines()
+    if lines is None:
+        return {"fout": "WILL-E.md staat niet op de Pi - make sync zet hem erop"}
+    want = onderdeel.strip().lstrip("§").strip().rstrip(".")
+
+    if not want or want.lower() in ("huidig", "huidige stap", "nu", "volgende", "current"):
+        first, per_phase = None, {}
+        for n, line in enumerate(lines, 1):
+            found = OPEN_STEP.match(line)
+            if not found or line.startswith("- [ ] ~~"):
+                continue
+            first = first or (n, line)
+            per_phase.setdefault(found.group(1)[0].upper(), line[6:200])
+        if not first:
+            return {"huidige_stap": "alle stappen zijn afgevinkt"}
+        return {"huidige_stap": _clip(first[1], first[0]), "eerstvolgende_per_fase": per_phase}
+
+    if STEP.match(want):
+        key = want.upper()
+        hits = [(n, l) for n, l in enumerate(lines, 1)
+                if re.search(rf"\*\*{key}(\*\*|\s)", l) or l.startswith(f"| {key} |")]
+        found = [_clip(l, n) for n, l in hits[:3]]
+        # CAD steps have their own section too ("### 9.4 C3 — REF models").
+        found += [_clip(_section(lines, n), n + 1) for n, l in enumerate(lines)
+                  if l.startswith("#") and re.search(rf"\b{key}\b", l)][:1]
+        if found:
+            return {"gevonden": found}
+
+    if re.match(r"^\d{1,2}(\.\d{1,2})?$", want):
+        for n, line in enumerate(lines):
+            if re.match(rf"^#+ {re.escape(want)}[ .]", line):
+                return _clip(_section(lines, n), n + 1)
+
+    for n, line in enumerate(lines):
+        if line.startswith("#") and want.lower() in line.lower():
+            return _clip(_section(lines, n), n + 1)
+    hits = [f"{n}: {l[:200]}" for n, l in enumerate(lines, 1) if want.lower() in l.lower()]
+    return {"treffers": hits[:12] or "niets gevonden", "aantal": len(hits)}
+
+
+# --- Logs --------------------------------------------------------------------
+SECRET = re.compile(r"(key|token|password|secret)=[^&\s\"']+", re.I)
+
+
+def lees_logs(dienst: str = "willie-voice", zoek: str = "") -> dict:
+    unit = dienst if dienst in ("willie", "willie-voice") else "willie-voice"
+    try:
+        out = subprocess.run(["journalctl", "-u", unit, "-n", "300", "--no-pager", "-o", "short"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"fout": str(exc)}
+    lines = [SECRET.sub(r"\1=***", l) for l in out.splitlines()]
+    if zoek.strip():
+        lines = [l for l in lines if zoek.strip().lower() in l.lower()]
+    tail = "\n".join(lines[-30:])
+    return {"dienst": unit, "regels": tail[-MAX_CHARS:] or "leeg"}
+
+
+# --- Ask Claude Code on the Mac ------------------------------------------------
+# Same pattern as verbeter_jezelf: the Pi only writes a line of text; the worker on
+# the Mac polls, runs a read-only Claude Code and writes the answer back.
+ASK_FILE = Path(os.environ.get("WILLIE_ASK_QUEUE", REPO / ".local" / "claude_questions.jsonl"))
+ANSWER_FILE = Path(os.environ.get("WILLIE_ASK_ANSWERS", REPO / ".local" / "claude_answers.jsonl"))
+
+
+def vraag_claude(vraag: str) -> dict:
+    vraag = " ".join(vraag.split())
+    if len(vraag) < 10:
+        return {"fout": "te vaag, stel een volledige vraag"}
+    from datetime import datetime
+
+    ASK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"gevraagd": datetime.now().isoformat(timespec="seconds"), "vraag": vraag}
+    with ASK_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return {"ok": True, "opmerking": "Claude is ermee bezig, 1 tot 5 minuten. De laptop moet aan staan."}
+
+
+def antwoord_claude() -> dict:
+    lopend = 0
+    if ASK_FILE.exists():
+        lopend = sum(1 for line in ASK_FILE.read_text(encoding="utf-8").splitlines() if line.strip())
+    antwoorden = []
+    if ANSWER_FILE.exists():
+        for line in ANSWER_FILE.read_text(encoding="utf-8").splitlines()[-2:]:
+            try:
+                antwoorden.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return {"nog_niet_opgehaald_door_laptop": lopend, "laatste": antwoorden or "nog geen antwoord"}
+
+
 def status() -> dict:
     def shell(command: str) -> str:
         try:
@@ -352,30 +572,71 @@ def status() -> dict:
     }
 
 
+# Called right before a power-off/restart (set by willie/remote.py): tell the phone app it is
+# planned, play the sleep chime, show the sleep face.
+POWER_HOOK = None
+POWER_DELAY_S = 6.0            # time to say goodbye and to send the tool result first
+
+
+def zet_uit(actie: str = "uit", bevestigd: bool = False) -> dict:
+    import threading
+    import time
+
+    if actie not in ("uit", "herstart"):
+        return {"fout": "actie moet 'uit' of 'herstart' zijn"}
+    if not bevestigd:
+        return {"eerst_vragen": "Vraag Wouter of hij het zeker weet, en roep zet_uit opnieuw aan met bevestigd=true."}
+    command = ["sudo", "-n", "systemctl", "poweroff" if actie == "uit" else "reboot"]
+
+    def later():
+        time.sleep(POWER_DELAY_S)
+        if POWER_HOOK:
+            try:
+                POWER_HOOK(actie)
+            except Exception:
+                pass
+        subprocess.run(command, check=False)
+
+    threading.Thread(target=later, daemon=True).start()
+    return {"ok": True, "over_seconden": POWER_DELAY_S,
+            "let_op": "Na uitzetten kan hij alleen met de schakelaar weer aan." if actie == "uit" else "Terug over ongeveer een minuut."}
+
+
 def zet_volume(niveau: float) -> dict:
     from willie.audio import speech
 
+    from willie.config import Config
+
     niveau = max(0.02, min(0.8, float(niveau)))
-    speech.VOLUME = niveau
-    os.environ["WILLIE_VOLUME"] = str(niveau)
+    Config().update({"voice": {"volume": niveau}})     # saved: survives a restart
+    speech._cached = (0.0, niveau)
     return {"ok": True, "volume": niveau}
 
 
 from willie.skills import brandstof  # noqa: E402  (Wouter's health monitor on the Mac)
+from willie.skills import reminders  # noqa: E402  (H4: runs on the home server, forwarded over MQTT)
 
 DECLARATIONS.append(brandstof.DECLARATION)
+DECLARATIONS.extend(reminders.DECLARATIONS)
 
 HANDLERS = {
     "gezondheid": brandstof.gezondheid,
     "kijk": kijk,
+    "lees_plan": lees_plan,
+    "lees_logs": lees_logs,
+    "vraag_claude": vraag_claude,
+    "antwoord_claude": antwoord_claude,
     "lees_code": lees_code,
     "zoek_in_code": zoek_in_code,
     "lijst_code": lijst_code,
     "onthoud": onthoud,
+    "herinner": herinner,
     "status": status,
     "zet_volume": zet_volume,
+    "zet_uit": zet_uit,
     "verbeter_jezelf": verbeter_jezelf,
     "verbeteringen_status": verbeteringen_status,
+    **reminders.HANDLERS,
 }
 
 
@@ -392,8 +653,5 @@ def call(name: str, arguments: dict) -> dict:
 
 
 def remembered() -> str:
-    """The memory file, to paste into the system prompt at session start (D10)."""
-    if not MEMORY_FILE.exists():
-        return ""
-    notes = MEMORY_FILE.read_text(encoding="utf-8").strip()
-    return "" if len(notes) < 25 else f"\n\nWat je eerder hebt onthouden:\n{notes}"
+    """Long-term memory, to paste into the system prompt at session start (D10)."""
+    return memory.context()

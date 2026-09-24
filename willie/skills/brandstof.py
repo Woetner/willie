@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from datetime import date, timedelta
 
-DEFAULT_URL = "http://Wouters-MacBook-Pro.local:8000"
+DEFAULT_URL = "http://192.168.2.151:8000"  # home server (S5)
 TOPICS = ("overzicht", "voeding", "activiteit", "slaap", "training", "lichaam",
           "doelen", "tips", "lucht", "experimenten")
 

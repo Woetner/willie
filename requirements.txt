@@ -6,3 +6,4 @@ psutil>=5.9
 pyserial>=3.5      # MCU link (D18)
 pymicro-wakeword>=2.5  # wake word "Hey Willie" (D2): 32 MB RSS, 5 % of a core, own TFLite C lib
 websockets>=13       # Gemini Live bench prototype only (~6 MB RSS while a session is open)
+paho-mqtt>=2.0       # phone-app bridge in the voice process (S6): ~3 MB RSS, own network thread

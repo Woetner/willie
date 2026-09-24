@@ -72,7 +72,7 @@ service: sync
 
 # requirements.txt changed?  ->  make deps  (deploy does not reinstall packages, to stay fast)
 deploy: sync
-	ssh $(PI) 'sudo systemctl restart willie; sudo systemctl stop willie-dashboard || true'
+	ssh $(PI) 'sudo systemctl restart willie willie-voice; sudo systemctl stop willie-dashboard || true'
 	@echo "deployed -> http://$(PI):8080 (dashboard starts on the first visit)"
 
 restart:

@@ -231,11 +231,13 @@ def test_live_runner_uses_borrowed_face_and_leaves_owner_to_close(monkeypatch):
     monkeypatch.setattr(gemini_live,"system_prompt",lambda *_:"")
     monkeypatch.setattr(gemini_live,"live_context",lambda:"")
     monkeypatch.setattr(gemini_live,"configured_language",lambda:"nl")
-    async def mic(adapter,speaker,stop,activity,emit):
+    async def mic(adapter,speaker,stop,activity,emit,*_):
         emit("mic_active","")
         assert face.snapshot().mic
         emit("user_speaking","")
-        emit("user_turn_end","")
+        emit("user_turn_end","")                     # quiet, but no words heard: a cough
+        assert face.snapshot().state!="thinking"
+        emit("heard","hoe laat")                     # the server heard words: now thinking
         assert face.snapshot().state=="thinking"
         emit("mic_idle","")
     monkeypatch.setattr(gemini_live,"_microphone",mic)

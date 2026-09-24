@@ -4,18 +4,23 @@
 Run on the Pi:  .venv/bin/python tools/willie_voice.py     (or `make voice-pi`)
 Ctrl-C stops it. Nothing stays running afterwards.
 
-Loop: listen for "Hey Gemini" -> open a Gemini Live session -> converse ->
-close after 30 s of silence -> listen again. Both halves share one microphone,
-so the wake listener always releases it before the session opens.
+Loop: listen for "Hey Willie" -> open a Gemini Live session -> converse ->
+close after voice.followup_s (20 s) without words, or when the model says what it
+heard was not for him -> save the conversation to memory -> listen again. The wake
+listener hands its running microphone to the session, so nothing said after
+"Hey Willie" is lost.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import sys
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -23,11 +28,18 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "tools"))
 
 from ask_camera import load_env
-from willie.audio import speech
+from willie.audio import chime, speech
+from willie.brain import memory
 from willie.face.runtime import Face
 from willie.voice import gemini_live, wake
 
-IDLE_TIMEOUT = float(os.environ.get("WILLIE_IDLE_TIMEOUT", "30"))
+# Follow-up window: voice.followup_s (20 s) unless WILLIE_IDLE_TIMEOUT overrides it (bench).
+IDLE_TIMEOUT = os.environ.get("WILLIE_IDLE_TIMEOUT")
+
+
+def remember_session(transcript: list, started: datetime, key: str) -> None:
+    result = memory.digest(transcript, started, key)
+    print(f"memory: {result.get('samenvatting') or result.get('fout') or result.get('reden') or 'saved'}", flush=True)
 
 
 def muted() -> bool:
@@ -40,6 +52,7 @@ def muted() -> bool:
 
 def main() -> int:
     load_env(REPO / ".env")
+    logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_key:
         print("GEMINI_API_KEY missing from .env", file=sys.stderr)
@@ -53,39 +66,67 @@ def main() -> int:
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     print(f"listening for {wake.describe()} - Ctrl-C to stop")
     face = Face.optional()
+    # Phone app bridge (S6): off unless MQTT_HOST is in .env, never blocks this loop.
+    from willie.remote import Remote
+    from willie.voice import tools as willie_tools
+    wake_stop = threading.Event()        # set by the phone app's idle/sleep switch
+    sleep_now = threading.Event()        # set by sleep mode: ends a conversation right away
+    remote = Remote.from_env(face, wake_stop, sleep_now)
+    speech.silence(muted())              # started asleep: stay quiet until woken
+    if remote:
+        willie_tools.FRAME_SOURCE = remote.latest_frame
+        willie_tools.POWER_HOOK = remote.powering
+        from willie.skills import reminders
+        reminders.HUB_CALL = remote.hub_call
     try:
         while True:
             try:
                 if muted():
-                    # privacy.mute (dashboard): no listening at all, not even locally.
+                    # privacy.mute (dashboard or app): no listening at all, not even locally,
+                    # and no speaking either.
+                    speech.silence(True)
                     if face:
                         face.indicators(mic=False, muted=True)
                         face.set_state("sleep")
-                    time.sleep(2)
+                    wake_stop.wait(2)
+                    wake_stop.clear()
                     continue
+                speech.silence(False)
                 if face:
                     face.indicators(muted=False)
                     face.waiting()
                     face.indicators(mic=True)
                 try:
                     # Re-check mute every 30 s while waiting.
-                    detected = wake.listen_for_wake(stop_after=30)
+                    wake_stop.clear()
+                    recorder = wake.wait_for_wake(stop_after=30, stop=wake_stop)
                 finally:
                     if face:
                         face.indicators(mic=False)
-                if not detected:
+                if recorder is None:
                     continue
                 if face:
                     face.set_state("curious")
                 print("wake!", flush=True)
-                backend = speech.speak("Ja?")
-                print(f"  said 'Ja?' via {backend or 'NOTHING - no tts and no espeak-ng'}", flush=True)
+                # A local chime instead of a spoken "Ja?" (23 Sep): the cloud TTS took ~1 s
+                # and the mic heard it. The recorder keeps running, so a question said
+                # straight after "Hey Willie" reaches the model once the session is open.
+                threading.Thread(target=chime.play, args=("idle",), daemon=True).start()
 
                 started = time.monotonic()
+                session_start = datetime.now()
                 first_audio: list[float] = []
+                turn_end: list[float] = []
+                transcript: list = []
 
                 def on_event(kind: str, detail: str) -> None:
                     elapsed = time.monotonic() - started
+                    if kind == "user_turn_end":
+                        turn_end[:] = [elapsed]
+                    elif kind == "audio" and turn_end:
+                        # End of Wouter's speech -> first sound back (Gate G1, target < 0.8 s).
+                        print(f"  [{elapsed:5.1f}s] reply delay {elapsed - turn_end[0]:.2f} s")
+                        turn_end.clear()
                     if kind == "ready":
                         print(f"  [{elapsed:5.1f}s] session open ({detail.split('/')[-1]}) - TALK NOW, he only"
                               f" answers what he hears")
@@ -98,10 +139,25 @@ def main() -> int:
                         print(f"  [{elapsed:5.1f}s]      {detail}")
                     elif kind == "uplink":
                         print(f"  [{elapsed:5.1f}s] mic {detail}")
-                    elif kind in ("idle", "error", "interrupted"):
+                    elif kind in ("idle", "error", "interrupted", "standby", "wake_again"):
                         print(f"  [{elapsed:5.1f}s] {kind} {detail}".rstrip())
 
-                asyncio.run(gemini_live.session(gemini_key, idle_timeout=IDLE_TIMEOUT, on_event=on_event, face=face))
+                if remote:
+                    remote.session_active = True
+                try:
+                    sleep_now.clear()
+                    followup = float(IDLE_TIMEOUT) if IDLE_TIMEOUT else gemini_live.configured_followup()
+                    asyncio.run(gemini_live.session(gemini_key, idle_timeout=followup, on_event=on_event,
+                                                    face=face, cancel=sleep_now, recorder=recorder,
+                                                    transcript=transcript))
+                finally:
+                    if remote:
+                        remote.session_active = False
+                    if transcript:
+                        # Word-for-word into long-term memory, then merged into facts.md in
+                        # the background: the wake word is listening again meanwhile.
+                        threading.Thread(target=remember_session, args=(transcript, session_start, gemini_key),
+                                         daemon=True).start()
                 print("back to sleep\n", flush=True)
             except KeyboardInterrupt:
                 print()
@@ -110,6 +166,8 @@ def main() -> int:
                 print(f"session failed: {exc}", file=sys.stderr)
                 time.sleep(2)
     finally:
+        if remote:
+            remote.close()
         if face:
             face.close()
 
