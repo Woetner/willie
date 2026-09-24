@@ -83,6 +83,7 @@ def main() -> int:
     code = wait_for_code(state)
     reply = spotify.token_request({"grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT})
     spotify.save_env("SPOTIFY_REFRESH_TOKEN", reply["refresh_token"])
+    spotify.ROTATED_TOKEN.unlink(missing_ok=True)       # a fresh login beats an old rotated token
     print("Linked: refresh token saved in the Pi's .env.")
 
     print(f"\nLooking for the speaker '{spotify.DEVICE_NAME}' ... (open the Spotify app on the home"

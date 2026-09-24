@@ -43,6 +43,10 @@ LABEL = "Spotify - music on his own speaker (librespot + Web API)"
 DEVICE_NAME = "WILL-E"          # librespot --name in systemd/willie-spotify.service
 REPO = Path(__file__).resolve().parents[2]
 ENV_FILE = REPO / ".env"
+# A refresh token Spotify rotated while running. The services run as user willie, which may
+# read .env but not write it (security audit, 25 Sep), so the new token goes here and wins
+# over the one in .env. `make spotify-login` removes it again.
+ROTATED_TOKEN = REPO / ".local" / "spotify_refresh_token"
 STATE_DIR = REPO / ".local"
 API = "https://api.spotify.com/v1"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -187,10 +191,19 @@ def _access_token() -> str:
     with _lock:
         if _token["value"] and time.monotonic() < _token["until"]:
             return _token["value"]
+        try:
+            rotated = ROTATED_TOKEN.read_text().strip()
+            if rotated:
+                os.environ["SPOTIFY_REFRESH_TOKEN"] = rotated
+        except OSError:
+            pass
         reply = token_request({"grant_type": "refresh_token",
                                "refresh_token": os.environ["SPOTIFY_REFRESH_TOKEN"]})
         if reply.get("refresh_token") and reply["refresh_token"] != os.environ["SPOTIFY_REFRESH_TOKEN"]:
-            save_env("SPOTIFY_REFRESH_TOKEN", reply["refresh_token"])
+            ROTATED_TOKEN.parent.mkdir(parents=True, exist_ok=True)
+            ROTATED_TOKEN.write_text(reply["refresh_token"] + "\n")
+            ROTATED_TOKEN.chmod(0o660)
+            os.environ["SPOTIFY_REFRESH_TOKEN"] = reply["refresh_token"]
         _token["value"] = reply["access_token"]
         _token["until"] = time.monotonic() + float(reply.get("expires_in", 3600)) - 60
         return _token["value"]
