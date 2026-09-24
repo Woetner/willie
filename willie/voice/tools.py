@@ -613,14 +613,9 @@ def zet_volume(niveau: float) -> dict:
     return {"ok": True, "volume": niveau}
 
 
-from willie.skills import brandstof  # noqa: E402  (Wouter's health monitor on the Mac)
-from willie.skills import reminders  # noqa: E402  (H4: runs on the home server, forwarded over MQTT)
-
-DECLARATIONS.append(brandstof.DECLARATION)
-DECLARATIONS.extend(reminders.DECLARATIONS)
+from willie import skills  # noqa: E402  (H1: home systems, each one switchable)
 
 HANDLERS = {
-    "gezondheid": brandstof.gezondheid,
     "kijk": kijk,
     "lees_plan": lees_plan,
     "lees_logs": lees_logs,
@@ -636,12 +631,20 @@ HANDLERS = {
     "zet_uit": zet_uit,
     "verbeter_jezelf": verbeter_jezelf,
     "verbeteringen_status": verbeteringen_status,
-    **reminders.HANDLERS,
 }
+
+
+def declarations() -> list[dict]:
+    """The robot's own tools + those of every skill that is switched on (H1)."""
+    return DECLARATIONS + skills.declarations()
 
 
 def call(name: str, arguments: dict) -> dict:
     handler = HANDLERS.get(name)
+    if not handler:
+        handler, refused = skills.handler(name)
+        if refused:
+            return {"fout": refused}
     if not handler:
         return {"fout": f"onbekende tool {name}"}
     try:

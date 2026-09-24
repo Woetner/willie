@@ -80,7 +80,8 @@ memory:
 
 skills:
   _label: Skills
-  brandstof_url:   {type: str, default: "http://Wouters-MacBook-Pro.local:8000", help: "Brandstof health monitor on the Mac (food, activity, sleep, training, air)"}
+  brandstof_url:   {type: str, default: "http://192.168.2.151:8000", help: "Brandstof health monitor on the home server (food, activity, sleep, training, air)"}
+  disabled:        {type: str, default: "", help: "Skills switched off, comma-separated (use the Skills tab)"}
 
 privacy:
   _label: Privacy

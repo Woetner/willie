@@ -595,7 +595,7 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
     wrapped = [
         Tool(d["name"], d["description"], d.get("parameters") or {"type": "object", "properties": {}},
              handler=lambda args, n=d["name"]: call(n, args))
-        for d in willie_tools.DECLARATIONS
+        for d in willie_tools.declarations()
     ]
     screen = Tool(SHOW.name, SHOW.description, SHOW.parameters, handler=lambda args: show(args, face))
     photo = Tool(SHOW_PICTURE.name, SHOW_PICTURE.description, SHOW_PICTURE.parameters,

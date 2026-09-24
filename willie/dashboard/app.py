@@ -144,4 +144,21 @@ def create_app(cfg: Config) -> FastAPI:
         except ConfigError as e:
             raise HTTPException(status_code=422, detail=e.errors)
 
+    # H1: skills on/off. Stored in skills.disabled; the voice process refuses a switched-off
+    # skill's tools at once and leaves them out of the next conversation's tool list.
+    @app.get("/api/skills")
+    def list_skills():
+        from willie import skills
+        return {"skills": skills.info()}
+
+    @app.put("/api/skills/{name}")
+    def toggle_skill(name: str, body: dict):
+        from willie import skills
+        try:
+            skills.set_enabled(name, bool(body.get("enabled")))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"no skill {name}")
+        cfg.reload()
+        return {"skills": skills.info()}
+
     return app

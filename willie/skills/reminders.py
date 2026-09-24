@@ -9,6 +9,7 @@ says so in one sentence (D22).
 """
 from __future__ import annotations
 
+LABEL = "Herinneringen + agenda (H4, on the home server)"
 CATEGORIES = ["school", "project", "kever", "gezondheid", "sociaal", "formeel", "thuis", "overig"]
 TIMEOUT_S = 20.0
 
@@ -113,3 +114,8 @@ def forward(name: str, args: dict) -> dict:
 
 
 HANDLERS = {n: (lambda n: lambda **kw: forward(n, kw))(n) for n in NAMES}
+
+
+def card() -> dict:
+    # The MQTT link lives in the voice process, not in the dashboard: say where it runs.
+    return {"draait op": "thuisserver, via MQTT"}

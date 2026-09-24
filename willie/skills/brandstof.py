@@ -197,7 +197,7 @@ def gezondheid(onderwerp: str = "overzicht", datum: str = "vandaag") -> dict:
     except urllib.error.HTTPError as exc:
         return {"fout": f"Brandstof gaf fout {exc.code}"}
     except (urllib.error.URLError, OSError, TimeoutError):
-        return {"fout": "Brandstof is niet bereikbaar - staat de MacBook aan en draait Brandstof?"}
+        return {"fout": "Brandstof op de thuisserver gaf geen antwoord (uit, of een trage eerste berekening - probeer het zo nog eens)."}
     text = json.dumps(result, ensure_ascii=False, default=str)
     if len(text) > 4000:                              # keep the voice model's context small
         result = {"samenvatting": text[:4000]}
@@ -227,3 +227,12 @@ DECLARATION = {
         "required": ["onderwerp"],
     },
 }
+
+# H1 skill registry (willie/skills/__init__.py).
+LABEL = "Brandstof - food, activity, sleep, training and air (home server)"
+DECLARATIONS = [DECLARATION]
+HANDLERS = {"gezondheid": gezondheid}
+
+
+def card() -> dict:
+    return {"server": base_url()}

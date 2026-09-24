@@ -133,7 +133,7 @@ class Remote:
             from willie.voice.persona import system_prompt
 
             # The robot's own tool list (voice/tools.py); face-only tools stay on the robot.
-            self._publish("willie/tools", tools.DECLARATIONS, retain=True, qos=1)
+            self._publish("willie/tools", tools.declarations(), retain=True, qos=1)
             self._publish("willie/persona", system_prompt() + tools.remembered(), retain=True, qos=1)
         except Exception:
             log.exception("could not publish tools/persona")
