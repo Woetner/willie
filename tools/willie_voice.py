@@ -81,6 +81,9 @@ def main() -> int:
         willie_tools.POWER_HOOK = remote.powering
         from willie.skills import reminders
         reminders.HUB_CALL = remote.hub_call
+    # Spotify (willie/skills/spotify.py): music and his voice share one sound card.
+    from willie.skills import spotify
+    speech.MUSIC = spotify
     try:
         while True:
             try:
@@ -119,7 +122,10 @@ def main() -> int:
                 # A local chime instead of a spoken "Ja?" (23 Sep): the cloud TTS took ~1 s
                 # and the mic heard it. The recorder keeps running, so a question said
                 # straight after "Hey Willie" reaches the model once the session is open.
-                threading.Thread(target=chime.play, args=("idle",), daemon=True).start()
+                # Music pauses first (and lets go of the card), then the chime.
+                spotify.TALKING = True
+                threading.Thread(target=lambda: (spotify.pause_for_talk(), chime.play("idle")),
+                                 daemon=True).start()
 
                 started = time.monotonic()
                 session_start = datetime.now()
@@ -165,6 +171,9 @@ def main() -> int:
                                                     transcript=transcript))
                 finally:
                     control.event("conversation_end")
+                    # Music back on, or what he was asked to play - not after sleep mode.
+                    threading.Thread(target=spotify.after_talk, args=(not sleep_now.is_set(),),
+                                     daemon=True).start()
                     if remote:
                         remote.session_active = False
                     if transcript:

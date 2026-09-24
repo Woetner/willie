@@ -359,6 +359,8 @@ PREROLL_MAX_S = 15.0         # audio kept while the session opens (the one-breat
 BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "2.0"))
 # Keep the gate shut a moment after the audio ends, for the tail out of the cone.
 BARGE_IN_TAIL = 0.4
+# A tool's wrap-up (WRAP_UP) ends the session at most this long after it was asked.
+WRAP_UP_MAX_S = 12.0
 
 
 def _peak(chunk: bytes) -> float:
@@ -725,6 +727,9 @@ async def session(
     turn = {"heard": False, "ended": False}
     standby = Standby()
     standby_s = configured_standby()
+    willie_tools.WRAP_UP.clear()
+    # WRAP_UP: when first seen, when his answer after it made sound, when that turn ended.
+    wrap = {"asked": 0.0, "audio": 0.0, "done": 0.0}
 
     def add_turn(who: str, text: str) -> None:
         if turns and turns[-1][0] == who:
@@ -737,6 +742,8 @@ async def session(
             return
         starts_at = max(loop.time(), speaker.busy_until)
         speaker.write(pcm)
+        if willie_tools.WRAP_UP.is_set():
+            wrap["audio"] = loop.time()
         if face:
             face.audio(pcm, adapter.out_rate, starts_at=starts_at)
         activity[0] = loop.time()
@@ -786,6 +793,8 @@ async def session(
             turn["heard"] = False
         elif kind in ("speaking", "turn_complete"):
             turn["heard"] = turn["ended"] = False
+            if kind == "turn_complete" and willie_tools.WRAP_UP.is_set() and wrap["audio"]:
+                wrap["done"] = loop.time()
         emit(kind, detail)
 
     def not_for_me(args: dict) -> dict:
@@ -836,6 +845,15 @@ async def session(
                 if loop.time() - standby.since >= standby_s:
                     emit("idle", f"{standby_s:.0f} s standby without 'Hey Willie'")
                     stop.set()
+                continue
+            if willie_tools.WRAP_UP.is_set():
+                now = loop.time()
+                wrap["asked"] = wrap["asked"] or now
+                # End once his answer after the tool call has played out (12 s at most).
+                if (wrap["done"] and not speaker.speaking(now)) or now - wrap["asked"] > WRAP_UP_MAX_S:
+                    emit("idle", "wrap-up asked by a tool")
+                    stop.set()
+                    break
                 continue
             # The window starts when his voice has finished playing, not when it arrived.
             last = max(activity[0], speaker.busy_until)

@@ -1,0 +1,30 @@
+# Installed by tools/install_spotify.sh (@USER@ / @HOME@ are filled in there).
+# Spotify Connect receiver (librespot, from the raspotify package): WILL-E shows up as a
+# speaker called "WILL-E" in the Spotify app. The skill willie/skills/spotify.py starts
+# and stops it by voice through the Web API; the voice loop pauses it while he talks.
+# The name must match DEVICE_NAME in willie/skills/spotify.py.
+[Unit]
+Description=WILL-E Spotify Connect receiver (librespot)
+After=network-online.target sound.target avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+SupplementaryGroups=audio
+# willie_music (config/asound.conf): stereo -> mono, 44.1 -> 48 kHz for the MAX98357A.
+# The sink is closed while paused, so his voice can open the card (--emit-sink-events
+# tells the voice loop when it is free). Credentials from the first connect in the app
+# are cached in .local, so after a reboot he is a Spotify device again by himself.
+ExecStart=/usr/bin/librespot --name WILL-E --device-type speaker \
+  --backend alsa --device willie_music --bitrate 160 \
+  --initial-volume 40 --enable-volume-normalisation \
+  --system-cache @HOME@/willie/.local/librespot --disable-audio-cache \
+  --onevent @HOME@/willie/tools/spotify_event.sh --emit-sink-events --quiet
+Restart=always
+RestartSec=5
+MemoryHigh=50M
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

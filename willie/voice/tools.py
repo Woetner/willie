@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 from willie.brain import memory
@@ -262,6 +263,9 @@ LOOK_HOOK = None
 # While the phone's live view holds the camera (S8), kijk() looks at its newest frame
 # instead of fighting rpicam for the sensor. Set by willie/remote.py.
 FRAME_SOURCE = None
+# A tool asks the live session to end once his answer has played (spotify: "speel X"
+# starts the music the moment he is done talking, not after the follow-up window).
+WRAP_UP = threading.Event()
 
 
 def kijk(waar_op_letten: str = "") -> dict:

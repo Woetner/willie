@@ -118,6 +118,9 @@ def _upsample(pcm: bytes, rate: int) -> bytes:
 
 
 _players: set = set()          # running aplay processes, so stop() can cut them off
+# Music on the same card (willie/skills/spotify.py, set by the voice loop): an object with
+# hold() - a context manager that pauses the music around this speech - and stop().
+MUSIC = None
 _silenced = False              # asleep: speak() stays quiet, even if its audio arrives later
 
 
@@ -125,6 +128,14 @@ def _play_pcm(pcm: bytes, rate: int, channels: int = 1) -> None:
     pcm = scale(pcm)
     if channels == 1 and rate < CARD_RATE:
         pcm, rate = _upsample(pcm, rate), CARD_RATE
+    if MUSIC is not None:
+        with MUSIC.hold():
+            _aplay(pcm, rate, channels)
+    else:
+        _aplay(pcm, rate, channels)
+
+
+def _aplay(pcm: bytes, rate: int, channels: int) -> None:
     player = subprocess.Popen(
         ["aplay", "-q", "-D", DEVICE, "-f", "S16_LE", "-r", str(rate), "-c", str(channels), "-t", "raw"],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -144,6 +155,8 @@ def silence(on: bool) -> None:
     _silenced = on
     if on:
         stop()
+        if MUSIC is not None:
+            MUSIC.stop()
 
 
 def stop() -> None:

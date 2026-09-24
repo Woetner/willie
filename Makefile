@@ -12,7 +12,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test improve improve-watch improve-install
+        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test improve improve-watch improve-install spotify-setup spotify-login spotify-logs
 
 help:
 	@echo "Pi"
@@ -38,6 +38,10 @@ help:
 	@echo "  make voices       play the voice samples one after another on the Mac"
 	@echo "  make wake-record  record 'Hey Willie' + everyday sound through the robot's mic (D2 round 2)"
 	@echo "  make wake-fetch   copy those recordings to the Mac training workspace"
+	@echo "Spotify"
+	@echo "  make spotify-setup  install librespot: WILL-E becomes a Spotify speaker"
+	@echo "  make spotify-login  link the Web API (asks for the app id/secret on the Pi, opens nothing)"
+	@echo "  make spotify-logs   follow the Spotify receiver log"
 	@echo "Self-improvement (runs Claude Code on the Mac, never deploys)"
 	@echo "  make improve       do the changes WILL-E was asked for, on a branch"
 	@echo "  make improve-watch keep watching for spoken requests"
@@ -127,6 +131,17 @@ bench-screen: sync
 # Hands-free voice loop. Run from the Pi's console so it owns the microphone.
 voice-pi: sync
 	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/willie_voice.py'
+
+# ---------------------------------------------------------------- Spotify (skills/spotify.py)
+spotify-setup: sync
+	ssh -t $(PI) 'sudo bash $(PI_DIR)/tools/install_spotify.sh'
+
+# ssh forwards the login page's answer (127.0.0.1:8888) from the Mac's browser to the Pi.
+spotify-login: sync
+	ssh -t -L 8888:127.0.0.1:8888 $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/spotify_login.py; sudo systemctl restart willie-voice'
+
+spotify-logs:
+	ssh -t $(PI) 'journalctl -u willie-spotify -f -n 30 -o cat'
 
 voice-logs:
 	ssh -t $(PI) 'journalctl -u willie-voice -f -n 30 -o cat'
