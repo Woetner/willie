@@ -3,6 +3,8 @@
 # speaker called "WILL-E" in the Spotify app. The skill willie/skills/spotify.py starts
 # and stops it by voice through the Web API; the voice loop pauses it while he talks.
 # The name must match DEVICE_NAME in willie/skills/spotify.py.
+# Fixed discovery port 57700 (security audit, 24 Sep), so the Pi's firewall can allow it from
+# the LAN only; without it librespot picks a random port on every start.
 [Unit]
 Description=WILL-E Spotify Connect receiver (librespot)
 After=network-online.target sound.target avahi-daemon.service
@@ -20,7 +22,8 @@ ExecStart=/usr/bin/librespot --name WILL-E --device-type speaker \
   --backend alsa --device willie_music --bitrate 160 \
   --initial-volume 40 --enable-volume-normalisation \
   --system-cache @HOME@/willie/.local/librespot --disable-audio-cache \
-  --onevent @HOME@/willie/tools/spotify_event.sh --emit-sink-events --quiet
+  --onevent @HOME@/willie/tools/spotify_event.sh --emit-sink-events --quiet \
+  --zeroconf-port 57700
 Restart=always
 RestartSec=5
 MemoryHigh=50M

@@ -11,10 +11,16 @@
 #
 # It polls the Pi, so the laptop needs no inbound access and the Pi holds no key
 # to it. The only thing crossing from the robot is a line of text.
+#
+# Security audit (24 Sep, Wouter): a request only runs after Wouter tapped Approve in
+# the phone app. The worker asks the home server itself (not the robot) whether this id
+# was approved with exactly this text. The agent gets no shell: only file tools inside
+# its worktree; this script commits, tests and deploys.
 set -uo pipefail
 
 PI="${PI:-willie.local}"
 PI_DIR="${PI_DIR:-willie}"
+HUB="${HUB:-homeserver}"                     # where Wouter's approvals live (hub/improve.py)
 QUEUE=".local/improve_queue.jsonl"
 RESULTS=".local/improve_results.jsonl"
 QUESTIONS=".local/claude_questions.jsonl"   # vraag_claude
@@ -58,6 +64,11 @@ deploy_tree() {  # deploy_tree <path> [units]
   sleep 4
 }
 
+approved_in_app() {  # approved_in_app <id> <hash>: did Wouter tap Approve on exactly this?
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  ssh -n "$HUB" "python3 -c 'import json,sys,os; d=json.load(open(os.path.expanduser(\"~/homeserver-data/improve.json\"))); i=d.get(sys.argv[1]) or {}; sys.exit(0 if i.get(\"status\")==\"goedgekeurd\" and i.get(\"hash\")==sys.argv[2] else 1)' $(printf '%q' "$1") $(printf '%q' "$2")" >/dev/null 2>&1
+}
+
 run_one() {
   local task="$1" plan="$2" risk="$3"
   local stamp slug branch tree
@@ -87,7 +98,8 @@ run_one() {
   ( cd "$tree" && claude -p "$prompt" \
       --add-dir "$(dirname "$PLAN_FILE")" \
       --permission-mode acceptEdits \
-      --allowedTools "Edit" "Write" "Read" "Grep" "Glob" "Bash(git *)" "Bash(python3 *)" \
+      --allowedTools "Edit" "Write" "Read" "Grep" "Glob" \
+      --disallowedTools "Bash" "WebFetch" "WebSearch" "Read(**/*.env*)" "Read(**/.onshape*)" \
   ) < /dev/null > "$agentlog" 2>&1
   echo "   agent log: $agentlog"
 
@@ -118,6 +130,12 @@ run_one() {
 
   # A change under systemd/ is inert until the units are reinstalled.
   local units=""
+  if git -C "$tree" diff --name-only main..HEAD | grep -q "^tools/install_service.sh$"; then
+    # That script runs as root on the Pi: a change to it is never installed unattended.
+    report vraag "de wijziging raakt install_service.sh (draait als root); die zet ik niet zelf op de Pi - branch $branch staat klaar voor Wouter"
+    git -C "$tree" push -q -u origin "$branch" 2>/dev/null
+    return
+  fi
   if git -C "$tree" diff --name-only main..HEAD | grep -q "^systemd/"; then
     units="units"
     echo "   touches systemd - units will be reinstalled"
@@ -188,7 +206,7 @@ pass() {
   fi
 
   while [ -s "$pending" ]; do
-    local line parsed task plan risk
+    local line parsed task plan risk rid digest
     line="$(head -n 1 "$pending")"
     if [ -z "$line" ]; then
       tail -n +2 "$pending" > "$pending.tmp" && mv "$pending.tmp" "$pending"
@@ -198,7 +216,16 @@ pass() {
     task="$(sed -n 1p <<< "$parsed")"
     plan="$(sed -n 2p <<< "$parsed")"
     risk="$(sed -n 3p <<< "$parsed")"
-    [ -n "$task" ] && run_one "$task" "$plan" "$risk"
+    rid="$(sed -n 4p <<< "$parsed")"
+    digest="$(sed -n 5p <<< "$parsed")"
+    if [ -n "$task" ]; then
+      if approved_in_app "$rid" "$digest"; then
+        run_one "$task" "$plan" "$risk"
+      else
+        echo "== NOT approved in the app, skipped: $task"
+        report geweigerd "niet goedgekeurd in de app (of de server was niet bereikbaar), dus niets gedaan"
+      fi
+    fi
     # Only now is it gone.
     tail -n +2 "$pending" > "$pending.tmp" && mv "$pending.tmp" "$pending"
   done

@@ -15,4 +15,5 @@ __PLAN_FILE__ (read it; do not edit it, Wouter owns it). Rules:
 - Python must at least import cleanly. Keep the existing style and comments.
 - If the request is too vague to implement safely, change nothing and write
   what you would need to know into IMPROVE_NOTES.md.
-- Commit your work with a clear message.
+- You have no shell. Do not try to run, test or commit anything: the worker
+  commits your changes, checks they compile and installs them.

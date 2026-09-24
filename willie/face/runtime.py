@@ -182,6 +182,7 @@ class Face:
         self._pinout = None          # K1: willie.face.pinout.Pinout while a pinout is shown
         self._pinout_until = 0.0
         self._last_tap = None        # (time, x, y) of a tap on the pinout: double-tap = zoom
+        self._confirm = None         # Face.confirm: the question waiting for a finger
         self._audio = deque(maxlen=1500)  # 30 s at 20 ms; amplitudes only, no stored audio
         self._audio_until = 0.0
         self._return_to_listening = False
@@ -248,7 +249,9 @@ class Face:
                     try:
                         self.touch.calibration = self.settings
                         released = self.touch.poll()
-                        if self._pinout_on(now):
+                        if self._confirm is not None:
+                            self.confirm_input(now, self.touch.down, self.touch.down_at, self.touch.gestures)
+                        elif self._pinout_on(now):
                             for gesture in self.touch.gestures:
                                 self.pinout_gesture(gesture, now)
                         elif released:
@@ -409,6 +412,72 @@ class Face:
                 else:
                     self._last_tap = (now, x, y)
 
+    # ---- Touch confirmation (security audit, 24 Sep, Wouter) ----------------------------
+    # Risky actions need a finger on the glass, not the model's word that "he said yes":
+    # anyone in the room, the radio or a text on a photo can make a model say that.
+    # Hold anywhere = JA, a short tap = NEE, nothing = no. Hold instead of a JA button,
+    # because it needs no touch calibration, and a pet (a short touch) can never say yes.
+    CONFIRM_HOLD_S = 1.5         # finger on the glass this long = JA
+    CONFIRM_ARM_S = 0.4          # a touch that began before (or just as) the question showed does not count
+    CONFIRM_SHOW_S = 1.2         # the tick or cross stays this long
+
+    def confirm(self, question: str, timeout: float = 20.0) -> bool | None:
+        """Ask on the screen and block until answered: True = held (JA), False = tapped (NEE),
+        None = no answer in time, no touch screen, or another question already waiting."""
+        if self.touch is None or self._closed or self._stop.is_set():
+            return None
+        with self._lock:
+            if self._confirm is not None:
+                return None
+            mine = self._confirm = {"question": str(question), "started": self.clock(), "timeout": float(timeout),
+                                    "hold": 0.0, "answer": None, "answered": None, "done": threading.Event()}
+        mine["done"].wait(timeout + 3)
+        with self._lock:
+            if mine["answered"] is None:             # the face loop stopped: never a yes
+                if self._confirm is mine:
+                    self._confirm = None
+                return None
+            return mine["answer"]
+
+    def confirm_input(self, now: float, down: bool, down_at: float, gestures) -> None:
+        """One frame of touch input while a question waits (called by the face loop)."""
+        with self._lock:
+            c = self._confirm
+            if c is None or c["answered"] is not None:
+                return
+            fresh = down_at >= c["started"] + self.CONFIRM_ARM_S
+            if down and fresh:
+                c["hold"] = min(1.0, (now - down_at)/self.CONFIRM_HOLD_S)
+                if c["hold"] >= 1.0:
+                    self._answer(c, True, now)
+                    return
+            elif not down:
+                c["hold"] = 0.0
+            for gesture in gestures:
+                if gesture[0] == "tap" and fresh:
+                    self._answer(c, False, now)
+                    return
+
+    @staticmethod
+    def _answer(c: dict, answer, now: float) -> None:
+        c["answer"], c["answered"] = answer, now
+        c["done"].set()
+
+    def _confirm_view(self, now: float):
+        """For snapshot(): time out, clear after the answer, and the tuple the renderer draws."""
+        c = self._confirm
+        if c is None:
+            return None
+        age = now - c["started"]
+        if c["answered"] is None and age >= c["timeout"]:
+            self._answer(c, None, now)
+        if c["answered"] is not None and now - c["answered"] >= self.CONFIRM_SHOW_S:
+            self._confirm = None
+            return None
+        left = max(0.0, 1 - age/c["timeout"]) if c["timeout"] else 0.0
+        answered_age = None if c["answered"] is None else now - c["answered"]
+        return (c["question"], c["hold"], left, max(0.0, c["timeout"] - age), c["answer"], answered_age, age)
+
     def pet(self):
         now = self.clock()
         with self._lock:
@@ -527,7 +596,11 @@ class Face:
             # listening, errors keep their own face and get the red LIVE frame on top.
             if v.watched and v.state in ("idle", "sleep", "curious", "happy", "sad", "seeing", "dancing"):
                 v.state = "watched"
-            if self._pinout_on(now) and v.state not in ("error", "low_battery"):
+            confirm = self._confirm_view(now)
+            if confirm is not None:
+                # A question waiting for his finger wins over everything: it is why he stopped.
+                v.state, v.confirm = "confirm", confirm
+            elif self._pinout_on(now) and v.state not in ("error", "low_battery"):
                 v.state, v.pinout = "pinout", self._pinout.frozen()
             elif now < self._show_until and v.state not in ("error", "low_battery"):
                 v.state, v.text, v.image = "show", self._shown_text, self._shown_image

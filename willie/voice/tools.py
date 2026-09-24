@@ -76,10 +76,10 @@ DECLARATIONS = [
     {
         "name": "verbeter_jezelf",
         "description": (
-            "Voer een verbetering aan je eigen code door. Roep dit ALLEEN aan nadat je "
-            "hardop hebt verteld wat je gaat doen en Wouter ja heeft gezegd. Bij risico "
-            "'hoog' vraag je het een tweede keer voordat je dit aanroept. Claude Code op "
-            "zijn laptop schrijft de code, test hem en zet hem daarna op jou."
+            "Vraag een verbetering aan je eigen code aan. Vertel eerst hardop wat je gaat doen. "
+            "Na het aanroepen moet Wouter het goedkeuren in de app op zijn telefoon; zeg dat "
+            "erbij. Pas na zijn goedkeuring schrijft Claude Code op zijn laptop de code, test "
+            "hem en zet hem op jou."
         ),
         "parameters": {
             "type": "object",
@@ -104,12 +104,8 @@ DECLARATIONS = [
                         "config.txt, audio- of scherminstellingen, netwerk. Anders 'laag'."
                     ),
                 },
-                "bevestigd": {
-                    "type": "boolean",
-                    "description": "True alleen als Wouter hardop ja heeft gezegd. Bij 'hoog': twee keer.",
-                },
             },
-            "required": ["opdracht", "plan", "risico", "bevestigd"],
+            "required": ["opdracht", "plan", "risico"],
         },
     },
     {
@@ -232,16 +228,13 @@ DECLARATIONS = [
         "name": "zet_uit",
         "description": (
             "Zet jezelf helemaal uit (actie 'uit') of herstart jezelf (actie 'herstart'). "
-            "Vraag Wouter altijd eerst of hij het zeker weet; roep dit pas aan met "
-            "bevestigd=true nadat hij ja heeft gezegd. Na 'uit' kun je alleen met je "
-            "aan/uit-schakelaar weer aan, niet via de app."
+            "Zeg eerst: 'Houd mijn scherm vast om te bevestigen.' De tool toont dan de vraag "
+            "op je gezicht en wacht tot Wouter zijn vinger op het scherm houdt (ja) of kort "
+            "tikt (nee). Na 'uit' kun je alleen met je aan/uit-schakelaar weer aan."
         ),
         "parameters": {
             "type": "object",
-            "properties": {
-                "actie": {"type": "string", "enum": ["uit", "herstart"]},
-                "bevestigd": {"type": "boolean", "description": "True alleen na Wouters expliciete ja."},
-            },
+            "properties": {"actie": {"type": "string", "enum": ["uit", "herstart"]}},
             "required": ["actie"],
         },
     },
@@ -272,6 +265,9 @@ LOOK_HOOK = None
 # While the phone's live view holds the camera (S8), kijk() looks at its newest frame
 # instead of fighting rpicam for the sensor. Set by willie/remote.py.
 FRAME_SOURCE = None
+# Touch confirmation on the face (security audit, 24 Sep): fn(question, timeout) -> True/False/None.
+# Set by tools/willie_voice.py when there is a face with a touch screen.
+CONFIRM = None
 # A tool asks the live session to end once his answer has played (spotify: "speel X"
 # starts the music the moment he is done talking, not after the follow-up window).
 WRAP_UP = threading.Event()
@@ -319,32 +315,110 @@ QUEUE_FILE = Path(os.environ.get("WILLIE_IMPROVE_QUEUE", REPO / ".local" / "impr
 RESULT_FILE = Path(os.environ.get("WILLIE_IMPROVE_RESULTS", REPO / ".local" / "improve_results.jsonl"))
 
 
-def verbeter_jezelf(opdracht: str, plan: str = "", risico: str = "laag", bevestigd: bool = False) -> dict:
-    """Queue an approved code change for the worker on the Mac.
+# Approved in the app (security audit, 24 Sep, Wouter). The model's "he said yes" is not
+# enough: anyone in the room, the radio, a text held up to the camera or a web page can make
+# a model say it. A request waits on the Pi (REQUEST_FILE) until Wouter taps Approve in the
+# phone app; the hub sends the decision back (willie/improve/decision), and only then does it
+# join QUEUE_FILE, which the Mac worker picks up. The worker checks with the hub once more.
+REQUEST_FILE = Path(os.environ.get("WILLIE_IMPROVE_REQUESTS", REPO / ".local" / "improve_requests.jsonl"))
+REQUEST_TTL_S = 24 * 3600
+APPROVAL_HOOK = None           # fn(entry): show it in the app; set by willie/remote.py
+_requests_lock = threading.Lock()
 
-    The robot still cannot edit itself: this appends one line to a file. What
-    changed from the first version is that the approval is spoken, so `bevestigd`
-    is the model's word for "he said yes". That is a soft gate, not a hard one -
-    the hard gates are on the worker side: a branch, tests, a health check and
-    an automatic rollback.
-    """
+
+def request_hash(opdracht: str, plan: str, risico: str) -> str:
+    """What Wouter approves, as one fingerprint: the Pi, the hub and the Mac worker all compute it."""
+    import hashlib
+    return hashlib.sha256(json.dumps([opdracht, plan, risico], ensure_ascii=False).encode()).hexdigest()
+
+
+def verbeter_jezelf(opdracht: str, plan: str = "", risico: str = "laag", **_ignored) -> dict:
+    """Ask for a code change. It waits for Wouter's approval in the app; nothing runs before."""
+    import secrets
+    from datetime import datetime
+
     opdracht = " ".join(opdracht.split())
     if len(opdracht) < 10:
         return {"fout": "te vaag, zeg concreter wat er moet veranderen"}
-    if not bevestigd:
-        return {"fout": "niet bevestigd - vertel eerst wat je gaat doen en vraag of het mag"}
-    QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    plan, risico = " ".join(plan.split()), "hoog" if risico == "hoog" else "laag"
+    entry = {"id": secrets.token_hex(6), "gevraagd": datetime.now().isoformat(timespec="seconds"),
+             "opdracht": opdracht, "plan": plan, "risico": risico,
+             "hash": request_hash(opdracht, plan, risico)}
+    with _requests_lock:
+        REQUEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with REQUEST_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    shown = False
+    if APPROVAL_HOOK:
+        try:
+            shown = bool(APPROVAL_HOOK(entry))
+        except Exception:
+            shown = False
+    return {"ok": True, "wacht_op": "Wouters goedkeuring in de app",
+            "opmerking": ("Zeg dat hij het in de app moet goedkeuren; pas daarna begint Claude."
+                          if shown else "De thuisserver is nu niet bereikbaar: de vraag verschijnt in "
+                          "de app zodra hij terug is. Zeg dat erbij.")}
+
+
+def _read_requests() -> list[dict]:
+    if not REQUEST_FILE.exists():
+        return []
+    out = []
+    for line in REQUEST_FILE.read_text(encoding="utf-8").splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def _write_requests(entries: list[dict]) -> None:
+    tmp = REQUEST_FILE.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries), encoding="utf-8")
+    tmp.replace(REQUEST_FILE)
+
+
+def pending_requests() -> list[dict]:
+    """Requests still waiting for the app; older than a day = dropped."""
     from datetime import datetime
 
-    entry = {
-        "gevraagd": datetime.now().isoformat(timespec="seconds"),
-        "opdracht": opdracht,
-        "plan": " ".join(plan.split()),
-        "risico": "hoog" if risico == "hoog" else "laag",
-    }
-    with QUEUE_FILE.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return {"ok": True, "opgepakt": opdracht, "opmerking": "duurt een paar minuten"}
+    with _requests_lock:
+        entries = _read_requests()
+        now = datetime.now()
+        fresh = []
+        for e in entries:
+            try:
+                age = (now - datetime.fromisoformat(e.get("gevraagd", ""))).total_seconds()
+            except ValueError:
+                continue
+            if age < REQUEST_TTL_S:
+                fresh.append(e)
+        if len(fresh) != len(entries):
+            _write_requests(fresh)
+        return fresh
+
+
+def decide(request_id: str, approved: bool, digest: str) -> str:
+    """The app's answer (from the hub). Approved and unchanged -> the worker's queue."""
+    from datetime import datetime
+
+    with _requests_lock:
+        entries = _read_requests()
+        entry = next((e for e in entries if e.get("id") == request_id), None)
+        if entry is None:
+            return "onbekend"
+        _write_requests([e for e in entries if e is not entry])
+        ok = approved and digest == entry.get("hash") == request_hash(entry["opdracht"], entry["plan"], entry["risico"])
+        if ok:
+            QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with QUEUE_FILE.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            return "goedgekeurd"
+        line = {"tijd": datetime.now().isoformat(timespec="seconds"), "status": "afgewezen",
+                "tekst": f"niet goedgekeurd in de app: {entry['opdracht'][:120]}"}
+        with RESULT_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+        return "afgewezen"
 
 
 def verbeteringen_status() -> dict:
@@ -358,7 +432,8 @@ def verbeteringen_status() -> dict:
                 klaar.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-    return {"in_wachtrij": wachtrij, "laatste": klaar or "nog niets afgerond"}
+    return {"wacht_op_goedkeuring_in_app": len(pending_requests()), "in_wachtrij": wachtrij,
+            "laatste": klaar or "nog niets afgerond"}
 
 
 # Read-only, and never these: the API keys live in .env, and the wake-word and
@@ -374,7 +449,7 @@ def _safe_path(pad: str) -> Path | None:
         target = (REPO / pad.strip().lstrip("/")).resolve()
     except (OSError, RuntimeError):
         return None
-    if not str(target).startswith(str(REPO.resolve())):
+    if not target.is_relative_to(REPO.resolve()):
         return None
     relative = str(target.relative_to(REPO.resolve()))
     if any(relative == f or relative.startswith(f + "/") for f in FORBIDDEN):
@@ -413,16 +488,18 @@ def zoek_in_code(term: str) -> dict:
         found = subprocess.run(
             ["grep", "-rn", "--include=*.py", "--include=*.md", "--include=*.sh", "--include=*.yaml",
              "--exclude-dir=.git", "--exclude-dir=.local", "--exclude-dir=.venv", "--exclude-dir=wakewords",
-             "-i", term, "."],
+             "--exclude=.env*", "-i", "-e", term, "--", "."],
             cwd=REPO, capture_output=True, text=True, timeout=15,
         ).stdout
     except (OSError, subprocess.SubprocessError) as exc:
         return {"fout": str(exc)}
+    # The term goes in after -e and before --, so it is always a pattern: a term like
+    # "--include=*" used to become a grep option and search .env too (security audit, 24 Sep).
     # Filter on the file the hit is in, not on the text: a plain ".env" substring
     # test also throws away every line that mentions os.environ.
     hits = []
     for line in found.splitlines():
-        path = line.split(":", 1)[0].lstrip("./")
+        path = line.split(":", 1)[0].removeprefix("./")
         if any(path == f or path.startswith(f + "/") for f in FORBIDDEN):
             continue
         hits.append(line[:160])
@@ -591,14 +668,23 @@ POWER_HOOK = None
 POWER_DELAY_S = 6.0            # time to say goodbye and to send the tool result first
 
 
-def zet_uit(actie: str = "uit", bevestigd: bool = False) -> dict:
-    import threading
-    import time
-
+def zet_uit(actie: str = "uit", **_ignored) -> dict:
+    """Voice: only after a finger on the screen (Face.confirm). The phone app has its own
+    "are you sure?" and calls power() directly (willie/remote.py)."""
     if actie not in ("uit", "herstart"):
         return {"fout": "actie moet 'uit' of 'herstart' zijn"}
-    if not bevestigd:
-        return {"eerst_vragen": "Vraag Wouter of hij het zeker weet, en roep zet_uit opnieuw aan met bevestigd=true."}
+    if CONFIRM is None:
+        return {"fout": "Ik kan dit nu niet laten bevestigen (geen aanraakscherm). Het kan wel vanuit de app."}
+    vraag = "Helemaal uitzetten?" if actie == "uit" else "Herstarten?"
+    answer = CONFIRM(vraag, 20.0)
+    if answer is not True:
+        return {"niet_gedaan": "Geannuleerd op het scherm." if answer is False else "Niemand hield het scherm vast; ik doe niets."}
+    return power(actie)
+
+
+def power(actie: str) -> dict:
+    import time
+
     command = ["sudo", "-n", "systemctl", "poweroff" if actie == "uit" else "reboot"]
 
     def later():

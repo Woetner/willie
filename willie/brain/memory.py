@@ -1,9 +1,14 @@
 """WILL-E's long-term memory (23 Sep, Wouter: "store as much as possible, so he knows
 everything from past sessions").
 
-Three layers, all plain text on the Pi's SD card under .local/memory/ - `make deploy`
-syncs with --delete but skips .local/, so a deploy can no longer wipe what he knows (the
-old config/memory.md was deleted that way):
+Where it lives (24 Sep, Wouter: "don't save it on the card, save it on the server"): on
+the home server, in ~/homeserver-data/memory/ (WILLIE_MEMORY_DIR in hub.service). The hub
+runs this same module there. On the robot, tools/willie_voice.py sets ON_SERVER and
+HUB_CALL, and every read and write below goes to the hub over MQTT (willie/hub/call).
+With the server down he talks without his memory, and a finished conversation waits in
+RAM until the next one - nothing is written to the SD card. A reboot in between loses it.
+
+Three layers, all plain text files (on the Mac, for tests and bench scripts, under .local/memory/):
 
 - sessions/YYYY-MM-DD.md  every conversation, word for word (both sides, from the Live
                           API's transcriptions). Never rewritten, never trimmed.
@@ -47,6 +52,18 @@ DEFAULT_CONTEXT_CHARS = 24_000
 SEARCH_CHARS = 3_000
 FACTS_HEADER = "# Wat WILL-E weet\n\n"
 
+ON_SERVER = False               # the robot: memory only on the home server
+HUB_CALL = None                 # fn(name, args, timeout) -> dict, set with ON_SERVER
+UNSENT_MAX = 20                 # conversations kept in RAM while the server is away
+_unsent: list[dict] = []
+
+
+def _server(name: str, args: dict, timeout: float) -> dict:
+    if HUB_CALL is None:
+        return {"fout": "Mijn geheugen staat op de thuisserver, en die is nu niet bereikbaar."}
+    result = HUB_CALL(name, args, timeout)
+    return result if isinstance(result, dict) else {"fout": "onverwacht antwoord van de server"}
+
 
 def _ensure() -> None:
     SESSIONS.mkdir(parents=True, exist_ok=True)
@@ -70,6 +87,8 @@ def note(text: str) -> dict:
     text = " ".join(text.split())
     if not text:
         return {"fout": "lege notitie"}
+    if ON_SERVER:
+        return _server("geheugen_onthoud", {"notitie": text}, 10)
     _ensure()
     existing = FACTS.read_text(encoding="utf-8")
     if text.lower() in existing.lower():
@@ -99,6 +118,8 @@ def digest(turns: list[tuple[str, str]], started: datetime | None = None, api_ke
     """Save the conversation, then let a text model summarise it and merge new facts into
     facts.md. Runs after the session, in a thread; never raises."""
     started = started or datetime.now()
+    if ON_SERVER:
+        return _send(turns, started)
     try:
         if save_session(turns, started) is None:
             return {"ok": False, "reden": "leeg gesprek"}
@@ -133,6 +154,33 @@ def digest(turns: list[tuple[str, str]], started: datetime | None = None, api_ke
     elif facts:
         log.warning("memory: merge shrank facts.md from %d to %d chars - kept the old one", len(old), len(facts))
     return {"ok": True, "samenvatting": summary}
+
+
+def _send(turns, started: datetime) -> dict:
+    """Robot: the conversation goes to the server, which saves and merges it. Server away:
+    it waits in RAM (never on the card) and goes along with the next conversation."""
+    if turns:
+        _unsent.append({"gesprek": [list(t) for t in turns], "begonnen": started.isoformat(timespec="seconds")})
+        del _unsent[:-UNSENT_MAX]
+    result: dict = {"ok": False, "reden": "leeg gesprek"}
+    while _unsent:
+        result = _server("geheugen_gesprek", _unsent[0], 120)
+        if "fout" in result and not result.get("ok"):
+            log.warning("memory: server did not take the conversation (%d waiting in RAM): %s",
+                        len(_unsent), result["fout"])
+            return result
+        _unsent.pop(0)
+    return result
+
+
+def remote_digest(gesprek: list, begonnen: str = "") -> dict:
+    """Server side of _send (hub/app.py): one conversation from the robot."""
+    try:
+        started = datetime.fromisoformat(begonnen) if begonnen else datetime.now()
+    except ValueError:
+        started = datetime.now()
+    turns = [(str(who), str(text)) for who, text in gesprek if who in ("user", "model", "willie")]
+    return digest(turns, started)
 
 
 def _pend(conversation: str) -> None:
@@ -199,6 +247,9 @@ def _merge(conversation: str, key: str, timeout: float = 30.0) -> dict:
 def context(budget: int | None = None) -> str:
     """For the system prompt: all facts, then the newest summaries that still fit."""
     budget = context_chars() if budget is None else budget
+    if ON_SERVER:
+        # Asked at the start of every conversation: a slow server must not hold him up long.
+        return str(_server("geheugen_context", {"budget": budget}, 3).get("context", ""))
     if not DIR.exists() and not LEGACY.exists():
         return ""
     _ensure()
@@ -231,6 +282,8 @@ def search(term: str) -> dict:
     words = [w for w in re.findall(r"\w+", term.lower()) if len(w) > 2]
     if not words:
         return {"fout": "geen zoekterm"}
+    if ON_SERVER:
+        return _server("geheugen_zoek", {"term": term}, 10)
     if not DIR.exists():
         return {"gevonden": [], "opmerking": "nog geen geheugen"}
     hits: list[str] = []

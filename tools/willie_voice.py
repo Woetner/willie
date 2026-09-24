@@ -120,10 +120,16 @@ def main() -> int:
     from willie import control              # mood events + resting face from the core (G2)
     if face:
         face.on_pet = lambda: control.event("pet")
+        if face.touch:
+            willie_tools.CONFIRM = face.confirm  # risky tools need a finger on the glass
+    # His memory lives on the home server, never on the SD card (Wouter, 24 Sep).
+    memory.ON_SERVER = True
     speech.silence(muted())              # started asleep: stay quiet until woken
     if remote:
         willie_tools.FRAME_SOURCE = remote.latest_frame
         willie_tools.POWER_HOOK = remote.powering
+        willie_tools.APPROVAL_HOOK = remote.request_approval
+        memory.HUB_CALL = remote.hub_call
         from willie.skills import reminders
         reminders.HUB_CALL = remote.hub_call
         from willie.skills import bambu

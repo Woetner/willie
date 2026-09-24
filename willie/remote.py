@@ -17,6 +17,7 @@ Topics (WILL-E.md Phase S):
        willie/video        MJPEG frames while live view is on
        willie/tool/result  {"id", "result"}
        willie/hub/call     {"id", "name", "args"}  a tool that runs on the server (reminders)
+       willie/improve/request  a code change waiting for approval in the app (tools.verbeter_jezelf)
   in   willie/cmd/say      {"text"}             speak it aloud in the room
        willie/cmd/photo    {}                   one still -> willie/photo
        willie/cmd/video    {"on": true|false}   live view; must be repeated every few seconds
@@ -25,6 +26,7 @@ Topics (WILL-E.md Phase S):
        willie/cmd/power    {"action": "off"|"restart"}  the app asked "are you sure?" already
        willie/tool/call    {"id", "name", "args"}
        willie/hub/result   {"id", "result"}     answer to willie/hub/call
+       willie/improve/decision {"id", "approved", "hash"}  Wouter's tap in the app
        willie/activity     {"time", "now", "background"} (retained, hub every <= 60 s):
                            background jobs -> small icons on his face
 """
@@ -47,6 +49,10 @@ HEALTH_EVERY_S = 10.0
 ACTIVITY_STALE_S = 180.0    # no fresh activity list from the hub: the icons go (hub down)
 VIDEO_LEASE_S = 10.0        # live view stops by itself when the hub stops asking (S8)
 VIDEO_SIZE, VIDEO_FPS, VIDEO_QUALITY = (640, 480), 10, 60
+# Tools the phone's chat and call may not run on the robot (security audit, 24 Sep): power
+# has its own button with "are you sure?" in the app, and on the robot it needs a finger on
+# the screen, which nobody on the phone can give.
+REMOTE_REFUSED = {"zet_uit"}
 
 
 def _core_state_file() -> Path:
@@ -134,7 +140,7 @@ class Remote:
             return
         log.info("MQTT connected")
         client.subscribe([("willie/cmd/#", 1), ("willie/tool/call", 1), ("willie/hub/result", 1),
-                          ("willie/activity", 1)])
+                          ("willie/activity", 1), ("willie/improve/decision", 1)])
         self._publish("willie/online", "1", retain=True, qos=1)
         try:
             from willie.voice import tools
@@ -142,7 +148,12 @@ class Remote:
 
             # The robot's own tool list (voice/tools.py); face-only tools stay on the robot.
             self._publish("willie/tools", tools.declarations(), retain=True, qos=1)
-            self._publish("willie/persona", system_prompt() + tools.remembered(), retain=True, qos=1)
+            # Without his memory: that lives on the server now, and the hub adds it itself.
+            self._publish("willie/persona", system_prompt(), retain=True, qos=1)
+            # Improvement requests still waiting: show them in the app again (the hub
+            # answers a request it already decided with its decision).
+            for entry in tools.pending_requests():
+                self._publish("willie/improve/request", entry, qos=1)
         except Exception:
             log.exception("could not publish tools/persona")
 
@@ -159,6 +170,9 @@ class Remote:
             return
         if message.topic == "willie/activity":
             self._activity(data)                     # cheap: sets a tuple on the face
+            return
+        if message.topic == "willie/improve/decision":
+            threading.Thread(target=self._guard, args=(self._decision, data), daemon=True).start()
             return
         handler = {
             "willie/cmd/say": self._say,
@@ -260,7 +274,21 @@ class Remote:
         action = {"off": "uit", "restart": "herstart"}.get(str(data.get("action", "")))
         if action:
             log.info("power (phone): %s", action)
-            tools.zet_uit(action, bevestigd=True)
+            tools.power(action)                  # the app asked "are you sure?" already
+
+    def request_approval(self, entry: dict) -> bool:
+        """tools.APPROVAL_HOOK: an improvement request goes to the app for Wouter's tap."""
+        if self.client is None or not self.client.is_connected():
+            return False
+        self._publish("willie/improve/request", entry, qos=1)
+        return True
+
+    def _decision(self, data: dict) -> None:
+        from willie.voice import tools
+
+        status = tools.decide(str(data.get("id", "")), data.get("approved") is True, str(data.get("hash", "")))
+        log.info("improvement %s: %s", data.get("id"), status)
+        self._publish("willie/event/improve", {"id": data.get("id"), "status": status})
 
     def powering(self, actie: str) -> None:
         """tools.POWER_HOOK: last things before poweroff/reboot."""
@@ -384,7 +412,10 @@ class Remote:
 
         name, call_id = str(data.get("name", "")), data.get("id")
         log.info("tool (phone): %s", name)
-        result = tools.call(name, data.get("args") or {})
+        if name in REMOTE_REFUSED:
+            result = {"fout": f"{name} kan niet vanaf de telefoon; gebruik de knop in de app."}
+        else:
+            result = tools.call(name, data.get("args") or {})
         self._publish("willie/tool/result", {"id": call_id, "name": name, "result": result}, qos=1)
 
     # ---------------------------------------------------------------- state

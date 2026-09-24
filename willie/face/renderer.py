@@ -11,7 +11,7 @@ from .framebuffer import Recorder, changed_bands
 
 STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
           "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting", "watched",
-          "dancing", "pinout")
+          "dancing", "pinout", "confirm")
 # Where a picture goes, in logical 480x320 coordinates: the whole screen except a 36 px bar
 # at the bottom for the title and the mic/camera flags, which stay visible (D17).
 PICTURE_BOX = (0, 0, 480, 284)
@@ -46,6 +46,9 @@ class View:
     badges: tuple = ()          # background jobs from the hub (willie/activity): ((icon, text, level), ...)
     mode: str = ""              # Phase K mode on: "GARAGE", "SENTRY", ... next to his name
     pinout: tuple | None = None # K1: Pinout.frozen() while a pinout is on screen
+    # Touch confirmation (Face.confirm): (question, hold 0..1, time left 0..1, seconds left,
+    # answer True/False/None, seconds since the answer or None, seconds since it appeared)
+    confirm: tuple | None = None
 
 
 def colour(value, fallback):
@@ -156,6 +159,9 @@ class Renderer:
         if state == "pinout" and view.pinout:
             self._pinout(p, view, base, dim, bg)
             return
+        if state == "confirm" and view.confirm:
+            self._confirm(p, view, base, dim, bg, now)
+            return
         # Fixed layout: the animated eye band stays close to B5's measured 138 rows.
         targets = {
             "idle": (100, 106, 100, 106, 0, 0),
@@ -175,6 +181,7 @@ class Renderer:
             "watched": (104, 104, 104, 104, 0, 0),
             "dancing": (99, 28, 99, 28, 0, 0),
             "pinout": (100, 106, 100, 106, 0, 0),
+            "confirm": (100, 106, 100, 106, 0, 0),
         }
         dt = .04 if self.last_time is None else max(0, min(.1, now-self.last_time))
         self.last_time = now
@@ -359,6 +366,67 @@ class Renderer:
         p.text(mic, 414, 298, 1, AMBER if view.muted else eye if view.mic else dim)
         if view.level > 0.05:                       # he is talking about it: a small pulse
             p.ellipse(402, 302, 2 + round(view.level * 3), 2 + round(view.level * 3), eye)
+
+    CONFIRM_RING = 24           # dots in the hold ring
+
+    def _confirm(self, p, view, eye, dim, bg, now):
+        """Touch confirmation: the question, a JA ring in the middle that fills while a finger
+        stays on the glass, two small eyes watching it, a countdown. After the answer: a
+        tick drawing itself (JA) or a cross (NEE / no answer). The privacy flags stay (D17)."""
+        question, hold, left, seconds, answer, answered_age, age = view.confirm
+        self._status_bar(p, view, eye, dim, bg, now)
+        lines = font.lines(question, 36)[:2]
+        for i, line in enumerate(lines):
+            p.centre(line, 86 + i*22, 2, WHITE)
+        cx, cy = 240, 184
+        rise = 1 - (1 - min(1.0, age/.35))**3           # the ring rises into place
+        cy += (1 - rise)*40
+        done = answered_age is not None
+        for side, ex in enumerate((122, 358)):
+            # The eyes look at the ring, and squint happily once it is a yes.
+            look = 7 if side == 0 else -7
+            if done and answer:
+                p.line(ex-16+look, cy+4, ex+look, cy-10, 7, eye)
+                p.line(ex+look, cy-10, ex+16+look, cy+4, 7, eye)
+            else:
+                h = 34 if not done else 12
+                p.round_rect(ex-12+look, cy-h/2, 24, h, 9, eye if not done else dim)
+        if not done:
+            breathe = 1 + .05*math.sin(now*4)
+            glow = mix(bg, eye, .15 + .5*hold)
+            p.ellipse(cx, cy, 58*breathe, 58*breathe, glow)
+            p.ellipse(cx, cy, 52, 52, bg)
+            lit = int(hold*self.CONFIRM_RING + .001)
+            for i in range(self.CONFIRM_RING):
+                a = -math.pi/2 + i*2*math.pi/self.CONFIRM_RING
+                c = eye if i < lit else mix(bg, dim, .8)
+                p.ellipse(cx + 46*math.cos(a), cy + 46*math.sin(a), 4, 4, c)
+            p.ellipse(cx, cy, 34 + 4*hold, 34 + 4*hold, mix(bg, eye, .25 + .75*hold))
+            p.text("JA", cx-18, cy-10, 3, bg if hold > .5 else WHITE)
+            # Countdown: a thin bar that runs out, amber in the last third.
+            p.rect(60, 262, 360, 2, mix(bg, dim, .6))
+            if left > 0:
+                p.rect(60, 262, 360*left, 2, eye if left > .33 else AMBER)
+            p.centre("HOUD VAST = JA", 274, 2, WHITE)
+            p.centre(f"KORT TIKKEN = NEE    {max(0, int(seconds + .99))} S", 299, 1, mix(dim, WHITE, .55))
+            return
+        # The answer: a filled disc with a tick that draws itself, or a cross.
+        t = min(1.0, answered_age/.3)
+        if answer:
+            p.ellipse(cx, cy, 44, 44, eye)
+            a, b, c = (cx-20, cy+2), (cx-6, cy+16), (cx+22, cy-14)
+            first = min(1.0, t*2)
+            p.line(a[0], a[1], a[0] + (b[0]-a[0])*first, a[1] + (b[1]-a[1])*first, 8, bg)
+            if t > .5:
+                second = (t - .5)*2
+                p.line(b[0], b[1], b[0] + (c[0]-b[0])*second, b[1] + (c[1]-b[1])*second, 8, bg)
+            p.centre("BEVESTIGD", 274, 2, eye)
+        else:
+            p.ellipse(cx, cy, 44, 44, mix(bg, dim, .7))
+            arm = 16*t
+            p.line(cx-arm, cy-arm, cx+arm, cy+arm, 8, WHITE)
+            p.line(cx-arm, cy+arm, cx+arm, cy-arm, 8, WHITE)
+            p.centre("GEANNULEERD" if answer is False else "GEEN ANTWOORD", 274, 2, WHITE)
 
     @staticmethod
     def _note(p, x, y, c, small=False):
