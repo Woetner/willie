@@ -73,7 +73,7 @@ def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> s
     model, features = _load()
     model.reset()
     features.reset()
-    factor = mic.gain()
+    stream = mic.Stream(mic.gain())
     recorder = subprocess.Popen(mic.command(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     elapsed, loudest, next_tick = 0.0, 0.0, 0.5
     detected = False
@@ -82,7 +82,7 @@ def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> s
             raw = recorder.stdout.read(CHUNK * mic.FRAME) if recorder.stdout else b""
             if len(raw) < CHUNK * mic.FRAME:
                 return None
-            chunk = mic.left(raw, factor)
+            chunk = stream.convert(raw)
             if LEVEL_HOOK is not None:
                 try:
                     LEVEL_HOOK(chunk)            # sentry mode (K5) hears the room through this

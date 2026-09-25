@@ -12,7 +12,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test voice-enroll garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs
+        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test bench-aec voice-enroll garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs
 
 help:
 	@echo "Pi"
@@ -151,6 +151,9 @@ voice-logs:
 
 wake-test: sync
 	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/wake.py $(or $(S),120)'
+
+bench-aec: sync
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/aec_delay.py'
 
 live-talk: sync
 	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/live_talk.py $(S)'

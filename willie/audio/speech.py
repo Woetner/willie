@@ -71,7 +71,11 @@ CARD_RATE = 48_000
 # dashboard, the phone app and the zet_volume tool all change the same number.
 # WILLIE_VOLUME in the environment still wins, for benches.
 VOLUME = None
-_cached = (0.0, 0.35)          # (read at, value): the live audio calls this per chunk
+_cached = (0.0, 0.35)          # (checked at, value): the live audio calls this per chunk
+# One Config, kept: building one parses the schema and the settings, ~0.7 s on the Pi 3,
+# and doing that every 2 s stalled the live audio loop while he talked (25 Sep). Now the
+# file is only re-read when its mtime changes.
+_config = None
 
 
 def volume() -> float:
@@ -80,11 +84,16 @@ def volume() -> float:
         return VOLUME
     if os.environ.get("WILLIE_VOLUME"):
         return float(os.environ["WILLIE_VOLUME"])
+    global _config
     now = time.monotonic()
     if now - _cached[0] > 2.0:
         try:
-            from willie.config import Config
-            _cached = (now, float(Config().get("voice.volume")))
+            if _config is None:
+                from willie.config import Config
+                _config = Config()
+            else:
+                _config.reload()
+            _cached = (now, float(_config.get("voice.volume")))
         except Exception:
             _cached = (now, _cached[1])
     return _cached[1]
@@ -95,11 +104,9 @@ def scale(pcm: bytes, gain: float = None) -> bytes:
     gain = volume() if gain is None else gain
     if gain >= 0.999:
         return pcm
-    samples = array.array("h")
-    samples.frombytes(pcm[: len(pcm) // 2 * 2])
-    for i, value in enumerate(samples):
-        samples[i] = int(value * gain)
-    return samples.tobytes()
+    import numpy as np
+    samples = np.frombuffer(pcm[: len(pcm) // 2 * 2], "<i2")
+    return (samples * gain).astype("<i2").tobytes()
 
 
 def _upsample(pcm: bytes, rate: int) -> bytes:

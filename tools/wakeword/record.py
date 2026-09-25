@@ -41,7 +41,7 @@ def record(path: Path, seconds: float, meter: bool = False, lead: float = 0.0, c
     With `meter`, prints a live timer and level bar once a second (long recordings)."""
     import array
     import wave
-    factor = mic.gain()
+    stream = mic.Stream(mic.gain())
     proc = subprocess.Popen(mic.command(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     # The mic needs ~0.8 s to settle after arecord opens (a decaying bump that looks like
     # sound): record `lead` seconds first, throw them away, and only then show the cue.
@@ -58,7 +58,7 @@ def record(path: Path, seconds: float, meter: bool = False, lead: float = 0.0, c
                 raw = proc.stdout.read(min(16000, total - done) * mic.FRAME)
                 if not raw:
                     break
-                chunk = mic.left(raw, factor)
+                chunk = stream.convert(raw)
                 out.writeframes(chunk)
                 done += len(chunk) // 2
                 second = max(map(abs, array.array("h", chunk)), default=0) / 327.68

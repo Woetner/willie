@@ -374,23 +374,19 @@ def _upsample(pcm: bytes, rate: int = OUT_RATE) -> bytes:
     factor = max(1, CARD_RATE // rate)
     if factor == 1:
         return pcm
-    samples = array.array("h")
-    samples.frombytes(pcm[: len(pcm) // 2 * 2])
-    out = array.array("h")
-    for value in samples:
-        for _ in range(factor):
-            out.append(value)
-    return out.tobytes()
+    import numpy as np
+    return np.repeat(np.frombuffer(pcm[: len(pcm) // 2 * 2], "<i2"), factor).tobytes()
 
 
 class Speaker:
     """One long-lived aplay process, so words do not get a gap between chunks."""
 
-    def __init__(self) -> None:
+    def __init__(self, echo=None) -> None:
         self.process: subprocess.Popen | None = None
         # When the audio written so far will have finished playing. aplay buffers,
         # so this is tracked from the byte count rather than from the last write.
         self.busy_until = 0.0
+        self.echo = echo                 # willie.audio.clean.EchoReference, when AEC is on
 
     def speaking(self, now: float) -> bool:
         return now < self.busy_until + BARGE_IN_TAIL
@@ -407,10 +403,14 @@ class Speaker:
         self.start()
         try:
             if self.process and self.process.stdin:
-                data = _upsample(speech.scale(pcm))
+                scaled = speech.scale(pcm)
+                data = _upsample(scaled)
                 seconds = len(data) / (CARD_RATE * 2)
                 loop = asyncio.get_event_loop()
-                self.busy_until = max(self.busy_until, loop.time()) + seconds
+                starts = max(self.busy_until, loop.time())
+                if self.echo is not None:
+                    self.echo.play(scaled, OUT_RATE, starts)
+                self.busy_until = starts + seconds
                 self.process.stdin.write(data)
                 self.process.stdin.flush()
         except (BrokenPipeError, ValueError):
@@ -422,6 +422,8 @@ class Speaker:
             self.process.kill()
         self.process = None
         self.busy_until = 0.0
+        if self.echo is not None:
+            self.echo.cut(asyncio.get_event_loop().time())
 
 
 # The live mic uses the same capture as the wake word (willie/audio/mic.py): left channel
@@ -437,12 +439,17 @@ TURN_END_S = 0.8             # this much quiet after speech = his turn is over -
 SPEECH_MIN_S = 0.4           # shorter bursts (a cough, a click, a cup on the desk) are no turn
 PREROLL_MAX_S = 15.0         # audio kept while the session opens (the one-breath question)
 
-# The microphone hears the speaker - there is no echo cancellation and they sit on the
-# same board. While he is talking the uplink is gated, or the server's voice detector
-# hears WILL-E himself and cuts him off. Barge-in only gets through above this level;
-# with the x8 gain his own echo clips, so it is off by default (D4: not a priority,
-# needs AEC). Set WILLIE_BARGE_IN_LEVEL (0-1) to experiment.
+# The microphone hears the speaker: they sit on the same board. While he is talking the
+# uplink is gated, or the server's voice detector hears WILL-E himself and cuts him off.
+# Without echo cancellation his echo clips at the wake gain, so the gate lets nothing
+# through (2.0 > full scale; D4). With it (voice.aec, 25 Sep) the gate looks at the
+# cleaned signal, where his echo is mostly gone, and voice.barge_in sets the level a
+# voice needs to talk over him. WILLIE_BARGE_IN_LEVEL (0-1) overrides both, to experiment.
 BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "2.0"))
+# Talking over him takes this many loud chunks in a row (300 ms); they are then sent
+# together. Single blips of leftover echo, e.g. when his audio arrives choppy and the
+# echo delay jumps, never reach the server this way (bench, 25 Sep).
+BARGE_IN_CHUNKS = 3
 # Keep the gate shut a moment after the audio ends, for the tail out of the cone.
 BARGE_IN_TAIL = 0.4
 # A tool's wrap-up (WRAP_UP) ends the session at most this long after it was asked.
@@ -496,9 +503,24 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
     word's own arecord, handed over still running, so not a word falls in the gap.
     `gate` (garage mode, K1: willie/voice/gate.py) decides per utterance what goes up."""
     from collections import deque
-    from willie.audio import mic
+    from willie.audio import clean, mic
     frames = IN_RATE * CHUNK_MS // 1000
     factor = mic.gain()
+    stream = mic.Stream(factor)
+    settings = configured_clean()
+    cleaner = clean.Cleaner.shared(settings["denoise_db"], settings["aec"]) if settings["clean"] else None
+    if cleaner is None or cleaner.echo is None:
+        speaker.echo = None
+        barge_in = BARGE_IN_FS
+    else:
+        speaker.echo = clean.EchoReference(settings["aec_delay_ms"] / 1000)
+        aligner = clean.Aligner(speaker.echo)
+        barge_in = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", settings["barge_in"]))
+    # Capture clock for the echo reference: sample n of this arecord was taken at
+    # t0 + n / IN_RATE. A read can only return a sample after it was taken, so the
+    # smallest "now - samples so far" is the best estimate (a backlog only raises it).
+    captured, t0 = 0, float("inf")
+    loud: list[bytes] = []                  # barge-in candidates while he talks
     detector = SpeechDetector()
     sent, loudest = 0, 0.0
     user_speaking, speech_start, last_speech, turn_open = False, 0.0, 0.0, False
@@ -525,15 +547,25 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 raw = await read(frames * mic.FRAME)
             except asyncio.IncompleteReadError:
                 break
-            chunk = mic.left(raw, factor)
+            decimated = stream.decimate(raw)
+            chunk = mic.s16(decimated, factor)    # fixed gain: level detector, wake word, garage gate
+            captured += len(decimated)
+            t0 = min(t0, loop.time() - captured / IN_RATE)
+            up = chunk
+            if cleaner is not None:
+                played = None
+                if speaker.echo is not None:
+                    played = speaker.echo.read(t0 + (captured - len(decimated)) / IN_RATE, len(decimated))
+                    aligner.feed(decimated, played)
+                up = cleaner.process(mic.s16(decimated, clean.IN_GAIN), played)
             peak = _peak(chunk)
             if ready is not None and not ready.is_set():
-                preroll.append(chunk)
+                preroll.append(up)
                 continue
             while preroll:
                 await adapter.send_audio(preroll.popleft())
             if standby is not None:
-                standby.recent.append(chunk)
+                standby.recent.append(up)
                 if standby.on:
                     if standby.spotter is None:
                         from willie.voice import wake
@@ -545,13 +577,22 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                             await adapter.send_audio(held)
                     continue
             # While he is speaking, swallow anything that is not clearly louder
-            # than his own voice coming back through the microphone.
-            if speaker.speaking(loop.time()) and peak < BARGE_IN_FS:
-                continue
+            # than his own voice coming back through the microphone (after AEC: than
+            # what is left of it).
+            if speaker.speaking(loop.time()):
+                if (_peak(up) if speaker.echo else peak) < barge_in:
+                    loud.clear()
+                    continue
+                loud.append(up)
+                if len(loud) < BARGE_IN_CHUNKS:
+                    continue
+                if len(loud) == BARGE_IN_CHUNKS:    # through: the held start of the words too
+                    for held in loud[:-1]:
+                        await adapter.send_audio(held)
             now = loop.time()
             speech = detector.is_speech(peak)
             if gate is None:
-                await adapter.send_audio(chunk)
+                await adapter.send_audio(up)
             else:
                 from willie.voice.gate import END
                 for out in gate.feed(chunk, speech, now):
@@ -581,6 +622,7 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 loudest = 0.0
     finally:
         on_event("mic_idle", "")
+        speaker.echo = None
         if recorder is not None:
             recorder.terminate()
             await asyncio.to_thread(recorder.wait)
@@ -802,6 +844,19 @@ def configured_standby() -> float:
         return float(Config().get("voice.standby_s"))
     except Exception:
         return 60.0
+
+
+def configured_clean() -> dict:
+    """voice.clean / denoise_db / aec / aec_delay_ms / barge_in: the live uplink's cleaning."""
+    values = {"clean": True, "denoise_db": -15, "aec": True, "aec_delay_ms": 295.0, "barge_in": 0.3}
+    try:
+        from willie.config import Config
+        cfg = Config()
+        for key in values:
+            values[key] = type(values[key])(cfg.get(f"voice.{key}"))
+    except Exception:
+        pass
+    return values
 
 
 async def session(
