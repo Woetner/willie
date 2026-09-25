@@ -147,6 +147,11 @@ def main() -> int:
         herkennen.HUB_CALL = remote.hub_call
         from willie import missions
         missions.HUB_CALL = remote.hub_call
+        # Token meter (J3): each session's tokens to the hub, in a thread so a slow server
+        # never holds up the next conversation. Server down = that record is lost.
+        from willie import usage
+        usage.HOOK = lambda record: threading.Thread(
+            target=remote.hub_call, args=("gebruik_sessie", record, 5), daemon=True).start()
     from willie.skills import garage as garage_skill
     garage_skill.FACE = face               # pinouts + step plans on the face (K1)
     from willie import missions

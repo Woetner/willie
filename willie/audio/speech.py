@@ -191,6 +191,9 @@ def gemini_pcm(text: str, api_key: str, model: str = TTS_MODEL, timeout: float =
         raise RuntimeError(f"TTS HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:200]}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise RuntimeError(f"TTS unreachable: {exc}") from exc
+    from willie import usage
+    from willie.voice import key_kind
+    usage.report("spraak", model, key_kind(api_key), meta=payload.get("usageMetadata"))
     try:
         for part in payload["candidates"][0]["content"]["parts"]:
             data = part.get("inlineData") or part.get("inline_data")

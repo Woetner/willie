@@ -230,6 +230,9 @@ def _merge(conversation: str, key: str, timeout: float = 30.0) -> dict:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 answer = json.loads(response.read())
+            from willie import usage
+            from willie.voice import key_kind
+            usage.report("geheugen", model, key_kind(key), meta=answer.get("usageMetadata"))
             result = json.loads(answer["candidates"][0]["content"]["parts"][0]["text"])
         except urllib.error.HTTPError as exc:
             errors.append(f"{model}: HTTP {exc.code}")

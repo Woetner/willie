@@ -22,6 +22,12 @@ SPEECH = tone(100, RATE, hz=300, level=0.4)        # 100 ms "voice"
 SILENCE = bytes(RATE * 100 // 1000 * 2)             # 100 ms room tone
 
 
+# One real 3.8-live turn (probe, 25 Sep).
+USAGE = {"promptTokenCount": 3867, "responseTokenCount": 116, "totalTokenCount": 3983,
+         "promptTokensDetails": [{"modality": "TEXT", "tokenCount": 3620}, {"modality": "AUDIO", "tokenCount": 222}],
+         "responseTokensDetails": [{"modality": "AUDIO", "tokenCount": 116}], "thoughtsTokenCount": 197}
+
+
 def make_fake(**kw):
     return FakeAdapter(realtime=True, answer_ms=500, chunk_ms=20, **kw)
 
@@ -71,7 +77,8 @@ class MockGeminiServer:
             if kind == "interrupted":
                 return send({"serverContent": {"interrupted": True}})
             if kind == "turn_complete":
-                return send({"serverContent": {"turnComplete": True}})
+                # As measured on 3.8-live (25 Sep): usage rides on the turnComplete message.
+                return send({"serverContent": {"turnComplete": True}, "usageMetadata": USAGE})
 
         model.on_audio(audio)
         model.on_event(event)
@@ -320,3 +327,25 @@ def test_gemini_resumption_text_and_stream_end():
         assert adapter.mock.texts == ["[timer] de lijm is droog"]
         await adapter.close()
     asyncio.run(main())
+
+
+def test_session_usage_reaches_the_meter(monkeypatch):
+    """J3: one record per session, summed over its turns, sent when it closes."""
+    from willie import usage
+    records = []
+    monkeypatch.setattr(usage, "HOOK", records.append)
+
+    async def run():
+        a = MockedGemini()
+        rec = Recorder(a)
+        await a.start_session("persona", "", [])
+        await say(a)
+        await wait_for(lambda: "turn_complete" in rec.events)
+        assert records == []                        # nothing before the session ends
+        await a.close()
+        await a.close()
+    asyncio.run(run())
+    assert len(records) == 1
+    r = records[0]
+    assert r["source"] == "robot" and r["model"] == "gemini-3.8-live" and r["turns"] == 1
+    assert (r["prompt_text"], r["prompt_audio"], r["out_audio"], r["thoughts"]) == (3645, 222, 116, 197)

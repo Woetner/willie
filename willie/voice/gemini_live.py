@@ -32,6 +32,7 @@ from datetime import datetime
 
 import websockets
 
+from willie import usage
 from willie.audio import speech
 from willie.voice import tools as willie_tools
 from willie.voice.base import Tool, VoiceAdapter
@@ -88,12 +89,14 @@ class GeminiLiveAdapter(VoiceAdapter):
 
     def __init__(self, api_key: str | None = None, model: str = "",
                  url: str | None = None, setup_timeout: float = 15.0, language: str = "nl",
-                 search: bool = False, resume: bool = False, resume_handle: str = ""):
+                 search: bool = False, resume: bool = False, resume_handle: str = "",
+                 source: str = "robot"):
         """`model` = one entry of MODELS (or any Live model; empty = try MODELS in order).
         `url` replaces the Google endpoint - the tests point it at a local mock server.
         `resume` (garage mode, K1): ask for session resumption + a sliding context window,
         so a conversation outlives Google's connection limit; `resume_handle` continues an
-        earlier one. The newest handle is kept in `self.resume_handle`."""
+        earlier one. The newest handle is kept in `self.resume_handle`.
+        `source` names the session in the token meter (willie/usage.py): robot, garage, telefoon."""
         super().__init__()
         self.api_key = api_key or talk_key()
         # The talk key (free) falls back to the paid key when every model refuses it.
@@ -113,6 +116,9 @@ class GeminiLiveAdapter(VoiceAdapter):
         self._closing = False
         self.resume = resume
         self.resume_handle = resume_handle
+        self.source = source
+        self.usage: dict = {}            # summed usageMetadata of this session (token meter)
+        self.key_kind = ""
 
     # ---- lifecycle -------------------------------------------------------------
     async def start_session(self, persona: str, context: str, tools: list[Tool]) -> None:
@@ -249,6 +255,7 @@ class GeminiLiveAdapter(VoiceAdapter):
             await self._emit("interrupted")
 
     async def close(self) -> None:
+        self._report_usage()
         voice_keys.SESSION.update(model=None, key=None)
         if voice_keys.KEY_HOOK:
             try:
@@ -282,9 +289,19 @@ class GeminiLiveAdapter(VoiceAdapter):
         if not self._closing:                        # the server ended it, not close()
             self.is_open = False
             self._socket = None
+            self._report_usage()
             await self._emit("closed", reason)
 
+    def _report_usage(self) -> None:
+        """Once per session, when it ends (either side): the summed tokens to the meter."""
+        if self.usage:
+            usage.report(self.source, self.model, self.key_kind, self.usage)
+            self.usage = {}
+
     async def _handle(self, message: dict) -> None:
+        meta = _get(message, "usageMetadata", "usage_metadata")
+        if meta:
+            usage.add(self.usage, meta)
         call = _get(message, "toolCall", "tool_call")
         if call:
             # Each call runs as its own task: the camera takes seconds and the
@@ -809,7 +826,8 @@ async def session(
     speaker = Speaker()
     native_search = configured_search()      # paid key: 3.8 searches itself, no zoek_op detour
     adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=native_search,
-                                resume=resume is not None, resume_handle=(resume or {}).get("handle", ""))
+                                resume=resume is not None, resume_handle=(resume or {}).get("handle", ""),
+                                source="garage" if resume is not None else "robot")
     turns = transcript if transcript is not None else []
     # Face: "thinking" only once the server has heard words in this turn. The mic's own
     # level detector says when the turn *ends*; the transcription says it *was speech*.
