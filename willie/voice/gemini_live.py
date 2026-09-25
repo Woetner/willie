@@ -389,7 +389,11 @@ class Speaker:
         self.echo = echo                 # willie.audio.clean.EchoReference, when AEC is on
 
     def speaking(self, now: float) -> bool:
-        return now < self.busy_until + BARGE_IN_TAIL
+        # busy_until is when aplay was handed the last sample; it sounds `delay` later
+        # (0.3-0.5 s, tracked by the echo canceller). Without that the gate reopened while
+        # his last words still came out, and he answered his own echo again (25 Sep).
+        lag = self.echo.delay if self.echo is not None else ECHO_LAG_S
+        return now < self.busy_until + lag + BARGE_IN_TAIL
 
     def start(self) -> None:
         if self.process and self.process.poll() is None:
@@ -452,6 +456,8 @@ BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "2.0"))
 BARGE_IN_CHUNKS = 3
 # Keep the gate shut a moment after the audio ends, for the tail out of the cone.
 BARGE_IN_TAIL = 0.4
+# Playback latency when the echo canceller is off (bench 25 Sep: 0.29-0.47 s).
+ECHO_LAG_S = 0.5
 # A tool's wrap-up (WRAP_UP) ends the session at most this long after it was asked.
 WRAP_UP_MAX_S = 12.0
 
