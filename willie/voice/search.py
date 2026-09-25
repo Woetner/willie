@@ -31,14 +31,18 @@ async def search(question: str, api_key: str | None = None, timeout: float = 30.
     question = question.strip()
     if not question:
         return {"fout": "geen vraag"}
-    from willie.voice import talk_key
-    key = api_key or talk_key()
-    try:
-        return await asyncio.wait_for(_ask(question, key, url), timeout)
-    except asyncio.TimeoutError:
-        return {"fout": f"zoeken duurde langer dan {timeout:.0f} s"}
-    except (websockets.WebSocketException, OSError, ValueError, KeyError) as exc:
-        return {"fout": f"zoeken mislukt: {exc}"}
+    from willie.voice import talk_keys
+    result: dict = {"fout": "geen API-sleutel"}
+    for key in ([api_key] if api_key else (talk_keys() or [""])):     # free first, then paid
+        try:
+            result = await asyncio.wait_for(_ask(question, key, url), timeout)
+        except asyncio.TimeoutError:
+            return {"fout": f"zoeken duurde langer dan {timeout:.0f} s"}
+        except (websockets.WebSocketException, OSError, ValueError, KeyError) as exc:
+            result = {"fout": f"zoeken mislukt: {exc}"}
+        if "fout" not in result:
+            return result
+    return result
 
 
 async def _ask(question: str, key: str, url: str | None) -> dict:

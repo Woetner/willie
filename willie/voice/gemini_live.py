@@ -18,7 +18,7 @@ Audio contract:
 
 from __future__ import annotations
 
-from willie.voice import talk_key
+from willie.voice import talk_key, talk_keys
 import array
 import asyncio
 import base64
@@ -95,6 +95,8 @@ class GeminiLiveAdapter(VoiceAdapter):
         earlier one. The newest handle is kept in `self.resume_handle`."""
         super().__init__()
         self.api_key = api_key or talk_key()
+        # The talk key (free) falls back to the paid key when every model refuses it.
+        self.keys = talk_keys() if self.api_key == talk_key() else [self.api_key]
         self.models = [(m, s) for m, s in MODELS if m == model] or ([(model, "audio")] if model else list(MODELS))
         self.voice = VOICE
         self.language = language
@@ -119,8 +121,12 @@ class GeminiLiveAdapter(VoiceAdapter):
         rule = LANGUAGES.get(self.language, ("", ""))[1]
         prompt = "\n\n".join(p for p in (persona, rule, context) if p).strip()
         last_error = "no model accepted the session"
-        for model, shape in self.models:
-            url = self.url or f"wss://{HOST}{PATH}?key={self.api_key}"
+        tries = [(key, model, shape) for key in (self.keys or [self.api_key]) for model, shape in self.models]
+        for key, model, shape in tries:
+            if key != tries[0][0] and not self.url and key != getattr(self, "_fallback_logged", None):
+                log.warning("free key refused (%s) - talking on the paid key", last_error[:120])
+                self._fallback_logged = key
+            url = self.url or f"wss://{HOST}{PATH}?key={key}"
             try:
                 socket = await websockets.connect(url, max_size=None, ping_interval=20)
             except (websockets.WebSocketException, OSError) as exc:

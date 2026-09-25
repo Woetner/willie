@@ -12,3 +12,10 @@ import os
 def talk_key() -> str:
     """Key for live conversations, the phone chat, speech and web search."""
     return os.environ.get("GEMINI_API_KEY_FREE") or os.environ.get("GEMINI_API_KEY", "")
+
+
+def talk_keys() -> list[str]:
+    """Free key first, then the paid one: when the free key is refused (limit reached, model
+    not on the free tier), talking switches to the paid key by itself (Wouter, 25 Sep)."""
+    keys = [os.environ.get("GEMINI_API_KEY_FREE", ""), os.environ.get("GEMINI_API_KEY", "")]
+    return [k for k in dict.fromkeys(keys) if k]

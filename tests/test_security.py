@@ -257,3 +257,16 @@ def test_server_side_digest_saves_the_conversation(tmp_path, monkeypatch):
     assert result["ok"]
     saved = (tmp_path / "sessions" / "2026-09-24.md").read_text()
     assert "Wouter: hoi" in saved and "evil" not in saved
+
+
+# ---------------------------------------------------------------- free key first, paid as fallback
+def test_talking_tries_the_free_key_then_the_paid_one(monkeypatch):
+    from willie.voice import talk_key, talk_keys
+    from willie.voice.gemini_live import GeminiLiveAdapter
+    monkeypatch.setenv("GEMINI_API_KEY", "PAID")
+    monkeypatch.setenv("GEMINI_API_KEY_FREE", "FREE")
+    assert talk_key() == "FREE" and talk_keys() == ["FREE", "PAID"]
+    assert GeminiLiveAdapter().keys == ["FREE", "PAID"]
+    assert GeminiLiveAdapter(api_key="OTHER").keys == ["OTHER"]
+    monkeypatch.delenv("GEMINI_API_KEY_FREE")
+    assert talk_keys() == ["PAID"]
