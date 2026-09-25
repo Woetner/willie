@@ -121,7 +121,8 @@ class GeminiLiveAdapter(VoiceAdapter):
         rule = LANGUAGES.get(self.language, ("", ""))[1]
         prompt = "\n\n".join(p for p in (persona, rule, context) if p).strip()
         last_error = "no model accepted the session"
-        tries = [(key, model, shape) for key in (self.keys or [self.api_key]) for model, shape in self.models]
+        # Per model: free key, then paid - so he stays on the best model (3.8) either way.
+        tries = [(key, model, shape) for model, shape in self.models for key in (self.keys or [self.api_key])]
         for key, model, shape in tries:
             if key != tries[0][0] and not self.url and key != getattr(self, "_fallback_logged", None):
                 log.warning("free key refused (%s) - talking on the paid key", last_error[:120])
