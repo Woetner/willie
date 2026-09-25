@@ -170,12 +170,12 @@ class GeminiLiveAdapter(VoiceAdapter):
     def _setup_message(self, model: str, prompt: str) -> dict:
         setup = {
             "model": model,
-            # Start of speech: HIGH since 25 Sep (Wouter: the mic has to be more
-            # sensitive). LOW was there to ignore his own echo, but the runner's gate
-            # keeps the uplink shut while he talks, and the mic is echo-cancelled now.
+            # Start of speech: LOW. HIGH (25 Sep, for a more sensitive mic) came with
+            # him answering the same thing again and again with nobody talking, so it
+            # went back the same day. The quiet-voice gain now comes from the AGC.
             "realtimeInputConfig": {
                 "automaticActivityDetection": {
-                    "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
+                    "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
                     "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
                     "prefixPaddingMs": 300,
                     # 800 -> 600 ms (23 Sep, Wouter): answers sooner; lower risks cutting

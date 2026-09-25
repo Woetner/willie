@@ -217,6 +217,8 @@ def main() -> int:
                 turn_end: list[float] = []
                 transcript: list = []
 
+                words = {"heard": "", "said": ""}
+
                 def on_event(kind: str, detail: str) -> None:
                     elapsed = time.monotonic() - started
                     if kind == "user_turn_end":
@@ -244,6 +246,15 @@ def main() -> int:
                         print(f"  [{elapsed:5.1f}s] mic {detail}")
                     elif kind in ("idle", "error", "interrupted", "standby", "wake_again"):
                         print(f"  [{elapsed:5.1f}s] {kind} {detail}".rstrip())
+                    # What Gemini heard and said, per turn, first 80 characters (25 Sep:
+                    # to see what sets off the repeated answers). Local journal only.
+                    if kind in ("heard", "said"):
+                        words[kind] += detail
+                    elif kind in ("user_turn_end", "turn_complete", "interrupted") and (words["heard"] or words["said"]):
+                        for who in ("heard", "said"):
+                            if words[who].strip():
+                                print(f"  [{elapsed:5.1f}s] {who}: {words[who].strip()[:80]}")
+                            words[who] = ""
 
                 if remote:
                     remote.session_active = True
