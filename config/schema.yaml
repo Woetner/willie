@@ -89,6 +89,9 @@ voice:
   language:        {type: choice, default: nl, options: [nl, en, auto], help: "Conversation language (nl = Dutch unless you speak English)"}
   followup_s:      {type: float, default: 20, min: 3, max: 60, unit: s, help: "After the last words he keeps listening this long without 'Hey Willie', then sleeps"}
   standby_s:       {type: float, default: 60, min: 0, max: 600, unit: s, help: "When he decides talk is not for him he stays connected but silent this long; 'Hey Willie' then answers instantly"}
+  lean_tools:      {type: bool, default: true, help: "Small prompt (L2): only the core tools in full, the rest behind one 'doe' tool with a short list. Off = all tool schemas in every turn (about 3x the prompt tokens)"}
+  window_trigger_tokens: {type: int, default: 12000, min: 0, max: 100000, help: "Cap on what one turn re-reads (L4): past this many tokens the oldest turns are dropped (0 = no cap; the system prompt always stays)"}
+  window_target_tokens:  {type: int, default: 8000, min: 2000, max: 100000, help: "What is left after dropping old turns (below the cap)"}
 
 modes:
   _label: Modes (Phase K)
@@ -116,7 +119,7 @@ sentry:
 
 memory:
   _label: Memory
-  context_chars:   {type: int, default: 24000, min: 2000, max: 200000, help: "How much long-term memory (facts + recent conversations) goes into every conversation. More = knows more without searching, but a slower start and more tokens per turn. Older things stay findable with herinner"}
+  context_chars:   {type: int, default: 4000, min: 2000, max: 200000, help: "How much long-term memory (facts + recent conversations) goes into every conversation. More = knows more without searching, but a slower start and more tokens per turn. Older things stay findable with herinner"}
 
 skills:
   _label: Skills

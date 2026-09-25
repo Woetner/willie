@@ -56,7 +56,7 @@ voice:
   followup_s: 20
   standby_s: 60
 memory:
-  context_chars: 24000
+  context_chars: 4000
 skills:
   brandstof_url: http://192.168.2.151:8000  # home server (S5)
 privacy:

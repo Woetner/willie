@@ -147,6 +147,8 @@ def main() -> int:
         herkennen.HUB_CALL = remote.hub_call
         from willie import missions
         missions.HUB_CALL = remote.hub_call
+        from willie.skills import huis
+        huis.HUB_CALL = remote.hub_call
         # Token meter (J3): each session's tokens to the hub, in a thread so a slow server
         # never holds up the next conversation. Server down = that record is lost.
         from willie import usage

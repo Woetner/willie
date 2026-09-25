@@ -117,6 +117,7 @@ class GeminiLiveAdapter(VoiceAdapter):
         self.resume = resume
         self.resume_handle = resume_handle
         self.source = source
+        self.window = configured_window()   # (trigger, target) tokens, or None = no cap (L4)
         self.usage: dict = {}            # summed usageMetadata of this session (token meter)
         self.key_kind = ""
 
@@ -213,6 +214,11 @@ class GeminiLiveAdapter(VoiceAdapter):
         if self.resume:
             setup["sessionResumption"] = {"handle": self.resume_handle} if self.resume_handle else {}
             setup["contextWindowCompression"] = {"slidingWindow": {}}
+        if self.window:
+            # L4: every turn pays for the whole context, so cap it. Past `trigger` tokens the
+            # server drops the oldest turns down to `target`; the system prompt is kept.
+            trigger, target = self.window
+            setup["contextWindowCompression"] = {"triggerTokens": trigger, "slidingWindow": {"targetTokens": target}}
         return {"setup": setup}
 
     async def send_audio(self, pcm: bytes) -> None:
@@ -713,8 +719,11 @@ def live_context() -> str:
     now = datetime.now()
     from willie import control
     body = control.context_line()          # mood + battery from the core (G2); "" if it is down
+    from willie.skills import huis
+    house = huis.context_line()            # L3: the home server's situation line; "" if it is gone
     return (f"Het is nu {DAYS[now.weekday()]} {now.day} {MONTHS[now.month - 1]} {now.year}, "
-            f"{now:%H:%M}.{f' Jouw toestand: {body}.' if body else ''}{willie_tools.remembered()}")
+            f"{now:%H:%M}.{f' Jouw toestand: {body}.' if body else ''}"
+            f"{f' Thuis nu: {house}' if house else ''}{willie_tools.remembered()}")
 
 
 def configured_search() -> bool:
@@ -726,6 +735,26 @@ def configured_search() -> bool:
         return bool(Config().get("voice.search"))
     except Exception:
         return False
+
+
+def configured_window() -> tuple[int, int] | None:
+    """voice.window_trigger_tokens / voice.window_target_tokens (L4); trigger 0 = no cap."""
+    try:
+        from willie.config import Config
+        cfg = Config()
+        trigger, target = int(cfg.get("voice.window_trigger_tokens")), int(cfg.get("voice.window_target_tokens"))
+    except Exception:
+        trigger, target = 12_000, 8_000
+    return (trigger, min(target, trigger - 1)) if trigger > 0 else None
+
+
+def configured_lean() -> bool:
+    """voice.lean_tools (L2): core tools in full, the rest behind `doe`. On unless switched off."""
+    try:
+        from willie.config import Config
+        return bool(Config().get("voice.lean_tools"))
+    except Exception:
+        return True
 
 
 def configured_language() -> str:
@@ -932,6 +961,11 @@ async def session(
     tools = willie_tool_list(face, web_search=not native_search or bool(os.environ.get("GEMINI_API_KEY_FREE")))
     if gate is None:
         tools.append(Tool(NOT_FOR_ME.name, NOT_FOR_ME.description, NOT_FOR_ME.parameters, handler=not_for_me))
+    if configured_lean():
+        # L2: every turn pays for the whole setup, so only the core tools go in full.
+        from willie.voice import lean
+        tools = lean.lean(tools, lean.CORE + (NOT_FOR_ME.name,)
+                          + (lean.GARAGE_CORE if resume is not None else ()))
     if control is not None:
         def say_in_session(text: str) -> None:
             asyncio.run_coroutine_threadsafe(adapter.send_text(text), loop)
