@@ -45,6 +45,18 @@ def _load():
     return _detector
 
 
+def cutoff() -> float:
+    """voice.wake_sensitivity -> the model's probability cutoff (cutoff = 1 - sensitivity).
+    Before 25 Sep the setting was not wired and the JSON's 0.7 ruled. On Wouter's clips
+    64/67 fire at any cutoff 0.3-0.9 and his talk + TV peaks at 0.46, so 0.5 costs nothing
+    there and helps soft or far "Hey Willie"s (bench, 25 Sep; the 1-hour TV test decides)."""
+    try:
+        from willie.config import Config
+        return 1.0 - float(Config().get("voice.wake_sensitivity"))
+    except Exception:
+        return 0.5
+
+
 def listen_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> bool:
     """Block until the wake word is heard. True on a detection, False on timeout.
     The microphone is released before returning."""
@@ -71,6 +83,7 @@ def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> s
     if not available():
         raise RuntimeError("pymicro-wakeword missing - make deps")
     model, features = _load()
+    threshold = cutoff()
     model.reset()
     features.reset()
     stream = mic.Stream(mic.gain())
@@ -94,7 +107,7 @@ def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> s
                 if probability is None:
                     continue
                 loudest = max(loudest, probability)
-                if probability > model.probability_cutoff:
+                if probability > threshold:
                     detected = True
                     return recorder
             if on_tick and elapsed >= next_tick:
@@ -118,6 +131,7 @@ class Spotter:
 
     def __init__(self) -> None:
         self.model, self.features = _load()
+        self.threshold = cutoff()
         self.reset()
 
     def reset(self) -> None:
@@ -127,7 +141,7 @@ class Spotter:
     def feed(self, chunk: bytes) -> bool:
         for frame in self.features.process_streaming(chunk):
             probability = self.model.process_streaming_prob(frame)
-            if probability is not None and probability > self.model.probability_cutoff:
+            if probability is not None and probability > self.threshold:
                 self.reset()
                 return True
         return False

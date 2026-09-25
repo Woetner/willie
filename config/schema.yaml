@@ -83,7 +83,7 @@ voice:
   volume:          {type: float, default: 0.35, min: 0.02, max: 0.8, help: "Speaker volume for voice and chimes (0.15 = quiet desk, 0.35 = room, 0.8 = max)"}
   speed:           {type: float, default: 1.0, min: 0.7, max: 1.5, help: Speaking speed}
   robot_filter:    {type: float, default: 0.3, min: 0, max: 1, help: Amount of robot voice filter}
-  wake_sensitivity: {type: float, default: 0.5, min: 0.1, max: 0.95, help: Wake-word threshold}
+  wake_sensitivity: {type: float, default: 0.5, min: 0.1, max: 0.8, help: "How easily 'Hey Willie' wakes him (cutoff = 1 - this). Higher = hears it softer and further away, but more false wakes. 0.5 = cutoff 0.5 (was a fixed 0.7)"}
   wake_gain:       {type: float, default: 8.0, min: 1, max: 32, help: "Digital mic gain for wake word + recorder (INMP441 is quiet; left channel only)"}
   clean:           {type: bool, default: true, help: "Live conversation mic: noise suppression + automatic gain (speexdsp). Off = the fixed wake gain, which clips a close voice"}
   denoise_db:      {type: int, default: -15, min: -40, max: 0, unit: dB, help: "How hard steady noise (fan, fridge, printer) is pushed down. More negative = quieter room, but voices get a watery edge"}

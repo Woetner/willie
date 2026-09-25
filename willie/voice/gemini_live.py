@@ -170,12 +170,12 @@ class GeminiLiveAdapter(VoiceAdapter):
     def _setup_message(self, model: str, prompt: str) -> dict:
         setup = {
             "model": model,
-            # Ask the server to be slow to call something an interruption. The
-            # runner's echo gate does the heavy lifting, but a deaf-er detector
-            # helps for whatever leaks through.
+            # Start of speech: HIGH since 25 Sep (Wouter: the mic has to be more
+            # sensitive). LOW was there to ignore his own echo, but the runner's gate
+            # keeps the uplink shut while he talks, and the mic is echo-cancelled now.
             "realtimeInputConfig": {
                 "automaticActivityDetection": {
-                    "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+                    "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
                     "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
                     "prefixPaddingMs": 300,
                     # 800 -> 600 ms (23 Sep, Wouter): answers sooner; lower risks cutting
