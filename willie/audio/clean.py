@@ -73,6 +73,8 @@ class Cleaner:
         self.lib = lib
         self.pre = lib.speex_preprocess_state_init(FRAME, RATE)
         self.echo = lib.speex_echo_state_init(FRAME, TAIL) if echo else None
+        self.residual = 0.0             # loudest echo-cancelled sample of the last chunk, pre-AGC
+        self.doubletalk = DoubleTalk()
         on = ctypes.c_int(1)
         lib.speex_preprocess_ctl(self.pre, _SET_DENOISE, ctypes.byref(on))
         lib.speex_preprocess_ctl(self.pre, _SET_NOISE_SUPPRESS, ctypes.byref(ctypes.c_int(int(denoise_db))))
@@ -112,6 +114,7 @@ class Cleaner:
         out = np.empty_like(samples)
         if self.echo is not None and played is None:
             played = np.zeros(len(samples), np.int16)
+        self.residual = 0.0
         for start in range(0, len(samples), FRAME):
             frame = samples[start:start + FRAME]
             if self.echo is not None:
@@ -120,6 +123,7 @@ class Cleaner:
                 self.lib.speex_echo_cancellation(self.echo, frame.ctypes.data, ref.ctypes.data,
                                                  result.ctypes.data)
                 frame = result
+                self.residual = max(self.residual, float(np.abs(result).max()) / 32768)
             else:
                 out[start:start + FRAME] = frame
                 frame = out[start:start + FRAME]
@@ -133,6 +137,44 @@ class Cleaner:
         if self.echo:
             self.lib.speex_echo_state_destroy(self.echo)
             self.echo = None
+
+
+class DoubleTalk:
+    """Is someone talking over him? (barge-in, 25 Sep)
+
+    Deciding on the cleaned signal failed in real use: the AGC lifts his leftover echo
+    ~6x (0.07 in, 0.42 out at volume 0.8), so any fixed level either lets his own voice
+    interrupt him or never lets Wouter through. This looks at the echo canceller's output
+    *before* noise suppression and AGC, and compares it with the echo expected from what
+    the speaker played in the last 300 ms (the echo tail). The expected ratio is learned
+    while he talks alone, so it follows the volume and the room. Someone talks over him
+    when the leftover is `factor` times louder than expected (voice.barge_in)."""
+
+    HISTORY = 150                # learned ratios: the last ~15 s of his speech
+    TAIL = 3                     # chunks of reference that can still echo (300 ms)
+    AUDIBLE = 0.01               # reference peak (FS) below this: he is silent, learn nothing
+    FLOOR = 0.015                # a leftover under this (FS, at IN_GAIN) is never a voice
+
+    def __init__(self) -> None:
+        from collections import deque
+        self.ratios: deque[float] = deque(maxlen=self.HISTORY)
+        self.recent: deque[float] = deque(maxlen=self.TAIL)
+
+    def expected(self) -> float | None:
+        if len(self.ratios) < 20:
+            return None                           # not learned yet: never interrupt
+        return float(np.percentile(self.ratios, 75)) * max(self.recent)
+
+    def feed(self, residual: float, played: np.ndarray, factor: float) -> bool:
+        self.recent.append(float(np.abs(played).max()) / 32768 if len(played) else 0.0)
+        reference = max(self.recent)
+        if reference < self.AUDIBLE:
+            return residual >= self.FLOOR * factor
+        expected = self.expected()
+        talking = expected is not None and residual >= max(self.FLOOR, expected * factor)
+        if not talking:
+            self.ratios.append(residual / reference)
+        return talking
 
 
 class EchoReference:

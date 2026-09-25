@@ -442,9 +442,9 @@ PREROLL_MAX_S = 15.0         # audio kept while the session opens (the one-breat
 # The microphone hears the speaker: they sit on the same board. While he is talking the
 # uplink is gated, or the server's voice detector hears WILL-E himself and cuts him off.
 # Without echo cancellation his echo clips at the wake gain, so the gate lets nothing
-# through (2.0 > full scale; D4). With it (voice.aec, 25 Sep) the gate looks at the
-# cleaned signal, where his echo is mostly gone, and voice.barge_in sets the level a
-# voice needs to talk over him. WILLIE_BARGE_IN_LEVEL (0-1) overrides both, to experiment.
+# through (2.0 > full scale; D4). With it (voice.aec, 25 Sep) clean.DoubleTalk decides:
+# voice.barge_in = how many times louder than his expected leftover echo a voice must be.
+# WILLIE_BARGE_IN_LEVEL (0-1 FS) is the no-AEC gate level, to experiment.
 BARGE_IN_FS = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", "2.0"))
 # Talking over him takes this many loud chunks in a row (300 ms); they are then sent
 # together. Single blips of leftover echo, e.g. when his audio arrives choppy and the
@@ -515,7 +515,7 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
     else:
         speaker.echo = clean.EchoReference(settings["aec_delay_ms"] / 1000)
         aligner = clean.Aligner(speaker.echo)
-        barge_in = float(os.environ.get("WILLIE_BARGE_IN_LEVEL", settings["barge_in"]))
+        barge_in = settings["barge_in"]
     # Capture clock for the echo reference: sample n of this arecord was taken at
     # t0 + n / IN_RATE. A read can only return a sample after it was taken, so the
     # smallest "now - samples so far" is the best estimate (a backlog only raises it).
@@ -580,7 +580,13 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             # than his own voice coming back through the microphone (after AEC: than
             # what is left of it).
             if speaker.speaking(loop.time()):
-                if (_peak(up) if speaker.echo else peak) < barge_in:
+                if speaker.echo is not None:
+                    # 50 = off: at volume 0.8 his leftover echo is as loud as Wouter at 1 m
+                    # (bench with his real voice, 25 Sep), so he interrupted himself.
+                    over = barge_in < 50 and cleaner.doubletalk.feed(cleaner.residual, played, barge_in)
+                else:
+                    over = peak >= barge_in
+                if not over:
                     loud.clear()
                     continue
                 loud.append(up)
@@ -848,7 +854,7 @@ def configured_standby() -> float:
 
 def configured_clean() -> dict:
     """voice.clean / denoise_db / aec / aec_delay_ms / barge_in: the live uplink's cleaning."""
-    values = {"clean": True, "denoise_db": -15, "aec": True, "aec_delay_ms": 295.0, "barge_in": 0.3}
+    values = {"clean": True, "denoise_db": -15, "aec": True, "aec_delay_ms": 295.0, "barge_in": 50.0}
     try:
         from willie.config import Config
         cfg = Config()

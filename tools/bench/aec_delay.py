@@ -31,7 +31,9 @@ from willie.audio import clean, mic  # noqa: E402
 from willie.voice.gemini_live import OUT_RATE, Speaker  # noqa: E402
 
 RATE = clean.RATE
-SPEECH = REPO / ".local" / "wakeword_rec" / "negative" / "talk_135420.wav"
+# His real voice at its real level (make voice-samples): a room recording of Wouter,
+# scaled by its peak, played far softer than WILL-E really talks (Wouter, 25 Sep).
+SPEECH = REPO / ".local" / "voices" / "3_Iapetus.wav"
 
 
 def speech_24k(seconds: float) -> np.ndarray:
@@ -44,7 +46,6 @@ def speech_24k(seconds: float) -> np.ndarray:
         t = np.arange(int(seconds * rate)) / rate
         data = np.sign(np.sin(2 * np.pi * 140 * t)) * 3000 * (np.sin(2 * np.pi * 3 * t) > 0)
     data = data[: int(seconds * rate)]
-    data = data / max(1.0, np.abs(data).max()) * 20_000
     return np.interp(np.arange(int(len(data) * OUT_RATE / rate)) * (rate / OUT_RATE),
                      np.arange(len(data)), data).astype(np.int16)
 
