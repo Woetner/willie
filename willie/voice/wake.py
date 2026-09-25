@@ -54,7 +54,7 @@ def cutoff() -> float:
         from willie.config import Config
         return 1.0 - float(Config().get("voice.wake_sensitivity"))
     except Exception:
-        return 0.5
+        return 0.65
 
 
 def listen_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> bool:
