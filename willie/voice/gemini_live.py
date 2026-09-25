@@ -1075,6 +1075,11 @@ async def session(
                     break
                 continue
             # The window starts when his voice has finished playing, not when it arrived.
+            # While a card, picture or pinout is on the screen Wouter is reading it: the
+            # follow-up window only starts when it is gone (25 Sep: he went back to sleep
+            # under a pinout and then ignored the next question).
+            if face and getattr(face, "showing", lambda: False)():
+                activity[0] = loop.time()
             last = max(activity[0], speaker.busy_until)
             if idle_timeout and loop.time() - last >= idle_timeout:
                 emit("idle", f"{idle_timeout:.0f} s without words")

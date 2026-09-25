@@ -388,6 +388,12 @@ class Face:
             self._pinout_until = self.clock() + self.PINOUT_S
         return {"pin": f"{found.nr} {found.label()}"} if found else {"fout": f"pin {pin} niet gevonden"}
 
+    def showing(self) -> bool:
+        """Something is on the screen for Wouter to read (a text card, a picture, a pinout)."""
+        now = self.clock()
+        with self._lock:
+            return now < self._show_until or self._pinout_on(now)
+
     def _pinout_on(self, now) -> bool:
         return self._pinout is not None and now < self._pinout_until
 
