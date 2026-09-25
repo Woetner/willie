@@ -123,6 +123,8 @@ def main() -> int:
         face.on_pet = lambda: control.event("pet")
         if face.touch:
             willie_tools.CONFIRM = face.confirm  # risky tools need a finger on the glass
+        import willie.voice as voice_keys
+        voice_keys.KEY_HOOK = lambda paid: face.indicators(paid=paid)   # PAID badge on the face
     # His memory lives on the home server, never on the SD card (Wouter, 24 Sep).
     memory.ON_SERVER = True
     speech.silence(muted())              # started asleep: stay quiet until woken

@@ -19,3 +19,14 @@ def talk_keys() -> list[str]:
     not on the free tier), talking switches to the paid key by itself (Wouter, 25 Sep)."""
     keys = [os.environ.get("GEMINI_API_KEY_FREE", ""), os.environ.get("GEMINI_API_KEY", "")]
     return [k for k in dict.fromkeys(keys) if k]
+
+
+# Which key and model the running conversation uses (Wouter, 25 Sep: "can I ask him if he
+# runs on the paid key?"). Set by GeminiLiveAdapter; read by the `verbinding` tool.
+SESSION = {"model": None, "key": None}
+KEY_HOOK = None          # fn(paid: bool): the PAID badge on his face; set by tools/willie_voice.py
+
+
+def key_kind(key: str) -> str:
+    free = os.environ.get("GEMINI_API_KEY_FREE", "")
+    return "gratis" if free and key == free else "betaald"

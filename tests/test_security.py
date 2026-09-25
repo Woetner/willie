@@ -270,3 +270,15 @@ def test_talking_tries_the_free_key_then_the_paid_one(monkeypatch):
     assert GeminiLiveAdapter(api_key="OTHER").keys == ["OTHER"]
     monkeypatch.delenv("GEMINI_API_KEY_FREE")
     assert talk_keys() == ["PAID"]
+
+
+def test_he_knows_which_key_he_talks_on(monkeypatch):
+    import willie.voice as voice_keys
+    monkeypatch.setenv("GEMINI_API_KEY", "PAID")
+    monkeypatch.setenv("GEMINI_API_KEY_FREE", "FREE")
+    assert voice_keys.key_kind("FREE") == "gratis" and voice_keys.key_kind("PAID") == "betaald"
+    monkeypatch.setattr(voice_keys, "SESSION", {"model": "gemini-3.8-live", "key": "betaald"})
+    assert tools.verbinding() == {"model": "gemini-3.8-live", "sleutel": "betaald", "uitleg": tools.verbinding()["uitleg"]}
+    fb = Framebuffer.canvas()
+    Renderer().draw(fb, View(state="talking", paid=True, connected=True), 1.0)
+    assert any(fb.memory)

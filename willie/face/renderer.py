@@ -28,6 +28,7 @@ class View:
     text: str = ""
     code: str = ""
     battery: int | None = None
+    paid: bool = False          # this conversation runs on the paid Gemini key: PAID badge
     charging: bool = False
     connected: bool | None = None
     mic: bool = False
@@ -452,6 +453,10 @@ class Renderer:
             p.round_rect(117, 21, len(label)*6+10, 17, 3, AMBER)
             p.text(label, 122, 26, 1, (0, 0, 0))
         # Unknown is explicitly unknown, never a fabricated battery or connection.
+        if view.paid:
+            # The conversation costs money (paid Gemini key, free key refused): amber badge.
+            p.round_rect(274, 21, 36, 17, 3, AMBER)
+            p.text("PAID", 280, 26, 1, (0, 0, 0))
         link = "LINK --" if view.connected is None else "LINK OK" if view.connected else "OFFLINE"
         p.text(link, 229, 25, 1, dim if view.connected is None else base if view.connected else AMBER)
         battery = "--" if view.battery is None else f"{view.battery}%"

@@ -18,6 +18,7 @@ Audio contract:
 
 from __future__ import annotations
 
+import willie.voice as voice_keys
 from willie.voice import talk_key, talk_keys
 import array
 import asyncio
@@ -145,6 +146,13 @@ class GeminiLiveAdapter(VoiceAdapter):
                 await socket.close()
                 continue
             self._socket, self.model, self._shape = socket, model, shape
+            self.key_kind = voice_keys.key_kind(key)
+            voice_keys.SESSION.update(model=model.removeprefix("models/"), key=self.key_kind)
+            if voice_keys.KEY_HOOK:
+                try:
+                    voice_keys.KEY_HOOK(self.key_kind == "betaald")
+                except Exception:
+                    pass
             self.is_open, self._closing = True, False
             self._receiver = asyncio.create_task(self._receive())
             await self._emit("ready", model)
@@ -235,6 +243,12 @@ class GeminiLiveAdapter(VoiceAdapter):
             await self._emit("interrupted")
 
     async def close(self) -> None:
+        voice_keys.SESSION.update(model=None, key=None)
+        if voice_keys.KEY_HOOK:
+            try:
+                voice_keys.KEY_HOOK(False)
+            except Exception:
+                pass
         if not self.is_open and self._socket is None:
             return
         self._closing = True

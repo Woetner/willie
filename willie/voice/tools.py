@@ -248,6 +248,14 @@ DECLARATIONS = [
         "parameters": {"type": "object", "properties": {"aan": {"type": "boolean"}}, "required": ["aan"]},
     },
     {
+        "name": "verbinding",
+        "description": (
+            "Op welk AI-model en met welke sleutel je nu praat: de gratis sleutel of de betaalde. "
+            "Gebruik dit als Wouter vraagt of je betaald draait, welk model je bent of welke versie."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
         "name": "zet_volume",
         "description": "Zet je eigen spreekvolume. 0.05 is fluisteren, 0.15 is normaal, 0.5 is hard.",
         "parameters": {
@@ -713,6 +721,15 @@ def garagemodus(aan: bool) -> dict:
     return {"ok": True, "zeg": "Kort: garagemodus uit, zeg weer 'Hey Willie'."}
 
 
+def verbinding() -> dict:
+    import willie.voice as voice_keys
+    s = voice_keys.SESSION
+    if not s.get("model"):
+        return {"fout": "er loopt nu geen gesprek"}
+    return {"model": s["model"], "sleutel": s["key"],
+            "uitleg": "betaald = het tegoed op Wouters betaalde sleutel wordt gebruikt; gratis = kost niets"}
+
+
 def zet_volume(niveau: float) -> dict:
     from willie.audio import speech
 
@@ -739,6 +756,7 @@ HANDLERS = {
     "herinner": herinner,
     "status": status,
     "zet_volume": zet_volume,
+    "verbinding": verbinding,
     "garagemodus": garagemodus,
     "zet_uit": zet_uit,
     "verbeter_jezelf": verbeter_jezelf,

@@ -310,7 +310,7 @@ class Face:
 
     def indicators(self, **values):
         """Report real device state. This API does not operate or mute a microphone."""
-        allowed = {"battery", "charging", "connected", "mic", "camera", "muted", "gaze", "watched"}
+        allowed = {"battery", "charging", "connected", "mic", "camera", "muted", "gaze", "watched", "paid"}
         if set(values)-allowed:
             raise ValueError("unknown face indicator")
         if values.get("battery") is not None and "battery" in values:
