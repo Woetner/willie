@@ -128,6 +128,7 @@ class GeminiLiveAdapter(VoiceAdapter):
             if key != tries[0][0] and not self.url and key != getattr(self, "_fallback_logged", None):
                 log.warning("free key refused (%s) - talking on the paid key", last_error[:120])
                 self._fallback_logged = key
+            self._key_now = key
             url = self.url or f"wss://{HOST}{PATH}?key={key}"
             try:
                 socket = await websockets.connect(url, max_size=None, ping_interval=20)
@@ -191,9 +192,14 @@ class GeminiLiveAdapter(VoiceAdapter):
         if code:
             setup["generationConfig"]["speechConfig"]["languageCode"] = code
         tools = []
+        # Google's own search in the Live model only on the paid key: the free tier refuses a
+        # 3.x session that asks for it ("quota exceeded", 25 Sep). The free key searches
+        # through zoek_op (a 2.5 side session, free) instead; the paid key does not need that.
+        native = self.search and voice_keys.key_kind(getattr(self, "_key_now", "") or self.api_key) == "betaald"
         if self.tools:
-            tools.append({"functionDeclarations": [t.declaration() for t in self.tools.values()]})
-        if self.search:
+            tools.append({"functionDeclarations": [t.declaration() for t in self.tools.values()
+                                                   if not (native and t.name == WEB_SEARCH.name)]})
+        if native:
             # Free on the free tier; paid: 5,000 searches/month free, then $14 per 1,000 (21 Sep).
             tools.append({"googleSearch": {}})
         if tools:
@@ -904,7 +910,8 @@ async def session(
     # The mic runs from the start: whatever he hears while the session opens is kept.
     mic_task = asyncio.create_task(_microphone(adapter, speaker, stop, activity, event, ready, recorder,
                                                standby, gate))
-    tools = willie_tool_list(face, web_search=not native_search)
+    # zoek_op too when a free key exists: the free key cannot use the model's own search.
+    tools = willie_tool_list(face, web_search=not native_search or bool(os.environ.get("GEMINI_API_KEY_FREE")))
     if gate is None:
         tools.append(Tool(NOT_FOR_ME.name, NOT_FOR_ME.description, NOT_FOR_ME.parameters, handler=not_for_me))
     if control is not None:
