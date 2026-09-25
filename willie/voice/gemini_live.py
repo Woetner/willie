@@ -387,13 +387,14 @@ class Speaker:
         # so this is tracked from the byte count rather than from the last write.
         self.busy_until = 0.0
         self.echo = echo                 # willie.audio.clean.EchoReference, when AEC is on
+        self.tail = BARGE_IN_TAIL        # voice.pickup_delay_s, set by the mic loop
 
     def speaking(self, now: float) -> bool:
         # busy_until is when aplay was handed the last sample; it sounds `delay` later
         # (0.3-0.5 s, tracked by the echo canceller). Without that the gate reopened while
         # his last words still came out, and he answered his own echo again (25 Sep).
         lag = self.echo.delay if self.echo is not None else ECHO_LAG_S
-        return now < self.busy_until + lag + BARGE_IN_TAIL
+        return now < self.busy_until + lag + self.tail
 
     def start(self) -> None:
         if self.process and self.process.poll() is None:
@@ -514,6 +515,7 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
     factor = mic.gain()
     stream = mic.Stream(factor)
     settings = configured_clean()
+    speaker.tail = settings["pickup_delay_s"]
     cleaner = clean.Cleaner.shared(settings["denoise_db"], settings["aec"]) if settings["clean"] else None
     if cleaner is None or cleaner.echo is None:
         speaker.echo = None
@@ -860,7 +862,8 @@ def configured_standby() -> float:
 
 def configured_clean() -> dict:
     """voice.clean / denoise_db / aec / aec_delay_ms / barge_in: the live uplink's cleaning."""
-    values = {"clean": True, "denoise_db": -15, "aec": True, "aec_delay_ms": 295.0, "barge_in": 50.0}
+    values = {"clean": True, "denoise_db": -15, "aec": True, "aec_delay_ms": 295.0, "barge_in": 50.0,
+              "pickup_delay_s": 1.0}
     try:
         from willie.config import Config
         cfg = Config()
