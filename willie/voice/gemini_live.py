@@ -863,7 +863,7 @@ def configured_standby() -> float:
 def configured_clean() -> dict:
     """voice.clean / denoise_db / aec / aec_delay_ms / barge_in: the live uplink's cleaning."""
     values = {"clean": True, "denoise_db": -15, "aec": True, "aec_delay_ms": 295.0, "barge_in": 50.0,
-              "pickup_delay_s": 1.0}
+              "pickup_delay_s": 1.5}
     try:
         from willie.config import Config
         cfg = Config()
