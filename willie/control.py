@@ -44,6 +44,17 @@ class Body:
         self.mission = False            # a Phase K mission drives him: behaviours sit still
         self.last_command = 0.0         # monotonic time of the last move/turn from outside
         self.behaviours = None          # behavior.tree.Behaviours, set by core
+        self._power = None              # willie.power.PowerEstimator, built on first use
+
+    def _power_numbers(self, st: dict) -> dict:
+        """Battery %, watts and runtime from the INA219 values (willie/power.py)."""
+        if self._power is None:
+            from willie.power import PowerEstimator
+            get = self.safety.get
+            self._power = PowerEstimator(pack_wh=float(get("power.pack_wh")),
+                                         r_int_ohm=float(get("power.r_internal_mohm")) / 1000.0,
+                                         cutoff_v=float(get("safety.battery_cutoff_v")))
+        return self._power.update(st.get("mv"), st.get("ma"), time.monotonic())
 
     def state(self) -> dict:
         st = self.link.state or {}
@@ -56,6 +67,7 @@ class Body:
             "tof_mm": [st.get("tof_l"), st.get("tof_c"), st.get("tof_r")],
             "estop": st.get("estop", []),
             "battery_v": None if not st.get("mv") else st["mv"] / 1000,
+            **self._power_numbers(st),
             "battery": self.safety.battery_state,
             "busy": self.motion.busy,
             "conversation": self.conversation,

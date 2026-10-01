@@ -17,6 +17,9 @@ safety:
   battery_cutoff_v: 9.9
   watchdog_ms: 200
   tilt_stop_deg: 25
+power:
+  pack_wh: 28.0
+  r_internal_mohm: 150
 head:
   pan_min_deg: -90
   pan_max_deg: 90

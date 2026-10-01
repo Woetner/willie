@@ -27,6 +27,11 @@ safety:
   watchdog_ms:         {type: int, default: 200, min: 50, max: 500, unit: ms, help: Motors stop if no command within this time}
   tilt_stop_deg:       {type: int, default: 25, min: 10, max: 45, unit: °, help: Stop when tilted more than this}
 
+power:
+  _label: Battery estimate (percentage, runtime)
+  pack_wh:          {type: float, default: 28.0, min: 5, max: 100, unit: Wh, help: Usable energy of the full pack down to the cutoff voltage (3 x 2.8 Ah x 3.7 V = 31 Wh, minus margin)}
+  r_internal_mohm:  {type: int, default: 150, min: 0, max: 1000, unit: mOhm, help: Pack + BMS + wiring resistance, corrects the voltage sag under load}
+
 head:
   _label: Head (pan / tilt)
   pan_min_deg:   {type: int, default: -90, min: -90, max: 0, unit: °}
