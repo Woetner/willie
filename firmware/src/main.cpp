@@ -5,6 +5,8 @@
 // Link protocol: WILL-E.md §5.2 and willie/hal/proto.py. Every module is a header included once
 // here (one translation unit).
 #include <Arduino.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
 #include "proto.h"
 #include "config.h"
 #include "pins.h"
@@ -38,11 +40,13 @@ static void sendf(const char *fmt, ...) {
   sendLine(Link, msg);
 }
 
-static void sendHello() { sendf("hello willie-fw %s %s", FW_VERSION, BOARD_NAME); }
+static void sendHello() {
+  sendf("hello willie-fw %s %s i2c=%u/%u found=%u", FW_VERSION, BOARD_NAME, i2cSda, i2cScl, i2cFound);
+}
 
 static void sendStat() {
-  sendf("stat pcf %d mpu %d ina %d tof %d%d%d enc %d estop %02X wd_trips %lu bad_lines %lu i2c_err %lu",
-        S.pcfOk, S.mpuOk, S.inaOk, S.tofOk[0], S.tofOk[1], S.tofOk[2], encOk, estop,
+  sendf("stat pcf %d mpu %d ina %d tof %d%d%d%d%d enc %d estop %02X wd_trips %lu bad_lines %lu i2c_err %lu",
+        S.pcfOk, S.mpuOk, S.inaOk, S.tofOk[0], S.tofOk[1], S.tofOk[2], S.tofOk[3], S.tofOk[4], encOk, estop,
         (unsigned long)wdTrips, (unsigned long)badLines, (unsigned long)S.i2cErrors);
 }
 
@@ -65,7 +69,13 @@ static void triggerEstop(uint8_t reason) {
   if (fresh) sendf("estop %s %lu", estopName(reason), (unsigned long)millis());
 }
 
+static bool otaActive = false;
+
 static bool motionAllowed() {
+  if (otaActive) {
+    sendLine(Link, "err ota");
+    return false;
+  }
   if (estop) {
     sendf("err estop %02X", estop);
     return false;
@@ -135,19 +145,107 @@ static void odoReset() {
 // ---------------------------------------------------------------- telemetry
 // st <ms> <ticksL> <ticksR> <x mm> <y mm> <th mrad> <v mm/s> <w mrad/s> <tofL> <tofC> <tofR mm>
 //    <io hex> <mV> <mA> <ax> <ay> <az mg> <gx> <gy> <gz 0.1 dps> <tilt 0.1 deg>
-//    <pan> <tilt 0.1 deg> <pwmL> <pwmR %> <flags hex> <i2c errors>
+//    <pan> <tilt 0.1 deg> <pwmL> <pwmR %> <flags hex> <i2c errors> <cliff tof L> <cliff tof R mm>
 // flags: bits 0-4 estop (bump_l, bump_r, cliff_l, cliff_r, tilt), 5 pcf ok, 6 mpu ok, 7 ina ok,
-//        8-10 tof L/C/R ok, 11 encoders ok, 12 motors active
+//        8-10 tof L/C/R ok, 11 encoders ok, 12 motors active, 13-14 cliff tof L/R ok
 static void sendState() {
   uint32_t flags = estop | S.pcfOk << 5 | S.mpuOk << 6 | S.inaOk << 7 | S.tofOk[0] << 8 |
-                   S.tofOk[1] << 9 | S.tofOk[2] << 10 | encOk << 11 | motionActive << 12;
-  sendf("st %lu %ld %ld %d %d %d %d %d %u %u %u %02X %ld %ld %d %d %d %d %d %d %d %d %d %d %d %X %lu",
+                   S.tofOk[1] << 9 | S.tofOk[2] << 10 | encOk << 11 | motionActive << 12 |
+                   S.tofOk[3] << 13 | S.tofOk[4] << 14;
+  sendf("st %lu %ld %ld %d %d %d %d %d %u %u %u %02X %ld %ld %d %d %d %d %d %d %d %d %d %d %d %X %lu %u %u",
         (unsigned long)millis(), (long)encoderTicks(0), (long)encoderTicks(1),
         (int)odoX, (int)odoY, (int)(odoTh * 1000), (int)odoV, (int)(odoW * 1000),
         S.tof[0], S.tof[1], S.tof[2], S.io, (long)S.mv, (long)S.ma,
         S.acc[0], S.acc[1], S.acc[2], S.gyro[0], S.gyro[1], S.gyro[2], (int)(S.tiltDeg * 10),
         (int)(servos[0].pos * 10), (int)(servos[1].pos * 10),
-        (int)motorPct[0], (int)motorPct[1], (unsigned)flags, (unsigned long)S.i2cErrors);
+        (int)motorPct[0], (int)motorPct[1], (unsigned)flags, (unsigned long)S.i2cErrors,
+        S.tof[3], S.tof[4]);
+}
+
+// ---------------------------------------------------------------- firmware update over the link
+// The ESP32 sits deep in the body, so after the first USB flash every update comes from the Pi
+// (`make flash-link`, tools/mcu_ota.py):
+//   ota <size> <md5>        start; motors braked, motion refused until done or aborted
+//   otad <offset> <hex>     one chunk (<= 96 bytes); answered with `ok otad <bytes written>`
+//   ota!                    check the MD5, switch to the new image and restart
+//   ota0                    abort
+// The new image boots "pending verify": it must hear a valid line from the Pi within
+// OTA_VERIFY_MS, else it restarts and the bootloader rolls back to the previous firmware.
+#define OTA_CHUNK 96
+#define OTA_IDLE_MS 5000
+#define OTA_VERIFY_MS 60000
+static uint32_t otaSize = 0, otaDone = 0, otaLastMs = 0;
+static bool fwPending = false;                      // this image still has to prove itself
+
+extern "C" bool verifyRollbackLater() { return true; }   // arduino-esp32: we mark it valid ourselves
+
+static void fwCheckPending() {
+  esp_ota_img_states_t st;
+  fwPending = esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+              st == ESP_OTA_IMG_PENDING_VERIFY;
+}
+static void fwConfirm() {                           // first valid line from the Pi: link works
+  if (!fwPending) return;
+  esp_ota_mark_app_valid_cancel_rollback();
+  fwPending = false;
+}
+
+static void otaAbort(const char *why) {
+  if (otaActive) Update.abort();
+  otaActive = false;
+  sendf("err ota %s", why);
+}
+
+static int hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
+
+static void otaCommand(const char *cmd) {
+  if (!strcmp(cmd, "ota")) {
+    char *size = strtok(nullptr, " "), *md5 = strtok(nullptr, " ");
+    if (!size || !md5 || strlen(md5) != 32) { sendLine(Link, "err args"); return; }
+    if (otaActive) Update.abort();
+    wheelsOpen();
+    motorsBrake();
+    otaSize = strtoul(size, nullptr, 10);
+    if (!otaSize || !Update.begin(otaSize)) { otaActive = false; sendf("err ota begin %s", Update.errorString()); return; }
+    Update.setMD5(md5);
+    otaActive = true;
+    otaDone = 0;
+    otaLastMs = millis();
+    sendf("ok ota %d", OTA_CHUNK);
+  } else if (!strcmp(cmd, "otad")) {
+    if (!otaActive) { sendLine(Link, "err ota idle"); return; }
+    char *off = strtok(nullptr, " "), *hex = strtok(nullptr, " ");
+    if (!off || !hex) { otaAbort("args"); return; }
+    uint32_t o = strtoul(off, nullptr, 10);
+    if (o != otaDone) { sendf("ok otad %lu", (unsigned long)otaDone); return; }   // resend: tell where we are
+    size_t n = strlen(hex) / 2;
+    if (n == 0 || n > OTA_CHUNK || strlen(hex) % 2 || otaDone + n > otaSize) { otaAbort("chunk"); return; }
+    uint8_t buf[OTA_CHUNK];
+    for (size_t i = 0; i < n; i++) {
+      int hi = hexNibble(hex[2 * i]), lo = hexNibble(hex[2 * i + 1]);
+      if (hi < 0 || lo < 0) { otaAbort("hex"); return; }
+      buf[i] = (uint8_t)(hi << 4 | lo);
+    }
+    if (Update.write(buf, n) != n) { otaAbort(Update.errorString()); return; }
+    otaDone += n;
+    otaLastMs = millis();
+    sendf("ok otad %lu", (unsigned long)otaDone);
+  } else if (!strcmp(cmd, "ota!")) {
+    if (!otaActive || otaDone != otaSize) { otaAbort("incomplete"); return; }
+    otaActive = false;
+    if (!Update.end()) { sendf("err ota end %s", Update.errorString()); return; }
+    sendLine(Link, "ok ota! restarting");
+    Link.flush();
+    delay(100);
+    ESP.restart();
+  } else if (!strcmp(cmd, "ota0")) {
+    otaAbort("aborted");
+  }
 }
 
 // ---------------------------------------------------------------- commands
@@ -166,9 +264,12 @@ static void handleLine(char *line) {
     sendLine(Link, "err crc");
     return;
   }
+  fwConfirm();
   char *cmd = strtok(line, " ");
   if (!cmd) return;
   bool ok = true;
+
+  if (!strncmp(cmd, "ota", 3)) { otaCommand(cmd); return; }
 
   if (!strcmp(cmd, "ping")) {
     char *seq = strtok(nullptr, " ");
@@ -253,6 +354,7 @@ static Every tPcf{2000}, tImu{10000}, tTof{10000}, tIna{20000}, tOdo{10000}, tSe
 
 void setup() {
   motorsInit();                                     // first: pins to brake before anything else
+  fwCheckPending();
   Serial.begin(115200);                             // debug (USB)
   pinMode(PIN_LED, OUTPUT);
   Link.setRxBufferSize(1024);
@@ -268,13 +370,21 @@ void setup() {
   sendStat();
   Serial.printf("WILL-E fw %s on %s, link %d baud RX=%d TX=%d\n", FW_VERSION, BOARD_NAME, LINK_BAUD,
                 PIN_LINK_RX, PIN_LINK_TX);
-  Serial.printf("pcf %d mpu %d ina %d tof %d%d%d enc %d\n", S.pcfOk, S.mpuOk, S.inaOk, S.tofOk[0],
-                S.tofOk[1], S.tofOk[2], encOk);
+  Serial.printf("pcf %d mpu %d ina %d tof %d%d%d%d%d enc %d%s\n", S.pcfOk, S.mpuOk, S.inaOk,
+                S.tofOk[0], S.tofOk[1], S.tofOk[2], S.tofOk[3], S.tofOk[4], encOk,
+                fwPending ? " (new firmware, waiting for the Pi)" : "");
 }
 
 void loop() {
   readLink();
   uint32_t now = micros();
+
+  if (otaActive && millis() - otaLastMs > OTA_IDLE_MS) otaAbort("timeout");
+  if (fwPending && millis() > OTA_VERIFY_MS) {      // no word from the Pi: roll back
+    Serial.println("new firmware never heard the Pi: restarting to roll back");
+    delay(50);
+    ESP.restart();
+  }
 
   if (S.pcfOk && tPcf.due(now) && pcfRead()) checkIo();
   if (S.mpuOk && tImu.due(now)) { mpuUpdate(); checkTilt(); }

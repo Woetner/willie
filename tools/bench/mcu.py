@@ -93,7 +93,7 @@ async def t_sensors(link: Link, minutes: float):
         rate = (link.states - n_last) / (now - t_last)
         n_last, t_last = link.states, now
         print(f"\r{int(now - t_start):4d}s {rate:5.1f} Hz  i2c_err {s['i2c_err'] - s0['i2c_err']:3d}  "
-              f"ToF {s['tof_l']:5d} {s['tof_c']:5d} {s['tof_r']:5d} mm  "
+              f"ToF {s['tof_l']:5d} {s['tof_c']:5d} {s['tof_r']:5d} cliff {s['tof_cl']:5d} {s['tof_cr']:5d} mm  "
               f"acc {s['ax']:5d} {s['ay']:5d} {s['az']:5d} mg  gz {s['gz'] / 10:6.1f} dps  "
               f"tilt {s['tilt_d10'] / 10:4.1f}  {s['mv'] / 1000:5.2f} V {s['ma']:5d} mA  io {s['io']:02X}",
               end="", flush=True)

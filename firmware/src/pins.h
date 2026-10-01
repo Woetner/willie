@@ -27,11 +27,12 @@
 #define PIN_SDA        21
 #define PIN_SCL        22
 
-// PCF8574 (0x20) bits
-#define IO_XSHUT_L     0    // ToF left   -> 0x30
-#define IO_XSHUT_C     1    // ToF centre -> 0x31   (ToF right has no XSHUT, -> 0x32)
-#define IO_CLIFF_L     2
-#define IO_CLIFF_R     3
-#define IO_BUMP_L      4    // micro switch NO+COM to GND: pressed = low
-#define IO_BUMP_R      5
-#define IO_LED         6    // camera LED, active low (PCF8574 can sink, not source)
+// PCF8574 (0x20) bits, as wired 28 Sep (WILL-E.md §13). Every VL53L0X has its own XSHUT.
+#define IO_XSHUT_CL    0    // cliff ToF left   -> 0x33
+#define IO_XSHUT_L     1    // front ToF left   -> 0x30
+#define IO_XSHUT_C     2    // front ToF centre -> 0x31
+#define IO_XSHUT_R     3    // front ToF right  -> 0x32
+#define IO_XSHUT_CR    4    // cliff ToF right  -> 0x34
+#define IO_BUMP_L      5    // micro switch NO+COM to GND: pressed = low
+#define IO_BUMP_R      6
+#define IO_LED         7    // camera LED, active low (PCF8574 can sink, not source)

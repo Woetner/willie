@@ -1,4 +1,5 @@
-// I2C sensors (B10, B11): PCF8574 (cliff, bumper, ToF XSHUT, LED), MPU6050, INA219, 3× VL53L0X.
+// I2C sensors (B10, B11): PCF8574 (bumper, ToF XSHUT, LED), MPU6050, INA219, 5× VL53L0X
+// (front left/centre/right + 2 looking down as cliff sensors).
 // Every missing device is reported, never fatal: the bench has only some of them wired.
 #pragma once
 #include <Wire.h>
@@ -7,22 +8,25 @@
 #include "pins.h"
 
 static const uint8_t ADDR_PCF = 0x20, ADDR_MPU = 0x68, ADDR_INA = 0x40;
-static const uint8_t ADDR_TOF[3] = {0x30, 0x31, 0x32};   // left, centre, right
+#define N_TOF 5                                          // front L, C, R, cliff L, cliff R
+static const uint8_t ADDR_TOF[N_TOF] = {0x30, 0x31, 0x32, 0x33, 0x34};
+static const uint8_t XSHUT_TOF[N_TOF] = {IO_XSHUT_L, IO_XSHUT_C, IO_XSHUT_R, IO_XSHUT_CL, IO_XSHUT_CR};
+enum { TOF_L, TOF_C, TOF_R, TOF_CL, TOF_CR };
 
 struct SensorState {
-  bool pcfOk = false, mpuOk = false, inaOk = false, tofOk[3] = {false, false, false};
+  bool pcfOk = false, mpuOk = false, inaOk = false, tofOk[N_TOF] = {false, false, false, false, false};
   uint8_t io = 0xFF;                           // PCF8574 inputs, raw
   int16_t acc[3] = {0, 0, 0};                  // mg
   int16_t gyro[3] = {0, 0, 0};                 // 0.1 deg/s, bias removed
   float gyroBias[3] = {0, 0, 0};               // raw LSB
   float tiltDeg = 0;                           // angle between body Z and gravity
-  uint16_t tof[3] = {0, 0, 0};                 // mm; 0 = no reading yet, 8190+ = nothing in range
+  uint16_t tof[N_TOF] = {0, 0, 0, 0, 0};       // mm; 0 = no reading yet, 8190+ = nothing in range
   int32_t mv = 0, ma = 0;                      // pack volts / current from the INA219
   uint32_t i2cErrors = 0;
 };
 static SensorState S;
 static uint8_t pcfOut = 0xFF;                  // PCF8574 output latch; 1 = input / released
-static VL53L0X tofDev[3];
+static VL53L0X tofDev[N_TOF];
 
 // ---- I2C helpers that count errors (B10 "done when": no I2C error in 10 min) ----
 static bool i2cWrite(uint8_t addr, const uint8_t *data, size_t n) {
@@ -67,13 +71,14 @@ static void ledSet(bool on) { pcfSetBit(IO_LED, !on); }  // active low
 // Cliff/bumper as booleans. Without the PCF8574 nothing reads as triggered.
 static bool bumpL() { return S.pcfOk && !(S.io & (1 << IO_BUMP_L)); }
 static bool bumpR() { return S.pcfOk && !(S.io & (1 << IO_BUMP_R)); }
-static bool cliffBit(int bit) {
-  if (!S.pcfOk) return false;
-  bool high = S.io & (1 << bit);
-  return cfg("cliff_hi") > 0.5f ? high : !high;
+// Cliff = a down-looking ToF sees no floor within cliff_mm (8190+ = nothing in range counts too).
+// A missing sensor or one without a reading yet never reads as a cliff; F1's boot self-test and
+// need_io decide whether the robot may drive without it (§10 rule 4).
+static bool cliffTof(int i) {
+  return S.tofOk[i] && S.tof[i] && S.tof[i] > cfg("cliff_mm");
 }
-static bool cliffL() { return cliffBit(IO_CLIFF_L); }
-static bool cliffR() { return cliffBit(IO_CLIFF_R); }
+static bool cliffL() { return cliffTof(TOF_CL); }
+static bool cliffR() { return cliffTof(TOF_CR); }
 
 // ---- MPU6050: ±4 g, ±500 deg/s, 44 Hz low-pass ----
 static bool mpuInit() {
@@ -130,10 +135,10 @@ static void inaUpdate() {
   }
 }
 
-// ---- VL53L0X ×3: XSHUT on the PCF8574 for left and centre; right is always on ----
-// A sensor keeps a changed address until it loses power, so after an MCU reset the right one
-// may still sit at 0x32. Put every awake sensor back on 0x29 first, then move them one by one.
-// Without the PCF8574 all XSHUTs float high: only one ToF may be connected then.
+// ---- VL53L0X ×5: every sensor has an XSHUT on the PCF8574 ----
+// All start at 0x29. Hold every XSHUT low (the sensors lose their changed address), then wake
+// them one at a time and give each its own address. Without the PCF8574 all XSHUTs float high:
+// only one ToF may be connected then; it is started as front right.
 static bool tofStart(int i) {
   VL53L0X &t = tofDev[i];
   t.setBus(&Wire);
@@ -146,19 +151,17 @@ static bool tofStart(int i) {
   return true;
 }
 static void tofInit() {
-  pcfSetBit(IO_XSHUT_L, false);
-  pcfSetBit(IO_XSHUT_C, false);
+  if (!S.pcfOk) { S.tofOk[TOF_R] = tofStart(TOF_R); return; }
+  for (int i = 0; i < N_TOF; i++) pcfSetBit(XSHUT_TOF[i], false);
   delay(10);
-  for (uint8_t a : ADDR_TOF)
-    if (i2cProbe(a)) i2cWriteReg(a, 0x8A, 0x29);  // I2C_SLAVE_DEVICE_ADDRESS back to default
-  S.tofOk[2] = tofStart(2);
-  if (S.pcfOk) {
-    pcfSetBit(IO_XSHUT_C, true);  delay(10); S.tofOk[1] = tofStart(1);
-    pcfSetBit(IO_XSHUT_L, true);  delay(10); S.tofOk[0] = tofStart(0);
+  for (int i = 0; i < N_TOF; i++) {
+    pcfSetBit(XSHUT_TOF[i], true);
+    delay(10);                                 // boot time after XSHUT goes high (datasheet: 1.2 ms)
+    S.tofOk[i] = tofStart(i);
   }
 }
 static void tofUpdate() {
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < N_TOF; i++) {
     if (!S.tofOk[i]) continue;
     VL53L0X &t = tofDev[i];
     uint8_t irq = t.readReg(VL53L0X::RESULT_INTERRUPT_STATUS);
@@ -170,9 +173,30 @@ static void tofUpdate() {
   }
 }
 
-static void sensorsInit() {
-  Wire.begin(PIN_SDA, PIN_SCL, 400000);
+// I2C pins in use and how many addresses answered. If nothing answers on 21/22,
+// try the wires the other way round (SDA/SCL swapped is harmless, just silent).
+static uint8_t i2cSda = PIN_SDA, i2cScl = PIN_SCL, i2cFound = 0;
+
+static uint8_t i2cScan() {
+  uint8_t n = 0;
+  for (uint8_t a = 0x08; a < 0x78; a++) n += i2cProbe(a);
+  return n;
+}
+
+static void i2cStart(uint8_t sda, uint8_t scl) {
+  Wire.end();
+  Wire.begin(sda, scl, 400000);
   Wire.setTimeOut(5);                          // ms: a stuck bus must not stall loop() for long
+  i2cSda = sda; i2cScl = scl;
+  i2cFound = i2cScan();
+}
+
+static void sensorsInit() {
+  i2cStart(PIN_SDA, PIN_SCL);
+  if (!i2cFound) {
+    i2cStart(PIN_SCL, PIN_SDA);
+    if (!i2cFound) i2cStart(PIN_SDA, PIN_SCL);
+  }
   S.pcfOk = i2cProbe(ADDR_PCF);
   if (S.pcfOk) { pcfWriteOut(); pcfRead(); }
   S.mpuOk = i2cProbe(ADDR_MPU) && mpuInit();

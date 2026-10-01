@@ -38,7 +38,7 @@ static Setting SETTINGS[] = {
   {"tilt_max",     45,    0,   90},
   {"servo_dps",    180,   10,  600},           // slew rate, deg/s
   {"servo_idle",   800,   0,   10000},         // ms at target before the pulses stop (0 = never)
-  {"cliff_hi",     1,     0,   1},             // 1: TCRT5000 DO high = no floor = cliff
+  {"cliff_mm",     80,    30,  400},           // down-looking ToF reads more than this = no floor = cliff
   {"tilt_stop",    25,    5,   60},            // deg from level = estop
   {"need_io",      0,     0,   1},             // 1: refuse to drive without cliff/bumper (PCF8574) — set in F1
   {"shunt_mohm",   100,   1,   1000},          // INA219 shunt resistor

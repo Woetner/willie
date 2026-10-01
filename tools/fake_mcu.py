@@ -52,6 +52,7 @@ pan = tilt = 0.0
 pan_t = tilt_t = 0.0
 x = y = th = 0.0
 tof = [0, 0, 800]
+cliff_tof = [40, 40]                 # down-looking ToF L/R, mm to the floor
 pack_mv = 12400
 ina_ok = False
 ESTOP_BITS = ("bump_l", "bump_r", "cliff_l", "cliff_r", "tilt")
@@ -107,7 +108,7 @@ def handle(w):
             x = y = th = 0.0
             send("ok", "odo0")
         elif cmd == "stat?":
-            send("stat", "pcf", 0, "mpu", 0, "ina", 0, "tof", "001", "enc", 1, "estop", "%02X" % estop,
+            send("stat", "pcf", 0, "mpu", 0, "ina", 0, "tof", "00100", "enc", 1, "estop", "%02X" % estop,
                  "wd_trips", wd_trips, "bad_lines", 0, "i2c_err", 0)
         elif cmd == "sim" and args[0] == "tof":
             tof[:] = [int(a) for a in args[1:4]]
@@ -148,11 +149,11 @@ def tick(dt):
     pan += max(-step, min(step, pan_t - pan))
     tilt += max(-step, min(step, tilt_t - tilt))
     flags = (estop | int(ina_ok) << 7 | sum(1 << (8 + i) for i in range(3) if tof[i])
-             | 1 << 11 | int(moving) << 12)                  # encoders "ok"
+             | 1 << 11 | int(moving) << 12)                  # encoders "ok"; cliff ToF not simulated
     send("st", ms(), int(ticks[0]), int(ticks[1]), int(x), int(y), int(th * 1000),
          int(dist / dt), int(dth / dt * 1000), *tof, "FF", pack_mv, 150 + int(abs(sum(pwm)) * 10),
          0, 0, 1000, 0, 0, 0, 0, int(pan * 10), int(tilt * 10), int(pwm[0]), int(pwm[1]),
-         "%X" % flags, 0)
+         "%X" % flags, 0, *cliff_tof)
 
 
 send("hello", "willie-fw", "0.2.0", "fake")

@@ -25,10 +25,12 @@ log = logging.getLogger("willie.link")
 # `st` line from the firmware, in order (firmware/src/main.cpp sendState()).
 ST_FIELDS = ("ms", "ticks_l", "ticks_r", "x_mm", "y_mm", "th_mrad", "v_mms", "w_mrads",
              "tof_l", "tof_c", "tof_r", "io", "mv", "ma", "ax", "ay", "az", "gx", "gy", "gz",
-             "tilt_d10", "pan_d10", "tilt_servo_d10", "pwm_l", "pwm_r", "flags", "i2c_err")
+             "tilt_d10", "pan_d10", "tilt_servo_d10", "pwm_l", "pwm_r", "flags", "i2c_err",
+             "tof_cl", "tof_cr")
 _HEX = {"io", "flags"}
 ESTOP_BITS = ("bump_l", "bump_r", "cliff_l", "cliff_r", "tilt")
-OK_BITS = {"pcf": 5, "mpu": 6, "ina": 7, "tof_l": 8, "tof_c": 9, "tof_r": 10, "enc": 11}
+OK_BITS = {"pcf": 5, "mpu": 6, "ina": 7, "tof_l": 8, "tof_c": 9, "tof_r": 10, "enc": 11,
+           "tof_cl": 13, "tof_cr": 14}
 
 
 def parse_state(words: list[str]) -> dict:

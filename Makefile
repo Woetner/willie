@@ -12,7 +12,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test bench-aec voice-enroll garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs
+        pull-config run-local fw flash flash-link monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test bench-aec voice-enroll garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs
 
 help:
 	@echo "Pi"
@@ -52,6 +52,7 @@ help:
 	@echo "MCU (needs PlatformIO on the Mac: brew install platformio)"
 	@echo "  make fw           build the firmware            (MCU=$(MCU))"
 	@echo "  make flash        build + flash over USB        (MCU=$(MCU))"
+	@echo "  make flash-link   build + flash over the Pi link, no USB"
 	@echo "  make monitor      USB serial monitor (debug output)"
 	@echo "  make bench-mcu T=servo|sensors|io|motors|spin|watch   B9-B12 tests over the link"
 	@echo "  make face-demo    on the Pi: 60 s face-only demo + RAM/render measurements"
@@ -198,6 +199,12 @@ bench-mcu: sync
 
 flash:
 	cd firmware && pio run -e $(MCU) -t upload
+
+# No USB: build on the Mac, copy to the Pi, flash over the link (firmware 0.4.0+ already on the ESP32)
+flash-link: sync
+	cd firmware && pio run -e $(MCU)
+	scp firmware/.pio/build/$(MCU)/firmware.bin $(PI):/tmp/willie-fw.bin
+	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && .venv/bin/python tools/mcu_ota.py /tmp/willie-fw.bin; sudo systemctl start willie'
 
 monitor:
 	cd firmware && pio device monitor -e $(MCU)
