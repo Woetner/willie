@@ -77,8 +77,30 @@ cd "$REPO"
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
-say "7/7 services (willie + on-demand dashboard)"
+say "7/8 services (willie + on-demand dashboard)"
 sudo bash "$REPO/tools/install_service.sh"
+
+say "8/8 security: firewall (LAN only) + automatic security updates (audit 24 Sep)"
+sudo DEBIAN_FRONTEND=noninteractive apt-get -y install ufw unattended-upgrades
+printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
+  | sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
+# When /boot/firmware is mounted read-only in fstab, firmware/initramfs updates fail
+# and leave dpkg half-configured. Open it only while dpkg runs.
+sudo tee /etc/apt/apt.conf.d/10boot-firmware-rw >/dev/null <<'EOF'
+DPkg::Pre-Invoke { "mount -o remount,rw /boot/firmware 2>/dev/null || true"; };
+DPkg::Post-Invoke { "if findmnt -rno OPTIONS --fstab /boot/firmware | grep -qE '(^|,)ro(,|$)'; then sync; mount -o remount,ro /boot/firmware; fi || true"; };
+EOF
+# Only what WILL-E serves, only from the home LAN (IPv4 + link-local IPv6).
+# 57700 = librespot's pinned zeroconf port (systemd/willie-spotify.service).
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+for net in 192.168.2.0/24 fe80::/10; do
+  sudo ufw allow from "$net" to any port 22 proto tcp comment ssh
+  sudo ufw allow from "$net" to any port 8080 proto tcp comment dashboard
+  sudo ufw allow from "$net" to any port 57700 proto tcp comment "spotify connect"
+  sudo ufw allow from "$net" to any port 5353 proto udp comment mdns
+done
+sudo ufw --force enable
 
 cat <<'EOF'
 
