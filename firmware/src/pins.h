@@ -11,7 +11,7 @@
 #define PIN_PWMA       25   // left motor
 #define PIN_AIN1       26
 #define PIN_AIN2       27
-#define PIN_PWMB       13   // right motor
+#define PIN_PWMB       23   // right motor (was 13: D13 is shorted to D26 on this ESP32 board, 1 Oct)
 #define PIN_BIN1       32
 #define PIN_BIN2       33
 

@@ -2,13 +2,13 @@
 drive:
   max_speed: 0.25
   accel: 0.5
-  pwm_cap: 50
+  pwm_cap: 60
   pid_kp: 1.0
   pid_ki: 0.2
   pid_kd: 0.0
   wheel_diameter: 100.0
   track_width: 170.0
-  encoder_cpr: 960
+  encoder_cpr: 3840
 safety:
   tof_stop_mm: 120
   cliff_threshold: 1
@@ -17,6 +17,9 @@ safety:
   battery_cutoff_v: 9.9
   watchdog_ms: 200
   tilt_stop_deg: 25
+  cliff_mm: 140
+  cliff_stop: true
+  tof_brake: true
 power:
   pack_wh: 28.0
   r_internal_mohm: 150

@@ -75,7 +75,7 @@ static bool bumpR() { return S.pcfOk && !(S.io & (1 << IO_BUMP_R)); }
 // A missing sensor or one without a reading yet never reads as a cliff; F1's boot self-test and
 // need_io decide whether the robot may drive without it (§10 rule 4).
 static bool cliffTof(int i) {
-  return S.tofOk[i] && S.tof[i] && S.tof[i] > cfg("cliff_mm");
+  return cfg("cliff_on") > 0.5 && S.tofOk[i] && S.tof[i] && S.tof[i] > cfg("cliff_mm");
 }
 static bool cliffL() { return cliffTof(TOF_CL); }
 static bool cliffR() { return cliffTof(TOF_CR); }
@@ -96,9 +96,14 @@ static bool mpuReadRaw(int16_t a[3], int16_t g[3]) {
   }
   return true;
 }
+static uint8_t mpuFails = 0;                     // consecutive failed reads: 25 in a row (0.5 s) = lost, re-probe
 static void mpuUpdate() {
   int16_t a[3], g[3];
-  if (!mpuReadRaw(a, g)) return;
+  if (!mpuReadRaw(a, g)) {
+    if (++mpuFails >= 25) { S.mpuOk = false; S.tiltDeg = 0; }
+    return;
+  }
+  mpuFails = 0;
   float ax = a[0] / 8.192f, ay = a[1] / 8.192f, az = a[2] / 8.192f;   // mg
   for (int i = 0; i < 3; i++) {
     S.acc[i] = (int16_t)(a[i] / 8.192f);
@@ -106,6 +111,16 @@ static void mpuUpdate() {
   }
   float n = sqrtf(ax * ax + ay * ay + az * az);
   if (n > 200) S.tiltDeg = acosf(constrain(az / n, -1.0f, 1.0f)) * 57.2958f;
+}
+// The MPU6050 is looked for again every 2 s when it is missing or lost (a loose plug at boot used to leave it
+// dead until the next restart). The gyro bias is not re-measured here: `cal` does that.
+static void mpuRetry() {
+  static uint32_t last = 0;
+  uint32_t now = millis();                       // not the loop's micros(): 2000 here is 2 s
+  if (S.mpuOk || now - last < 2000) return;
+  last = now;
+  S.mpuOk = i2cProbe(ADDR_MPU) && mpuInit();
+  if (S.mpuOk) mpuFails = 0;
 }
 // Average the gyro for ~1 s while the robot stands still (`cal` command).
 static bool mpuCalibrate() {
@@ -139,37 +154,76 @@ static void inaUpdate() {
 // All start at 0x29. Hold every XSHUT low (the sensors lose their changed address), then wake
 // them one at a time and give each its own address. Without the PCF8574 all XSHUTs float high:
 // only one ToF may be connected then; it is started as front right.
+static uint8_t tofWhy[N_TOF] = {0, 0, 0, 0, 0};          // why the last start failed: 0 ok, 1 no answer on 0x29, 2 init failed, 3 disabled in config.h
 static bool tofStart(int i) {
   VL53L0X &t = tofDev[i];
   t.setBus(&Wire);
   t.setTimeout(30);
+  tofWhy[i] = 1;
   if (!i2cProbe(0x29)) return false;
   t.setAddress(0x29);                          // library + device agree on 0x29 (no-op write)
+  tofWhy[i] = 2;
   if (!t.init()) return false;
   t.setAddress(ADDR_TOF[i]);
   t.startContinuous();
+  tofWhy[i] = 0;
   return true;
 }
+static uint8_t tofBad[N_TOF] = {0, 0, 0, 0, 0};          // consecutive failed reads
+static uint32_t tofSeen[N_TOF] = {0, 0, 0, 0, 0};       // millis() of the last fresh range
 static void tofInit() {
   if (!S.pcfOk) { S.tofOk[TOF_R] = tofStart(TOF_R); return; }
   for (int i = 0; i < N_TOF; i++) pcfSetBit(XSHUT_TOF[i], false);
   delay(10);
   for (int i = 0; i < N_TOF; i++) {
+    if (!TOF_ENABLED[i]) { tofWhy[i] = 3; continue; }   // stays in reset
     pcfSetBit(XSHUT_TOF[i], true);
     delay(10);                                 // boot time after XSHUT goes high (datasheet: 1.2 ms)
     S.tofOk[i] = tofStart(i);
+    if (S.tofOk[i]) tofSeen[i] = millis();
   }
 }
+// A sensor that fails to start at boot, or stops answering while running, is dropped (tofOk false, reading 0,
+// ignored by the cliff stop and the Pi gate) and started again by tofRetry() every 5 s. Before 0.4.9 a ToF
+// that missed its start-up (loose plug, power dip) stayed dead until the next power cycle.
+static void tofDrop(int i) {
+  S.tofOk[i] = false;
+  S.tof[i] = 0;
+  tofBad[i] = 0;
+}
 static void tofUpdate() {
+  uint32_t now = millis();
   for (int i = 0; i < N_TOF; i++) {
     if (!S.tofOk[i]) continue;
+    if (now - tofSeen[i] > 1000) { tofDrop(i); continue; }   // no fresh range for 1 s
     VL53L0X &t = tofDev[i];
     uint8_t irq = t.readReg(VL53L0X::RESULT_INTERRUPT_STATUS);
-    if (t.last_status) { S.i2cErrors++; continue; }
+    if (t.last_status) { S.i2cErrors++; if (++tofBad[i] >= 25) tofDrop(i); continue; }
     if ((irq & 0x07) == 0) continue;           // no new range yet: don't block
     uint16_t mm = t.readRangeContinuousMillimeters();
-    if (t.last_status || t.timeoutOccurred()) { S.i2cErrors++; continue; }
+    if (t.last_status || t.timeoutOccurred()) { S.i2cErrors++; if (++tofBad[i] >= 25) tofDrop(i); continue; }
     S.tof[i] = mm;
+    tofBad[i] = 0;
+    tofSeen[i] = now;
+  }
+}
+// One dropped sensor at a time: hold every dropped sensor in reset except this one, so two sensors never
+// answer on 0x29 together, then run the normal start-up for it. A dead module costs about 25 ms every 5 s.
+static void tofRetry() {
+  static uint32_t last = 0;
+  uint32_t now = millis();
+  if (!S.pcfOk || now - last < 5000) return;
+  for (int i = 0; i < N_TOF; i++) {
+    if (S.tofOk[i] || !TOF_ENABLED[i]) continue;
+    last = now;
+    for (int j = 0; j < N_TOF; j++) if (!S.tofOk[j]) pcfSetBit(XSHUT_TOF[j], false);
+    delay(5);
+    pcfSetBit(XSHUT_TOF[i], true);
+    delay(10);
+    S.tofOk[i] = tofStart(i);
+    if (S.tofOk[i]) { tofSeen[i] = millis(); tofBad[i] = 0; }
+    else pcfSetBit(XSHUT_TOF[i], false);
+    return;
   }
 }
 
@@ -185,7 +239,7 @@ static uint8_t i2cScan() {
 
 static void i2cStart(uint8_t sda, uint8_t scl) {
   Wire.end();
-  Wire.begin(sda, scl, 400000);
+  Wire.begin(sda, scl, 100000);              // 100 kHz: 8 devices on 10-30 cm jumper wires gave truncated MPU reads at 400 kHz (1 Oct)
   Wire.setTimeOut(5);                          // ms: a stuck bus must not stall loop() for long
   i2cSda = sda; i2cScl = scl;
   i2cFound = i2cScan();

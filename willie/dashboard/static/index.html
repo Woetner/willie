@@ -40,6 +40,11 @@
   #msg { color:var(--dim); font-size:13px; }
   .hidden { display:none; }
   @media (max-width:560px) { .row { grid-template-columns:1fr; } }
+  .warn { border:1px solid var(--bad); border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px; color:var(--text); }
+  .dbgrow { display:flex; align-items:center; gap:10px; margin:8px 0; }
+  .dbgrow label { min-width:90px; font-size:13px; }
+  .dbgrow input[type=range] { flex:1; }
+  .dbgrow b { min-width:56px; text-align:right; font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -48,8 +53,10 @@
   <nav>
     <button data-tab="status" class="on">Status</button>
     <button data-tab="logs">Logs</button>
+    <button data-tab="camera">Camera</button>
     <button data-tab="skills">Skills</button>
     <button data-tab="settings">Settings</button>
+    <button data-tab="debug">Debug</button>
   </nav>
   <div id="conn">connecting…</div>
 </header>
@@ -58,6 +65,18 @@
   <section id="tab-logs" class="hidden">
     <label style="color:var(--dim);font-size:12px"><input type="checkbox" id="follow" checked> follow</label>
     <pre id="log"></pre>
+  </section>
+  <section id="tab-camera" class="hidden">
+    <div class="bar" style="position:static;border:0;padding-top:0">
+      <button class="btn" id="camArm">Arm driving (10 min)</button>
+      <span id="camArmText" style="color:var(--dim);font-size:12px"></span>
+    </div>
+    <div style="position:relative;max-width:640px">
+      <img id="camImg" alt="camera" style="width:100%;aspect-ratio:4/3;background:#0b0d10;border:1px solid var(--line);border-radius:10px;display:block">
+      <div id="camKeys" style="position:absolute;right:10px;bottom:10px;font:600 13px ui-monospace,Menlo,monospace;background:#000a;padding:6px 10px;border-radius:6px">idle</div>
+    </div>
+    <p style="color:var(--dim);font-size:12px">Hold <b>W A S D</b> (or the arrow keys) to drive: W/S forward/back, A/D turn left/right. Hold <b>Shift</b> for full speed, otherwise half. Release = stop. Obstacle slow-down, cliff and bumper stops stay active.</p>
+    <div class="grid" id="camTiles"></div>
   </section>
   <section id="tab-skills" class="hidden">
     <p style="color:var(--dim);font-size:12px;margin-top:0">Switching a skill off refuses its tools at once; the tool list changes from the next conversation.</p>
@@ -71,6 +90,26 @@
       <button class="btn ghost" id="revert">Revert</button>
       <span id="msg"></span>
     </div>
+  </section>
+  <section id="tab-debug" class="hidden">
+    <div class="warn">Bench only: wheels off the ground. These controls skip the obstacle slow-down and the normal driving rules. The firmware still caps the power and stops the wheels 0.2 s after this page stops sending.</div>
+    <div class="bar">
+      <button class="btn" id="dbgArm">Arm motor control (10 min)</button>
+      <span id="dbgArmText" style="color:var(--dim);font-size:12px"></span>
+    </div>
+    <div class="dbgrow"><label>Both wheels</label>
+      <input type="range" id="dbgBoth" min="-60" max="60" step="1" value="0"><b id="dbgBothV">0 %</b></div>
+    <div class="dbgrow"><label><input type="checkbox" id="dbgLink" checked> link left + right</label></div>
+    <div class="dbgrow"><label>Left</label><input type="range" id="dbgL" min="-60" max="60" step="1" value="0"><b id="dbgLV">0 %</b></div>
+    <div class="dbgrow"><label>Right</label><input type="range" id="dbgR" min="-60" max="60" step="1" value="0"><b id="dbgRV">0 %</b></div>
+    <div class="bar"><button class="btn" id="dbgStop" style="background:var(--bad)">STOP</button>
+      <button class="btn ghost" id="dbgClear" title="Clears a latched stop (cliff, tilt, bumper) so the wheels may run again">Clear stop</button>
+      <label style="color:var(--dim);font-size:12px"><input type="checkbox" id="dbgSpring"> slider springs back to 0 when released</label></div>
+    <h3 style="margin:18px 0 6px">Safety switches</h3>
+    <div class="dbgrow"><label><input type="checkbox" id="dbgCliff"> cliff sensors stop the wheels</label></div>
+    <div class="dbgrow"><label><input type="checkbox" id="dbgTof"> front ToF slow down and stop before obstacles</label></div>
+    <p style="color:var(--dim);font-size:12px;margin:4px 0">Turn the cliff switch off only with the wheels in the air. Both are saved as settings (safety.cliff_stop, safety.tof_brake).</p>
+    <div class="grid" id="dbgTiles"></div>
   </section>
 </main>
 <script>
@@ -242,6 +281,128 @@ $("#save").onclick = async () => {
   }
 };
 
+// ---------- debug (bench) ----------
+let dbgLoaded = false, dbgArmed = false, dbgPrev = null, dbgTimer = null, dbgPollTimer = null;
+const dbgSend = (l, r) => api("/api/debug/drive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ l, r }) }).catch(() => {});
+function dbgValues() {
+  const link = $("#dbgLink").checked;
+  const both = +$("#dbgBoth").value;
+  return link ? [both, both] : [+$("#dbgL").value, +$("#dbgR").value];
+}
+function dbgShow() {
+  const [l, r] = dbgValues();
+  $("#dbgBothV").textContent = $("#dbgBoth").value + " %";
+  $("#dbgLV").textContent = l + " %"; $("#dbgRV").textContent = r + " %";
+  ["#dbgL", "#dbgR"].forEach(id => $(id).disabled = $("#dbgLink").checked);
+  $("#dbgBoth").disabled = !$("#dbgLink").checked;
+}
+function dbgZero() { ["#dbgBoth", "#dbgL", "#dbgR"].forEach(id => $(id).value = 0); dbgShow(); }
+async function dbgLoop() {                       // 10 Hz while armed; stops sending (and the firmware brakes) when idle
+  if (!dbgArmed || tab !== "debug" || document.hidden) return;
+  const [l, r] = dbgValues();
+  await dbgSend(l, r);
+}
+async function dbgPoll() {
+  if (tab !== "debug") return;
+  const d = await api("/api/debug/state").catch(() => null);
+  if (!d || d.fout) { $("#dbgTiles").innerHTML = tile("Core", "no answer", d && d.fout || ""); return; }
+  dbgArmed = d.armed;
+  $("#dbgArm").textContent = d.armed ? "Disarm motor control" : "Arm motor control (10 min)";
+  $("#dbgArmText").textContent = d.armed ? "armed, " + d.seconds_left + " s left" : "not armed: the sliders do nothing";
+  let sl = "-", sr = "-";
+  if (dbgPrev && d.ms > dbgPrev.ms) {
+    const dt = (d.ms - dbgPrev.ms) / 1000;
+    sl = Math.round((d.ticks_l - dbgPrev.ticks_l) / dt); sr = Math.round((d.ticks_r - dbgPrev.ticks_r) / dt);
+  }
+  dbgPrev = d;
+  const amps = d.ma == null ? null : d.ma / 1000, volts = d.mv == null ? null : d.mv / 1000;
+  const mm = v => (v == null ? "–" : v >= 8000 ? "far" : v + " mm");
+  $("#dbgTiles").innerHTML =
+    tile("Left", sl + " ticks/s", "pwm " + d.pwm_l + " %") + tile("Right", sr + " ticks/s", "pwm " + d.pwm_r + " %") +
+    tile("Pack", volts == null ? "–" : volts.toFixed(2) + " V", amps == null ? "" : (amps * 1000).toFixed(0) + " mA · " + (volts * amps).toFixed(1) + " W") +
+    tile("Stop reasons", (d.estop && d.estop.length) ? d.estop.join(", ") : "none", d.moving ? "wheels moving" : "wheels still") +
+    tile("Front ToF", mm(d.tof_l) + " · " + mm(d.tof_c) + " · " + mm(d.tof_r), "left · centre · right") +
+    tile("Cliff ToF", mm(d.tof_cl) + " · " + mm(d.tof_cr), "left · right (cliff above " + (window.dbgCliffMm || 140) + " mm)") +
+    tile("Tilt", d.tilt_d10 == null ? "–" : (d.tilt_d10 / 10).toFixed(1) + " °", "I2C errors " + (d.i2c_err ?? "–"));
+}
+async function loadDebug() {
+  const cfg = await api("/api/config");
+  const cap = cfg.values && cfg.values.drive ? cfg.values.drive.pwm_cap : 60;
+  ["#dbgBoth", "#dbgL", "#dbgR"].forEach(id => { $(id).min = -cap; $(id).max = cap; });
+  const safety = (cfg.values && cfg.values.safety) || {};
+  $("#dbgCliff").checked = safety.cliff_stop !== false; $("#dbgTof").checked = safety.tof_brake !== false;
+  dbgShow(); await dbgPoll();
+}
+$("#dbgArm").onclick = async () => { await api("/api/debug/arm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: !dbgArmed }) }); if (dbgArmed) dbgZero(); dbgPoll(); };
+$("#dbgClear").onclick = () => api("/api/debug/clear", { method: "POST" }).then(dbgPoll).catch(() => {});
+$("#dbgStop").onclick = async () => { dbgZero(); await api("/api/debug/stop", { method: "POST" }).catch(() => {}); };
+["#dbgBoth", "#dbgL", "#dbgR", "#dbgLink"].forEach(id => $(id).addEventListener("input", dbgShow));
+["#dbgBoth", "#dbgL", "#dbgR"].forEach(id => $(id).addEventListener("change", () => { if ($("#dbgSpring").checked) dbgZero(); }));
+const dbgSet = (key, on) => api("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ safety: { [key]: on } }) }).catch(() => {});
+$("#dbgCliff").onchange = e => dbgSet("cliff_stop", e.target.checked);
+$("#dbgTof").onchange = e => dbgSet("tof_brake", e.target.checked);
+setInterval(dbgLoop, 100);
+setInterval(dbgPoll, 400);
+document.addEventListener("visibilitychange", () => { if (document.hidden && dbgArmed) { dbgZero(); navigator.sendBeacon("/api/debug/stop"); } });
+window.addEventListener("pagehide", () => { if (dbgArmed) navigator.sendBeacon("/api/debug/stop"); });
+
+// ---------- camera tab: WASD drive (F4) ----------
+const camKeys = new Set();
+let camArmed = false, camFeed = false, camLast = "";
+const camPost = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const camCmd = () => {                              // keys -> fractions of the speed limits
+  const k = c => camKeys.has(c) ? 1 : 0, gain = camKeys.has("shift") ? 1 : 0.5;
+  return { v: (k("w") - k("s")) * gain, w: (k("a") - k("d")) * gain };   // w > 0 = turn left (counter-clockwise)
+};
+function camShow() {
+  const c = camCmd();
+  $("#camKeys").textContent = !camArmed ? "not armed" : (c.v || c.w) ? `v ${c.v.toFixed(1)} · turn ${c.w.toFixed(1)}` : "idle";
+}
+async function camLoop() {                          // 10 Hz while armed; silence = the firmware brakes
+  if (!camArmed || tab !== "camera" || document.hidden) return;
+  const c = camCmd();
+  if (!c.v && !c.w && !camLast) return;             // idle: one zero command was sent, then stay quiet
+  camLast = (c.v || c.w) ? "go" : "";
+  const r = await camPost("/api/manual/drive", c).catch(() => null);
+  if (r && r.reden) $("#camKeys").textContent = r.reden;
+}
+async function camPoll() {
+  if (tab !== "camera") return;
+  const d = await api("/api/manual/state").catch(() => null);
+  if (!d || d.fout) { $("#camTiles").innerHTML = tile("Core", "no answer", d && d.fout || ""); return; }
+  camArmed = d.armed;
+  $("#camArm").textContent = d.armed ? "Disarm driving" : "Arm driving (10 min)";
+  $("#camArmText").textContent = d.armed ? "armed, " + d.seconds_left + " s left" : "not armed: the keys do nothing";
+  const b = d.state, mm = v => (v == null ? "–" : v >= 8000 ? "far" : v + " mm");
+  $("#camTiles").innerHTML = tile("Front ToF", b.tof_mm.map(mm).join(" · "), "left · centre · right") +
+    tile("Stop", (b.estop || []).length ? b.estop.join(", ") : "none", b.estop && b.estop.length ? "press Clear stop in Debug" : "") +
+    tile("Battery", b.battery_v == null ? "n/a" : b.battery_v.toFixed(2) + " V", b.battery);
+  camShow();
+}
+function camFeedOn(on) {                            // the stream (and rpicam-vid) only runs while the tab is open
+  if (on === camFeed) return;
+  camFeed = on;
+  $("#camImg").src = on ? "/api/camera/stream?t=" + Date.now() : "";
+}
+const camKey = (e, down) => {
+  if (tab !== "camera" || e.target.matches("input,select,textarea")) return;
+  const k = e.key.toLowerCase(), map = { arrowup: "w", arrowdown: "s", arrowleft: "a", arrowright: "d" };
+  const key = map[k] || k;
+  if (key === "shift" || "wasd".includes(key) && key.length === 1) {
+    e.preventDefault();
+    down ? camKeys.add(key) : camKeys.delete(key);
+    camShow();
+  }
+};
+document.addEventListener("keydown", e => camKey(e, true));
+document.addEventListener("keyup", e => camKey(e, false));
+window.addEventListener("blur", () => { camKeys.clear(); camShow(); });
+$("#camArm").onclick = async () => { await camPost("/api/manual/arm", { on: !camArmed }); camKeys.clear(); camPoll(); };
+setInterval(camLoop, 100);
+setInterval(camPoll, 500);
+setInterval(() => camFeedOn(tab === "camera" && !document.hidden), 500);
+document.addEventListener("visibilitychange", () => { if (document.hidden) { camKeys.clear(); if (camArmed) navigator.sendBeacon("/api/manual/drive", new Blob(['{"v":0,"w":0}'], { type: "application/json" })); } });
+
 // ---------- loop ----------
 async function refresh() {
   try {
@@ -249,6 +410,7 @@ async function refresh() {
     else if (tab === "logs") await loadLogs();
     else if (tab === "skills") await loadSkills();
     else if (tab === "settings" && !saved) await loadSettings();
+    else if (tab === "debug" && !dbgLoaded) { await loadDebug(); dbgLoaded = true; }
     $("#conn").textContent = "online · " + new Date().toLocaleTimeString();
     $("#conn").style.color = "var(--ok)";
   } catch (e) {
@@ -256,7 +418,7 @@ async function refresh() {
   }
 }
 refresh();
-setInterval(() => { if (tab !== "settings" && tab !== "skills") refresh(); }, 2000);
+setInterval(() => { if (tab !== "settings" && tab !== "skills" && tab !== "camera") refresh(); }, 2000);
 </script>
 </body>
 </html>

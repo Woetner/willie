@@ -54,10 +54,10 @@ def test_watchdog_and_cap(fake_port):
         await until(lambda st: True)
         assert link.clock_offset_ms is not None
 
-        link.pwm(80, -80)                            # above the 50 % hard cap
+        link.pwm(80, -80)                            # above the 60 % hard cap
         t_last = time.perf_counter()
         await until(lambda st: st["pwm_l"] != 0)
-        assert (link.state["pwm_l"], link.state["pwm_r"]) == (50, -50) and link.state["moving"]
+        assert (link.state["pwm_l"], link.state["pwm_r"]) == (60, -60) and link.state["moving"]
 
         await until(lambda st: st["pwm_l"] == 0)     # silence: the watchdog must brake
         stop_ms = (link.state_t - t_last) * 1000
@@ -77,4 +77,4 @@ def test_mcu_settings_cover_schema():
 
     d = defaults(load_schema())
     got = mcu_settings(lambda dotted: d[dotted.split(".")[0]][dotted.split(".")[1]])
-    assert got["pwm_cap"] == 50 and got["wd_ms"] == 200 and got["pan_c"] == 1500
+    assert got["pwm_cap"] == 60 and got["wd_ms"] == 200 and got["pan_c"] == 1500

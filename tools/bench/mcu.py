@@ -129,7 +129,7 @@ async def t_io(link: Link, events: list):
 
 # ---------------------------------------------------------------- B12 motors + encoders
 async def t_motors(link: Link, pct: float):
-    await ainput(f"B12: WHEELS OFF THE GROUND. Motors run at {pct:g} % (capped at 50 % in the firmware). Enter = go ")
+    await ainput(f"B12: WHEELS OFF THE GROUND. Motors run at {pct:g} % (capped at 60 % in the firmware). Enter = go ")
     link.send("clear")
     for name, l, r in [("left fwd", pct, 0), ("left back", -pct, 0), ("right fwd", 0, pct), ("right back", 0, -pct)]:
         a = link.state
@@ -227,7 +227,7 @@ async def main():
     ap.add_argument("--minutes", type=float, default=10)
     ap.add_argument("--pct", type=float, default=30, help="motor duty for B12 (firmware caps at 50)")
     ap.add_argument("--wheel-d", type=float, default=100, help="mm, for T=pid")
-    ap.add_argument("--cpr", type=float, default=960, help="counts per wheel revolution (B12), for T=pid")
+    ap.add_argument("--cpr", type=float, default=3840, help="counts per wheel revolution (B12: 3860 measured), for T=pid")
     a = ap.parse_args()
 
     events: list = []

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import psutil
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from willie import __version__
 from willie import log as wlog
@@ -88,6 +88,29 @@ def throttled() -> str | None:
         return None
 
 
+def _mjpeg():
+    """rpicam-vid MJPEG -> multipart frames. Frames are SOI (FFD8) ... EOI (FFD9), as in remote.py."""
+    proc = subprocess.Popen(
+        ["rpicam-vid", "--nopreview", "-t", "0", "--codec", "mjpeg", "-q", "50", "--width", "640",
+         "--height", "480", "--framerate", "10", "--autofocus-mode", "continuous", "--flush", "-o", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    buffer = b""
+    try:
+        while chunk := proc.stdout.read(65536):
+            buffer += chunk
+            while (start := buffer.find(b"\xff\xd8")) >= 0 and (end := buffer.find(b"\xff\xd9", start + 2)) >= 0:
+                frame, buffer = buffer[start:end + 2], buffer[end + 2:]
+                yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n%s\r\n" % (len(frame), frame)
+            if len(buffer) > 2_000_000:
+                buffer = b""
+    finally:                                    # client left (generator closed) or camera ended
+        proc.terminate()
+        try:
+            proc.wait(3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 def create_app(cfg: Config) -> FastAPI:
     app = FastAPI(title="WILL-E", version=__version__, docs_url="/api/docs", redoc_url=None)
     proc = psutil.Process(os.getpid())
@@ -143,6 +166,59 @@ def create_app(cfg: Config) -> FastAPI:
             return {"values": cfg.update(changes)}
         except ConfigError as e:
             raise HTTPException(status_code=422, detail=e.errors)
+
+    # Debug tab (bench only): wheel power by hand. The core arms it for 10 minutes, clamps to drive.pwm_cap and the
+    # firmware watchdog stops the wheels 200 ms after the page stops sending (willie/control.py _debug).
+    from willie import control
+
+    @app.get("/api/debug/state")
+    def debug_state():
+        return control.request("debug_state", timeout=1.0)
+
+    @app.post("/api/debug/arm")
+    def debug_arm(body: dict):
+        return control.request("debug_arm", timeout=1.0, on=bool(body.get("on")))
+
+    @app.post("/api/debug/drive")
+    def debug_drive(body: dict):
+        try:
+            left, right = float(body.get("l", 0)), float(body.get("r", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="l and r must be numbers")
+        return control.request("debug_drive", timeout=0.5, l=left, r=right)
+
+    @app.post("/api/debug/clear")
+    def debug_clear():
+        return control.request("clear", timeout=0.5)
+
+    @app.post("/api/debug/stop")
+    def debug_stop():
+        return control.request("stop", timeout=0.5)
+
+    # Camera tab (F4): WASD driving + live view. Armed by hand for 10 min; the page sends fractions of the speed
+    # limits at 10 Hz, the core gates them (Safety.gate) and the firmware watchdog stops the wheels when it stops.
+    @app.get("/api/manual/state")
+    def manual_state():
+        return control.request("manual_state", timeout=1.0)
+
+    @app.post("/api/manual/arm")
+    def manual_arm(body: dict):
+        return control.request("manual_arm", timeout=1.0, on=bool(body.get("on")))
+
+    @app.post("/api/manual/drive")
+    def manual_drive(body: dict):
+        try:
+            v, w = float(body.get("v", 0)), float(body.get("w", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="v and w must be numbers")
+        return control.request("manual_drive", timeout=0.5, v=v, w=w)
+
+    @app.get("/api/camera/stream")
+    def camera_stream():
+        """MJPEG for <img>. rpicam-vid runs only while this response is open (D20: on demand)."""
+        if not shutil.which("rpicam-vid"):
+            raise HTTPException(status_code=503, detail="rpicam-vid missing")
+        return StreamingResponse(_mjpeg(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     # H1: skills on/off. Stored in skills.disabled; the voice process refuses a switched-off
     # skill's tools at once and leaves them out of the next conversation's tool list.

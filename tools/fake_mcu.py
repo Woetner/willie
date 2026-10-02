@@ -22,8 +22,8 @@ import tty
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from willie.hal import proto  # noqa: E402
 
-PWM_CAP_HARD = 50.0
-CFG = {"pwm_cap": 50, "wd_ms": 200, "v_full": 600, "wheel_d": 100, "track": 170, "cpr": 960,
+PWM_CAP_HARD = 60.0
+CFG = {"pwm_cap": 60, "wd_ms": 200, "v_full": 600, "wheel_d": 100, "track": 170, "cpr": 3840,
        "pan_min": -90, "pan_max": 90, "tilt_min": -30, "tilt_max": 45, "servo_dps": 180,
        "stream_hz": 50}
 LIMITS = {"pwm_cap": (0, PWM_CAP_HARD), "wd_ms": (50, 1000), "stream_hz": (0, 100)}

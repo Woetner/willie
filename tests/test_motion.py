@@ -155,3 +155,18 @@ def test_new_request_interrupts_the_running_one(robot):
         return await first, second
     first, second = run(robot, body)
     assert first == {"ok": False, "reden": "onderbroken"} and second["ok"]
+
+
+def test_battery_cutoff_ignores_the_sag_under_load():
+    """3 A of motor current sags the pack ~0.45 V: a healthy pack must not power off while driving."""
+    clock = [0.0]
+    off = []
+    s = Safety(get, clock=lambda: clock[0], on_poweroff=lambda: off.append(1))
+    raw = int(get("safety.battery_cutoff_v") * 1000) - 200      # under the cutoff on the wire, above it at rest
+    for clock[0] in (0, 11, 30):
+        assert s.battery(state(mv=raw, ma=3000)) != "cutoff"
+    assert off == []
+    clock[0] = 31
+    s.battery(state(mv=raw, ma=0))                               # the same voltage without a load is a real low
+    clock[0] = 42
+    assert s.battery(state(mv=raw, ma=0)) == "cutoff" and off == [1]

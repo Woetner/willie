@@ -52,3 +52,15 @@ def test_move_turn_and_mood_through_the_socket(core):
     time.sleep(0.7)
     assert ask("state")["behaviour"] == "talk"
     assert "antwoordt niet" in control.request("state", path=core.parent / "nope.sock")["fout"]
+
+
+def test_manual_drive_needs_arming_and_is_gated(core):
+    ask = lambda cmd, **kw: control.request(cmd, path=core, **kw)   # noqa: E731
+    assert "not armed" in ask("manual_drive", v=1, w=0)["fout"]
+    assert ask("manual_arm", on=True)["armed"]
+    driven = ask("manual_drive", v=5, w=-5)                          # clamped to the -1..1 fractions
+    assert driven["ok"] and 0 < driven["v"] <= 0.25 and -2.0 <= driven["w"] < 0, driven
+    assert ask("manual_drive", v=0, w=0)["ok"]
+    assert ask("manual_state")["armed"]
+    assert not ask("manual_arm", on=False)["armed"]
+    assert "not armed" in ask("manual_drive", v=1, w=0)["fout"]

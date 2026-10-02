@@ -52,6 +52,8 @@ class Behaviours:
         age = time.perf_counter() - body.link.state_t if st else None
         if st is None or age is None or age > 0.5 or st.get("estop") or body.safety.battery_state == "cutoff":
             return "hold"
+        if getattr(body, "debug_active", False):
+            return "hold"                       # the Debug tab drives the wheels
         if body.conversation:
             return "talk"
         if getattr(body, "mission", False):

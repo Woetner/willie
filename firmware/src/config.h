@@ -6,7 +6,7 @@
 #pragma once
 #include <Arduino.h>
 
-#define PWM_CAP_HARD 50.0f   // % — 6 V motors on a 12.6 V pack (D8). The ONLY place this number lives.
+#define PWM_CAP_HARD 60.0f   // % — 6 V motors (3-7.5 V) on a 12.6 V pack: 60 % = 7.5 V average, the motors' maximum (D8, raised from 50 on 1 Oct by Wouter). The ONLY place this number lives.
 
 struct Setting {
   const char *key;
@@ -15,7 +15,7 @@ struct Setting {
 
 // order matters only for `cfg?` output
 static Setting SETTINGS[] = {
-  {"pwm_cap",      50,    0,   PWM_CAP_HARD},  // % duty, soft cap below the hard cap
+  {"pwm_cap",      60,    0,   PWM_CAP_HARD},  // % duty, soft cap below the hard cap
   {"wd_ms",        200,   50,  1000},          // no drive/pwm command for this long = brake
   {"v_full",       600,   50,  3000},          // mm/s of a wheel at 100 % duty (the PID's feedforward)
   {"pid_on",       0,     0,   1},             // F2 wheel speed loop (wheels.h); on after B12 checked einv_*
@@ -24,11 +24,11 @@ static Setting SETTINGS[] = {
   {"kd",           0.0,   0,   5},             // s
   {"wheel_d",      100,   30,  200},           // mm
   {"track",        170,   50,  400},           // mm between wheel contact lines
-  {"cpr",          960,   1,   100000},        // encoder counts per WHEEL revolution (measure in B12)
-  {"inv_l",        0,     0,   1},             // flip left motor direction
+  {"cpr",          3840,  1,   100000},        // encoder counts per WHEEL revolution: x4 quadrature, 10 marked turns gave 3860 (B12, 1 Oct)
+  {"inv_l",        1,     0,   1},             // flip left motor direction (B12, 1 Oct: the left wheel ran backward on "forward")
   {"inv_r",        1,     0,   1},             // flip right motor direction (mirrored mount)
   {"einv_l",       0,     0,   1},             // flip left encoder count
-  {"einv_r",       1,     0,   1},             // flip right encoder count
+  {"einv_r",       0,     0,   1},             // flip right encoder count (B12, 1 Oct: forward counted negative)
   {"pan_c",        1500,  500, 2500},          // µs at pan 0°
   {"tilt_c",       1500,  500, 2500},          // µs at tilt 0°
   {"us_deg",       10.5,  5,   15},            // µs per degree (SG90 ≈ 2000 µs / 180°)
@@ -38,6 +38,7 @@ static Setting SETTINGS[] = {
   {"tilt_max",     45,    0,   90},
   {"servo_dps",    180,   10,  600},           // slew rate, deg/s
   {"servo_idle",   800,   0,   10000},         // ms at target before the pulses stop (0 = never)
+  {"cliff_on",     1,     0,   1},             // 0: the down-looking ToF never stop the wheels (bench with the wheels in the air)
   {"cliff_mm",     80,    30,  400},           // down-looking ToF reads more than this = no floor = cliff
   {"tilt_stop",    25,    5,   60},            // deg from level = estop
   {"need_io",      0,     0,   1},             // 1: refuse to drive without cliff/bumper (PCF8574) — set in F1
@@ -64,3 +65,8 @@ static inline bool setCfg(const char *key, float v) {
   s->value = constrain(v, s->min, s->max);
   return true;
 }
+
+// Which of the five VL53L0X are used: front L, front C, front R, cliff L, cliff R. A disabled sensor stays in
+// reset (XSHUT low), is never retried and reports 0. Front C is off since 2 Oct: its module does not answer on
+// I2C (wiring or dead). Set it to 1 again after the repair.
+static const bool TOF_ENABLED[5] = {true, false, true, true, true};

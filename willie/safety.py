@@ -1,7 +1,7 @@
 """Pi-side safety gate (F1, §10). Every motion command passes `Safety.gate()` first.
 
 The firmware already owns the hard rules that must hold when the Pi hangs (D18): the
-200 ms watchdog, the 50 % PWM cap and the bumper/cliff/tilt estop latch. This layer adds
+200 ms watchdog, the 60 % PWM cap and the bumper/cliff/tilt estop latch. This layer adds
 the rules that need the Pi's view of the world, and never loosens the firmware's:
 
 - no fresh `st` from the MCU (> stale_s)          -> refuse
@@ -57,7 +57,9 @@ class Safety:
         if not state or not state.get("ok", {}).get("ina") or state.get("mv", 0) < NO_PACK_MV:
             self.battery_state = "unknown"
             return self.battery_state
-        volts, now = state["mv"] / 1000, self.clock()
+        # Judge the voltage the pack would have without the load: 2 A of motor current sags 3S by ~0.3 V (power.r_internal_mohm).
+        amps = max(0.0, state.get("ma", 0) / 1000)
+        volts, now = state["mv"] / 1000 + amps * self.get("power.r_internal_mohm") / 1000, self.clock()
         warn, cut = self.get("safety.battery_warn_v"), self.get("safety.battery_cutoff_v")
         self._low_since = (now if self._low_since is None else self._low_since) if volts < warn else None
         self._cut_since = (now if self._cut_since is None else self._cut_since) if volts < cut else None
@@ -106,7 +108,7 @@ class Safety:
         if abs(w) > MAX_TURN:
             w, reason = max(-MAX_TURN, min(MAX_TURN, w)), "draaisnelheid begrensd"
         front, stop = self.front_mm(state), self.get("safety.tof_stop_mm")
-        if v > 0 and front is not None:
+        if v > 0 and front is not None and self.get("safety.tof_brake"):
             if front <= stop:
                 v, reason = 0.0, f"obstakel op {front} mm"
             elif front < 2 * stop:

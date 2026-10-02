@@ -44,12 +44,13 @@ enable_uart=1
 dtoverlay=disable-bt
 camera_auto_detect=1
 # Screen ILI9486 + XPT2046 touch (B5, measured 20 Sep). The 3.5" board needs the
-# tft35a overlay, not piscreen. speed=48000000 is what the SPI block turns into
+# ILI9486 + ads7846 (the old tft35a overlay is gone since kernel 6.18). speed=48000000 is what the SPI block turns into
 # 41.7 MHz (250 MHz / 6); fps=150 is the fbtft deferred-io rate — at the default
 # 60 its 16.7 ms sleep, not SPI, was the thing capping the blink at 17 fps.
-dtoverlay=tft35a:rotate=90,speed=48000000,fps=150,txbuflen=65536
+dtoverlay=fbtft,spi0-0,ili9486,reset_pin=25,dc_pin=24,regwidth=16,width=320,height=480,rotate=90,bgr,speed=48000000,fps=150,txbuflen=65536
+dtoverlay=ads7846,cs=1,penirq=17,speed=1000000,pmax=255,swapxy,xohms=60
 # I2S mics (2x INMP441) + amp (MAX98357A) — chosen and tested in steps B6/B7:
-#dtoverlay=...
+dtoverlay=googlevoicehat-soundcard
 # <<< WILL-E <<<
 EOF
   echo "added WILL-E block"
