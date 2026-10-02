@@ -64,7 +64,8 @@ def test_search_finds_on_a_later_stop():
 
 
 def test_search_gives_up_and_asks_the_eufy_cameras(monkeypatch):
-    monkeypatch.setattr("willie.missions.search.MAX_STOPS", 2)
+    monkeypatch.setattr("willie.missions.search._setting",
+                        lambda key, default: 2 if key == "search.max_stops" else default)
     robot = FakeRobot({"missie_kijk": {"gevonden": False}, "zoek_buiten": {"gevonden": False}})
     result = Search(robot, omschrijving_en="a red screwdriver").run()
     assert not result["gevonden"] and "zoek_buiten" in robot.hub_calls

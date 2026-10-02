@@ -22,9 +22,9 @@ from . import Mission
 log = logging.getLogger("willie.missions.search")
 
 PANS = (-80, -40, 0, 40, 80)
-LEG_M = 0.8
+LEG_M = 1.0
 TURN_DEG = 110                 # not a multiple of 90: the spiral does not retrace itself
-MAX_STOPS = 12
+MAX_STOPS = 60                 # default; `search.max_stops` overrides
 
 
 def _setting(key: str, default):
@@ -46,6 +46,8 @@ class Search(Mission):
         what = name or text_en
         max_s = float(_setting("search.max_min", 10)) * 60
         deadline = time.monotonic() + max_s
+        max_stops = int(_setting("search.max_stops", MAX_STOPS))
+        blocked = 0
         self.show("seeing", f"ZOEK: {what}"[:40])
 
         memory = self.robot.hub("waar_is", {"naam": name}, 10) if name else {}
@@ -54,7 +56,7 @@ class Search(Mission):
             self.progress = f"laatst gezien {last.get('wanneer')} ({last.get('waar')})"
 
         stops = 0
-        while not self.stopped and time.monotonic() < deadline and stops < MAX_STOPS:
+        while not self.stopped and time.monotonic() < deadline and stops < max_stops:
             if self.battery_low():
                 return self._report(False, what, "batterij bijna leeg", last)
             for pan in PANS:
@@ -77,8 +79,16 @@ class Search(Mission):
             self.look(0, settle=0.2)
             self.robot.body("turn", deg=TURN_DEG)
             moved = self.robot.body("move", m=LEG_M)
+            log.info("search stop %d: move %s", stops, moved)
             if not moved.get("ok") and "garagemodus" in str(moved.get("reden", "")):
                 return self._report(False, what, "ik mag niet rijden (garagemodus)", last)
+            if not moved.get("ok"):                 # wall or obstacle: turn away, keep searching
+                blocked += 1
+                if blocked >= 5:
+                    return self._report(False, what, "ik kom niet verder (steeds geblokkeerd)", last)
+                self.robot.body("turn", deg=90 + 40 * (blocked % 3))
+            else:
+                blocked = 0
         if self.stopped:
             return self._report(False, what, "gestopt", last)
         outside = self.robot.hub("zoek_buiten", {"naam": name, "omschrijving_en": text_en}, 90)
