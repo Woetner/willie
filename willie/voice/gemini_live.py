@@ -557,6 +557,7 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 break
             decimated = stream.decimate(raw)
             chunk = mic.s16(decimated, factor)    # fixed gain: level detector, wake word, garage gate
+            mic.tap(chunk)
             captured += len(decimated)
             t0 = min(t0, loop.time() - captured / IN_RATE)
             up = chunk

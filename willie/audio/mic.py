@@ -38,6 +38,20 @@ FIR = (2 * _CUTOFF * np.sinc(2 * _CUTOFF * _n) * np.blackman(_TAPS)).astype(np.f
 FIR /= FIR.sum()
 
 
+# The phone app's "listen" (willie/remote.py) hears the room through this: a callable that gets every 16 kHz mono S16
+# chunk (gain applied) while the wake word or a conversation holds the mic. None = nobody listens (the default).
+TAP = None
+
+
+def tap(chunk: bytes) -> None:
+    hook = TAP
+    if hook is not None:
+        try:
+            hook(chunk)
+        except Exception:
+            pass
+
+
 def command() -> list[str]:
     """arecord in the card's native format: 48 kHz stereo S32 raw to stdout."""
     return ["arecord", "-q", "-D", DEVICE, "-f", "S32_LE", "-r", str(CARD_RATE), "-c", "2", "-t", "raw"]

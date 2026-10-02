@@ -531,7 +531,10 @@ class Renderer:
     def _watched_frame(self, p, now):
         """Live view is open (S8): a red frame round the whole screen and a blinking LIVE
         badge, over every expression, so a viewer can never be missed (D17)."""
-        pulse = .6+.4*math.sin(now*3)
+        # The pulse steps 4 times a second instead of changing every frame: the four edge bars span the whole screen, so
+        # a smooth pulse repainted all of it 25 times a second (about 40 % of a core, 2 Oct) and starved the phone
+        # app's commands and video in the same process.
+        pulse = .6+.4*math.sin(math.floor(now*4)/4*3)
         edge = mix((0, 0, 0), WATCHED, pulse)
         for x, y, w, h in ((0, 0, 480, 5), (0, 315, 480, 5), (0, 0, 5, 320), (475, 0, 5, 320)):
             p.rect(x, y, w, h, edge)
@@ -542,7 +545,7 @@ class Renderer:
 
     def _sentry_frame(self, p, now):
         """Sentry mode (K5): the live view's red frame, slower (Wouter: the same animation)."""
-        pulse = .5+.5*math.sin(now*1.5)
+        pulse = .5+.5*math.sin(math.floor(now*4)/4*1.5)           # stepped, see _watched_frame
         edge = mix((0, 0, 0), WATCHED, .35+.45*pulse)
         for x, y, w, h in ((0, 0, 480, 4), (0, 316, 480, 4), (0, 0, 4, 320), (476, 0, 4, 320)):
             p.rect(x, y, w, h, edge)

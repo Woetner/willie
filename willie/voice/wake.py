@@ -13,6 +13,7 @@ loop can be tested; `describe()` says which one is listening.
 
 from __future__ import annotations
 
+import time
 import subprocess
 from pathlib import Path
 
@@ -70,6 +71,7 @@ def listen_for_wake(stop_after: float | None = None, on_tick=None, stop=None) ->
 
 # fn(chunk) called with every mic chunk while waiting for the wake word (K5 sentry: sound
 # triggers without a second recorder on the one mic).
+HOLD_UNTIL = 0.0   # monotonic: no wake word before this (the phone's push-to-talk is playing on his speaker)
 LEVEL_HOOK = None
 
 
@@ -96,6 +98,7 @@ def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> s
             if len(raw) < CHUNK * mic.FRAME:
                 return None
             chunk = stream.convert(raw)
+            mic.tap(chunk)
             if LEVEL_HOOK is not None:
                 try:
                     LEVEL_HOOK(chunk)            # sentry mode (K5) hears the room through this
@@ -107,7 +110,7 @@ def wait_for_wake(stop_after: float | None = None, on_tick=None, stop=None) -> s
                 if probability is None:
                     continue
                 loudest = max(loudest, probability)
-                if probability > threshold:
+                if probability > threshold and time.monotonic() >= HOLD_UNTIL:
                     detected = True
                     return recorder
             if on_tick and elapsed >= next_tick:

@@ -15,6 +15,8 @@ Topics (WILL-E.md Phase S):
        willie/persona      call use exactly the robot's tools and character
        willie/photo        one JPEG, answer to cmd/photo
        willie/video        MJPEG frames while live view is on
+       willie/audio        raw 16 kHz mono S16 chunks while listening is on
+       willie/event/drive|listen|ptt  {"ok", ...}  what the last command did
        willie/tool/result  {"id", "result"}
        willie/hub/call     {"id", "name", "args"}  a tool that runs on the server (reminders)
        willie/improve/request  a code change waiting for approval in the app (tools.verbeter_jezelf)
@@ -24,6 +26,11 @@ Topics (WILL-E.md Phase S):
        willie/cmd/mode     {"mode": "idle"|"sleep"}  sleep = mic off + sleep face (privacy.mute)
                            {"mode": "garage"|"garage_off"}  garage mode (K1)
        willie/cmd/power    {"action": "off"|"restart"}  the app asked "are you sure?" already
+       willie/cmd/look     {"pan", "tilt"}      move the camera head (degrees, limited by the firmware)
+       willie/cmd/drive_arm {"on": true|false}  arm WASD / joystick driving for 10 min (control.py manual_*)
+       willie/cmd/drive    {"v", "w", "seq"}    fractions -1..1 of the speed limits, 10 Hz; silence = stop
+       willie/cmd/listen   {"on": true|false}   hear the room: willie/audio frames; repeat every few seconds
+       willie/ptt/audio    raw PCM            push-to-talk: the speaker plays it; the face shows "watched"
        willie/tool/call    {"id", "name", "args"}
        willie/hub/result   {"id", "result"}     answer to willie/hub/call
        willie/improve/decision {"id", "approved", "hash"}  Wouter's tap in the app
@@ -42,13 +49,18 @@ import threading
 import time
 from pathlib import Path
 
+from willie import camera
+
 log = logging.getLogger("willie.remote")
 
 STATE_EVERY_S = 2.0
 HEALTH_EVERY_S = 10.0
 ACTIVITY_STALE_S = 180.0    # no fresh activity list from the hub: the icons go (hub down)
 VIDEO_LEASE_S = 10.0        # live view stops by itself when the hub stops asking (S8)
-VIDEO_SIZE, VIDEO_FPS, VIDEO_QUALITY = (640, 480), 10, 60
+VIDEO_SIZE, VIDEO_FPS, VIDEO_QUALITY = (640, 360), 10, 50      # 16:9 = the whole sensor width, about 14 KB a frame
+LISTEN_LEASE_S = 10.0       # listening through his mics stops by itself when the app stops asking
+PTT_IDLE_S = 1.5            # push-to-talk ends when no audio has come for this long
+AUDIO_RATE = 16_000         # willie/audio (out) and willie/ptt/audio (in): raw mono S16 little-endian
 # Tools the phone's chat and call may not run on the robot (security audit, 24 Sep): power
 # has its own button with "are you sure?" in the app, and on the robot it needs a finger on
 # the screen, which nobody on the phone can give.
@@ -79,6 +91,11 @@ class Remote:
         self._health_at = 0.0
         self._hub_calls: dict[str, dict] = {}     # id -> {"done": Event, "result": ...}
         self.garage_control: dict | None = None  # garage mode (K1): {"say": fn(text)} while connected
+        self._listen_until = 0.0              # monotonic: the app hears the room until then
+        self._ptt_proc = None                # aplay for push-to-talk, open while audio keeps coming
+        self._ptt_last = 0.0
+        self._ptt_lock = threading.Lock()
+        self._drive_seq = -1
 
     # ---------------------------------------------------------------- lifecycle
     @classmethod
@@ -140,7 +157,7 @@ class Remote:
             return
         log.info("MQTT connected")
         client.subscribe([("willie/cmd/#", 1), ("willie/tool/call", 1), ("willie/hub/result", 1),
-                          ("willie/activity", 1), ("willie/improve/decision", 1)])
+                          ("willie/activity", 1), ("willie/improve/decision", 1), ("willie/ptt/audio", 0)])
         self._publish("willie/online", "1", retain=True, qos=1)
         try:
             from willie.voice import tools
@@ -158,6 +175,9 @@ class Remote:
             log.exception("could not publish tools/persona")
 
     def _on_message(self, client, userdata, message):
+        if message.topic == "willie/ptt/audio":      # raw PCM, not JSON
+            self._ptt_audio(message.payload)
+            return
         try:
             data = json.loads(message.payload or b"{}")
         except ValueError:
@@ -174,18 +194,27 @@ class Remote:
         if message.topic == "willie/improve/decision":
             threading.Thread(target=self._guard, args=(self._decision, data), daemon=True).start()
             return
+        if message.topic in ("willie/cmd/look", "willie/cmd/drive_arm", "willie/cmd/drive") and "t" in data:
+            data["_rx"] = time.time()
+            age = (data["_rx"] - float(data["t"])) * 1000      # hub clock to this clock (both NTP): delivery + queueing
+            if age > 150 or message.topic == "willie/cmd/drive_arm":
+                log.info("%s arrived %.0f ms after the hub sent it", message.topic.rsplit("/", 1)[1], age)
         handler = {
             "willie/cmd/say": self._say,
             "willie/cmd/photo": self._photo,
             "willie/cmd/video": self._video,
             "willie/cmd/mode": self._mode,
             "willie/cmd/power": self._power,
+            "willie/cmd/look": self._look,
+            "willie/cmd/drive_arm": self._drive_arm,
+            "willie/cmd/drive": self._drive,
+            "willie/cmd/listen": self._listen,
             "willie/tool/call": self._tool,
         }.get(message.topic)
         if handler is None:
             return
-        if message.topic == "willie/cmd/video":
-            handler(data)                            # cheap, keeps the lease exact
+        if message.topic in ("willie/cmd/video", "willie/cmd/listen", "willie/cmd/drive"):
+            handler(data)                            # cheap, keeps the lease / the 10 Hz rhythm exact
         else:
             threading.Thread(target=self._guard, args=(handler, data), daemon=True).start()
 
@@ -354,7 +383,7 @@ class Remote:
                 self.face.indicators(watched=True, camera=True)
             self._publish("willie/event/video", {"on": True})
             proc = subprocess.Popen(
-                ["rpicam-vid", "--nopreview", "-t", "0", "--codec", "mjpeg", "-q", str(VIDEO_QUALITY),
+                ["rpicam-vid", "--nopreview", "-t", "0", *camera.mode_args(), "--codec", "mjpeg", "-q", str(VIDEO_QUALITY),
                  "--width", str(w), "--height", str(h), "--framerate", str(VIDEO_FPS),
                  "--autofocus-mode", "continuous", "--flush", "-o", "-"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
@@ -371,7 +400,7 @@ class Remote:
                         if start < 0 or end < 0:
                             break
                         frame, buffer = buffer[start:end + 2], buffer[end + 2:]
-                        self._latest_frame = frame
+                        self._latest_frame = frame             # raw: the app turns it (camera_rotation in the state)
                         self._publish("willie/video", frame)
                     if len(buffer) > 2_000_000:
                         buffer = b""
@@ -383,13 +412,134 @@ class Remote:
                     proc.kill()
                 self._latest_frame = None
                 if self.face:
-                    self.face.indicators(watched=False, camera=False)
+                    self.face.indicators(watched=self._listening() or self._ptt_open(), camera=False)
                 self._publish("willie/event/video", {"on": False})
                 log.info("live view off")
 
+    # ---------------------------------------------------------------- camera head, driving
+    def _look(self, data: dict) -> None:
+        from willie import control
+        pan = max(-95.0, min(95.0, float(data.get("pan", 0))))
+        tilt = max(-90.0, min(90.0, float(data.get("tilt", 0))))
+        control.request("look", timeout=1.0, pan=pan, tilt=tilt)
+
+    def _drive_arm(self, data: dict) -> None:
+        from willie import control
+        on = bool(data.get("on"))
+        r = control.request("manual_arm", timeout=1.0, on=on)
+        if "_rx" in data:
+            log.info("drive_arm handled in %.0f ms (waited for a thread + the core)", (time.time() - data["_rx"]) * 1000)
+        self._publish("willie/event/drive", {"ok": True, "armed": bool(r.get("armed")), "seconds_left": r.get("seconds_left", 0)})
+
+    def _drive(self, data: dict) -> None:
+        """10 Hz from the app. Goes through control.py, so Safety.gate() (speed limits, obstacle slow-down, cliff
+        and tilt stops) and the 200 ms firmware watchdog apply: when the app stops sending, the wheels stop."""
+        from willie import control
+        seq = int(data.get("seq", 0))
+        if 0 <= seq < self._drive_seq and self._drive_seq - seq < 1000:
+            return                                   # an old command that arrived late
+        self._drive_seq = seq
+        r = control.request("manual_drive", timeout=0.5, v=float(data.get("v", 0)), w=float(data.get("w", 0)))
+        if r.get("ok") is False or r.get("fout"):
+            self._publish("willie/event/drive", {"ok": False, "why": r.get("reden") or r.get("fout")})
+
+    # ---------------------------------------------------------------- listening, push-to-talk
+    def _listening(self) -> bool:
+        return time.monotonic() < self._listen_until
+
+    def _ptt_open(self) -> bool:
+        return self._ptt_proc is not None
+
+    def _refresh_watched(self) -> None:
+        if self.face:
+            self.face.indicators(watched=self._video_running() or self._listening() or self._ptt_open())
+
+    def _listen(self, data: dict) -> None:
+        """Hear the room through his mics (the wake word / conversation loop tees its chunks into _mic_tap). He
+        shows the 'watched' face the whole time, like the live view (D17)."""
+        from willie.audio import mic
+        if not data.get("on"):
+            self._listen_until = 0.0
+            if mic.TAP == self._mic_tap:
+                mic.TAP = None
+            self._refresh_watched()
+            return
+        if _asleep():
+            self._publish("willie/event/listen", {"ok": False, "why": "he is asleep (mic off)"})
+            return
+        was = self._listening()
+        self._listen_until = time.monotonic() + LISTEN_LEASE_S
+        mic.TAP = self._mic_tap
+        if not was:
+            log.info("listening (phone) on")
+            self._refresh_watched()
+            self._publish("willie/event/listen", {"ok": True, "on": True})
+
+    def _mic_tap(self, chunk: bytes) -> None:
+        if not self._listening():
+            from willie.audio import mic
+            if mic.TAP == self._mic_tap:
+                mic.TAP = None
+            self._refresh_watched()
+            log.info("listening (phone) off")
+            self._publish("willie/event/listen", {"ok": True, "on": False})
+            return
+        if self._ptt_open():
+            return                                   # the one who talks does not hear himself
+        self._publish("willie/audio", chunk)
+
+    def _ptt_audio(self, pcm: bytes) -> None:
+        """Push-to-talk: raw 16 kHz mono S16 from the app, played on his speaker as it comes. Refused while he
+        is in a conversation (the speaker is his) or asleep. The card is mute at 16 kHz, so it is repeated up to
+        48 kHz."""
+        if self.session_active or _asleep() or not pcm:
+            return
+        import numpy as np
+        from willie.audio import speech
+        samples = np.frombuffer(pcm[: len(pcm) // 2 * 2], "<i2")
+        loud = speech.scale(samples.repeat(speech.CARD_RATE // AUDIO_RATE).astype("<i2").tobytes())
+        from willie.voice import wake
+        wake.HOLD_UNTIL = time.monotonic() + PTT_IDLE_S + 1.0     # his own speaker must not wake him
+        with self._ptt_lock:
+            if self._ptt_proc is None:
+                self._ptt_proc = subprocess.Popen(
+                    ["aplay", "-q", "-D", speech.DEVICE, "-f", "S16_LE", "-r", str(speech.CARD_RATE), "-c", "1",
+                     "-t", "raw"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log.info("push-to-talk on")
+                self._refresh_watched()
+                self._publish("willie/event/ptt", {"ok": True, "on": True})
+                threading.Thread(target=self._ptt_watch, name="willie-ptt", daemon=True).start()
+            self._ptt_last = time.monotonic()
+            try:
+                self._ptt_proc.stdin.write(loud)
+                self._ptt_proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                self._ptt_close()
+
+    def _ptt_watch(self) -> None:
+        while self._ptt_open() and not self._stop.is_set():
+            if time.monotonic() - self._ptt_last > PTT_IDLE_S:
+                with self._ptt_lock:
+                    self._ptt_close()
+                return
+            time.sleep(0.2)
+
+    def _ptt_close(self) -> None:
+        proc, self._ptt_proc = self._ptt_proc, None
+        if proc is not None:
+            try:
+                proc.stdin.close()
+                proc.wait(2)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.kill()
+            log.info("push-to-talk off")
+            self._refresh_watched()
+            self._publish("willie/event/ptt", {"ok": True, "on": False})
+
     def latest_frame(self) -> bytes | None:
         """For kijk(): while live view holds the camera, look at the stream instead."""
-        return self._latest_frame if self._video_running() else None
+        frame = self._latest_frame if self._video_running() else None
+        return camera.rotate_jpeg(frame) if frame else None     # one frame, so the Pi turns it for the model
 
     def hub_call(self, name: str, args: dict, timeout: float = 20.0) -> dict:
         """Run a server-side tool (reminders, H4) from the voice session; blocks up to `timeout`."""
@@ -467,6 +617,7 @@ class Remote:
         return {"time": time.time(), "face": face, "mode": mode, "garage": garage, "mission": mission,
                 "pi": self._health, "core": core,
                 "talking": self.session_active, "video": self._video_running(),
+                "camera_rotation": camera.rotation(),
                 "voice_rss_mb": _rss_mb()}
 
 

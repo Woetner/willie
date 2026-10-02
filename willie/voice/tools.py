@@ -21,6 +21,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from willie import camera
 from willie.brain import memory
 
 REPO = Path(__file__).resolve().parents[2]
@@ -299,6 +300,7 @@ def kijk(waar_op_letten: str = "") -> dict:
                 image.write_bytes(frame)
             else:
                 capture(image, quiet=True)
+                camera.rotate_file(image)       # a live-view frame is already upright
             if LOOK_HOOK:
                 try:
                     LOOK_HOOK(image)
