@@ -4,6 +4,7 @@ from __future__ import annotations
 import array
 import atexit
 import fcntl
+import json
 import logging
 import math
 import os
@@ -234,7 +235,7 @@ class Face:
     def _run(self):
         buffers = [d.back_buffer() for d in self.displays]
         renderers = [Renderer() for _ in self.displays]
-        next_config = 0.0
+        next_config = next_battery = 0.0
         try:
             while not self._stop.is_set():
                 now = self.clock()
@@ -245,6 +246,9 @@ class Face:
                     except Exception as exc:
                         log.warning("face settings unchanged: %s", exc)
                     next_config = now+2
+                if now >= next_battery:
+                    self.indicators(battery=self._read_battery())
+                    next_battery = now+5
                 if self.touch:
                     try:
                         self.touch.calibration = self.settings
@@ -275,6 +279,18 @@ class Face:
             self.failure = exc
             log.exception("face animation stopped")
             self._stop.set()
+
+    @staticmethod
+    def _read_battery():
+        """Battery % from the core's state.json (willie/power.py); None when stale or unknown."""
+        try:
+            from willie.log import DATA_DIR
+            state = json.loads((DATA_DIR / "state.json").read_text())
+            if time.time()-state["time"] > 10:
+                return None
+            return state["body"]["battery_pct"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     def set_state(self, state, text="", *, code=""):
         state = state.replace(" ", "_")
