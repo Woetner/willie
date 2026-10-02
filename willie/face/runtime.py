@@ -247,7 +247,7 @@ class Face:
                         log.warning("face settings unchanged: %s", exc)
                     next_config = now+2
                 if now >= next_battery:
-                    self.indicators(battery=self._read_battery())
+                    self.indicators(**self._read_battery())
                     next_battery = now+5
                 if self.touch:
                     try:
@@ -282,15 +282,16 @@ class Face:
 
     @staticmethod
     def _read_battery():
-        """Battery % from the core's state.json (willie/power.py); None when stale or unknown."""
+        """Battery % and charging from the core's state.json (willie/power.py); % is None when stale or unknown."""
         try:
             from willie.log import DATA_DIR
             state = json.loads((DATA_DIR / "state.json").read_text())
             if time.time()-state["time"] > 10:
-                return None
-            return state["body"]["battery_pct"]
+                return {"battery": None, "charging": False}
+            body = state["body"]
+            return {"battery": body["battery_pct"], "charging": bool(body.get("charging"))}
         except (OSError, ValueError, KeyError, TypeError):
-            return None
+            return {"battery": None, "charging": False}
 
     def set_state(self, state, text="", *, code=""):
         state = state.replace(" ", "_")

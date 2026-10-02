@@ -47,3 +47,23 @@ def test_power_is_smoothed_and_energy_counts():
 def test_tiny_load_has_no_runtime():
     est = PowerEstimator()
     assert est.update(12000, 10, 0.0)["runtime_min"] is None       # 0.12 W: meaningless
+
+
+def test_jump_of_30_points_means_charging_and_back_means_unplugged():
+    est = PowerEstimator()
+    for t in range(0, 60, 2):
+        assert est.update(11300, 300, float(t))["charging"] is False   # settled around 30 %
+    out = est.update(12500, 300, 60.0)                                 # charger lifts the pack
+    assert out["charging"] is True
+    for t in range(62, 200, 2):                                        # smoothing catches up, stays latched
+        out = est.update(12500, 300, float(t))
+    assert out["charging"] is True
+    assert est.update(11300, 300, 200.0)["charging"] is False          # unplugged: big drop
+
+
+def test_slow_drift_is_not_charging_and_no_pack_clears_it():
+    est = PowerEstimator()
+    for i, t in enumerate(range(0, 400, 2)):
+        assert est.update(11000 + i * 5, 300, float(t))["charging"] is False
+    est.update(12500, 300, 400.0)
+    assert est.update(0, 0, 402.0)["charging"] is False
