@@ -49,13 +49,16 @@ class Robot:
             if FACE:
                 FACE.indicators(camera=True)
             try:
-                subprocess.run(["rpicam-still", "--nopreview", "--autofocus-on-capture", "--timeout", "700",
-                                "--width", "1024", "--height", "768", "--quality", "85", "--output", str(path)],
+                subprocess.run(["rpicam-still", "--nopreview", *_camera_mode(), "--autofocus-on-capture", "--timeout", "700",
+                                "--width", "1024", "--height", "576", "--quality", "85", "--output", str(path)],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
             finally:
                 if FACE:
                     FACE.indicators(camera=False)
-            return path.read_bytes() if path.exists() and path.stat().st_size else None
+            if not (path.exists() and path.stat().st_size):
+                return None
+            from willie import camera
+            return camera.rotate_jpeg(path.read_bytes())
 
     def hub(self, name: str, args: dict, timeout: float = 30.0) -> dict:
         if HUB_CALL is None:
@@ -188,3 +191,8 @@ def status() -> dict:
         return {"missie": None}
     return {"missie": _current.kind, "loopt": _current.running, "voortgang": _current.progress,
             "resultaat": _current.result, "sinds_s": round(time.time() - _current.started)}
+
+
+def _camera_mode() -> list[str]:
+    from willie import camera
+    return camera.mode_args()

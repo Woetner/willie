@@ -74,15 +74,24 @@ def sharpness(jpeg: Path) -> float:
     return float(lap.var())
 
 
+def _mode() -> list[str]:
+    """The wide sensor mode (willie/camera.py), when this runs inside the robot's repo."""
+    try:
+        from willie import camera
+        return camera.mode_args()
+    except Exception:
+        return []
+
+
 def capture(path: Path, quiet: bool = False) -> None:
     if not shutil.which("rpicam-still"):
         raise RuntimeError("rpicam-still is not installed; run the camera setup first.")
     with tempfile.TemporaryDirectory(prefix="willie-burst-") as tmp:
         command = [
-            "rpicam-still", "--nopreview", "--zsl",
+            "rpicam-still", "--nopreview", *_mode(), "--zsl",
             "--autofocus-mode", "continuous", "--autofocus-range", "full",
             "--exposure", "sport", "--denoise", "cdn_hq",
-            "--width", "1024", "--height", "768", "--encoding", "jpg", "--quality", "90",
+            "--width", "1024", "--height", "576", "--encoding", "jpg", "--quality", "90",
             "--timeout", str(BURST_MS), "--timelapse", str(BURST_EVERY_MS),
             "--output", str(Path(tmp) / "frame_%02d.jpg"),
         ]
@@ -100,6 +109,7 @@ def _capture_single(path: Path, quiet: bool = False) -> None:
     command = [
         "rpicam-still",
         "--nopreview",
+        *_mode(),
         # The Camera Module 3 has autofocus. Without these it shoots at whatever
         # the lens happened to be at, which is blurry for workshop close-ups.
         "--autofocus-on-capture",
@@ -108,7 +118,7 @@ def _capture_single(path: Path, quiet: bool = False) -> None:
         "--width",
         "1024",
         "--height",
-        "768",
+        "576",
         "--encoding",
         "jpg",
         "--quality",

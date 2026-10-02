@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 from willie import __version__
+from willie import camera
 from willie import log as wlog
 from willie.config import Config, ConfigError
 
@@ -91,15 +92,17 @@ def throttled() -> str | None:
 def _mjpeg():
     """rpicam-vid MJPEG -> multipart frames. Frames are SOI (FFD8) ... EOI (FFD9), as in remote.py."""
     proc = subprocess.Popen(
-        ["rpicam-vid", "--nopreview", "-t", "0", "--codec", "mjpeg", "-q", "50", "--width", "640",
-         "--height", "480", "--framerate", "10", "--autofocus-mode", "continuous", "--flush", "-o", "-"],
+        ["rpicam-vid", "--nopreview", "-t", "0", *camera.mode_args(), "--codec", "mjpeg", "-q", "50", "--width", "640",
+         "--height", "360", "--framerate", "10", "--autofocus-mode", "continuous", "--flush", "-o", "-"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
     buffer = b""
+    turn = camera.rotation()
     try:
         while chunk := proc.stdout.read(65536):
             buffer += chunk
             while (start := buffer.find(b"\xff\xd8")) >= 0 and (end := buffer.find(b"\xff\xd9", start + 2)) >= 0:
                 frame, buffer = buffer[start:end + 2], buffer[end + 2:]
+                frame = camera.rotate_jpeg(frame, turn)
                 yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n%s\r\n" % (len(frame), frame)
             if len(buffer) > 2_000_000:
                 buffer = b""

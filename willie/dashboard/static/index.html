@@ -71,11 +71,16 @@
       <button class="btn" id="camArm">Arm driving (10 min)</button>
       <span id="camArmText" style="color:var(--dim);font-size:12px"></span>
     </div>
-    <div style="position:relative;max-width:640px">
-      <img id="camImg" alt="camera" style="width:100%;aspect-ratio:4/3;background:#0b0d10;border:1px solid var(--line);border-radius:10px;display:block">
+    <div style="display:flex;align-items:center;gap:10px;margin:2px 0 10px;max-width:640px">
+      <label for="camSpeed" style="font-size:13px;color:var(--dim)">Top speed</label>
+      <input type="range" id="camSpeed" min="0.05" max="0.6" step="0.01" style="flex:1">
+      <b id="camSpeedVal" style="min-width:72px;text-align:right;font-variant-numeric:tabular-nums">…</b>
+    </div>
+    <div id="camBox" style="position:relative;max-width:640px">
+      <img id="camImg" alt="camera" style="width:100%;aspect-ratio:16/9;object-fit:contain;background:#0b0d10;border:1px solid var(--line);border-radius:10px;display:block">
       <div id="camKeys" style="position:absolute;right:10px;bottom:10px;font:600 13px ui-monospace,Menlo,monospace;background:#000a;padding:6px 10px;border-radius:6px">idle</div>
     </div>
-    <p style="color:var(--dim);font-size:12px">Hold <b>W A S D</b> (or the arrow keys) to drive: W/S forward/back, A/D turn left/right. Hold <b>Shift</b> for full speed, otherwise half. Release = stop. Obstacle slow-down, cliff and bumper stops stay active.</p>
+    <p style="color:var(--dim);font-size:12px">Hold <b>W A S D</b> (or the arrow keys) to drive: W/S forward/back, A/D turn left/right. Hold <b>Shift</b> for full speed, otherwise half. <b>Top speed</b> is the same setting as drive.max_speed in Settings. Release = stop. Obstacle slow-down, cliff and bumper stops stay active.</p>
     <div class="grid" id="camTiles"></div>
   </section>
   <section id="tab-skills" class="hidden">
@@ -121,6 +126,7 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
   document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "tab-" + tab));
   refresh();
+  if (tab === "camera") camSpeedLoad();
 });
 
 async function api(path, opts) {
@@ -397,6 +403,29 @@ const camKey = (e, down) => {
 document.addEventListener("keydown", e => camKey(e, true));
 document.addEventListener("keyup", e => camKey(e, false));
 window.addEventListener("blur", () => { camKeys.clear(); camShow(); });
+// Top speed slider = drive.max_speed (the Settings tab edits the same value). The WASD keys send fractions of it.
+const camSpeedShow = v => { $("#camSpeedVal").textContent = Number(v).toFixed(2) + " m/s"; };
+async function camSpeedLoad() {
+  const cfg = await api("/api/config").catch(() => null);
+  if (!cfg) return;
+  $("#camSpeed").value = cfg.values.drive.max_speed;
+  const portrait = Number(cfg.values.camera.rotation) % 180 !== 0;   // camera.rotation 90/270 = upright picture is 9:16
+  $("#camBox").style.maxWidth = portrait ? "300px" : "640px";
+  $("#camImg").style.aspectRatio = portrait ? "9/16" : "16/9";
+  camSpeedShow(cfg.values.drive.max_speed);
+}
+let camSpeedTimer = null;
+$("#camSpeed").addEventListener("input", e => {
+  camSpeedShow(e.target.value);
+  clearTimeout(camSpeedTimer);
+  camSpeedTimer = setTimeout(async () => {          // save when the slider rests for a moment
+    try {
+      await api("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" },
+                                 body: JSON.stringify({ drive: { max_speed: Number(e.target.value) } }) });
+      saved = null;                                   // the settings tab re-reads the value
+    } catch (err) { $("#camSpeedVal").textContent = "not saved"; }
+  }, 300);
+});
 $("#camArm").onclick = async () => { await camPost("/api/manual/arm", { on: !camArmed }); camKeys.clear(); camPoll(); };
 setInterval(camLoop, 100);
 setInterval(camPoll, 500);

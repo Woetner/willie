@@ -8,3 +8,4 @@ pymicro-wakeword>=2.5  # wake word "Hey Willie" (D2): 32 MB RSS, 5 % of a core, 
 numpy>=1.26          # mic decimation (48 -> 16 kHz FIR) and cleaning; already pulled in by pymicro-wakeword
 websockets>=13       # Gemini Live bench prototype only (~6 MB RSS while a session is open)
 paho-mqtt>=2.0       # phone-app bridge in the voice process (S6): ~3 MB RSS, own network thread
+pillow>=10.0       # camera.rotation: turn each JPEG (rpicam only rotates 0/180)
