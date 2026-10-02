@@ -59,7 +59,7 @@ def test_search_finds_on_a_later_stop():
     robot = FakeRobot({"missie_kijk": kijk, "waar_is": {"laatst": [{"wanneer": "gisteren", "waar": "keuken"}]}})
     result = Search(robot, naam="de kat").run()
     assert result["gevonden"] and "keuken" in result["laatst_gezien"]
-    assert ("move", {"m": 0.8}) in robot.calls and "missie_melding" in robot.hub_calls
+    assert ("move", {"m": 1.0}) in robot.calls and "missie_melding" in robot.hub_calls
     assert robot.said == ["Gevonden: de kat!"]
 
 
