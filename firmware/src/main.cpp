@@ -45,10 +45,10 @@ static void sendHello() {
 }
 
 static void sendStat() {
-  sendf("stat pcf %d mpu %d ina %d tof %d%d%d%d%d enc %d estop %02X wd_trips %lu bad_lines %lu i2c_err %lu tofwhy %d%d%d%d%d",
+  sendf("stat pcf %d mpu %d ina %d tof %d%d%d%d%d enc %d estop %02X wd_trips %lu bad_lines %lu i2c_err %lu tofwhy %d%d%d%d%d i2crec %lu",
         S.pcfOk, S.mpuOk, S.inaOk, S.tofOk[0], S.tofOk[1], S.tofOk[2], S.tofOk[3], S.tofOk[4], encOk, estop,
         (unsigned long)wdTrips, (unsigned long)badLines, (unsigned long)S.i2cErrors,
-        tofWhy[0], tofWhy[1], tofWhy[2], tofWhy[3], tofWhy[4]);
+        tofWhy[0], tofWhy[1], tofWhy[2], tofWhy[3], tofWhy[4], (unsigned long)S.i2cRecoveries);
 }
 
 // ---------------------------------------------------------------- safety events
@@ -388,6 +388,7 @@ void loop() {
   }
 
   if (S.pcfOk && tPcf.due(now) && pcfRead()) checkIo();
+  i2cWatch();
   mpuRetry();
   tofRetry();
   if (S.mpuOk && tImu.due(now)) { mpuUpdate(); checkTilt(); }

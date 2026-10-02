@@ -36,11 +36,13 @@ static Setting SETTINGS[] = {
   {"pan_max",      90,    0,   95},
   {"tilt_min",     -30,   -90, 0},
   {"tilt_max",     45,    0,   90},
-  {"servo_dps",    180,   10,  600},           // slew rate, deg/s
+  {"servo_dps",    180,   10,  600},           // top speed, deg/s
+  {"servo_smooth", 9,     0,   40},            // rad/s of the smoothing spring (higher = snappier, lower = softer); 0 = constant-speed slew
   {"servo_idle",   800,   0,   10000},         // ms at target before the pulses stop (0 = never)
   {"cliff_on",     1,     0,   1},             // 0: the down-looking ToF never stop the wheels (bench with the wheels in the air)
   {"cliff_mm",     80,    30,  400},           // down-looking ToF reads more than this = no floor = cliff
   {"cliff_ms",     250,   0,   2000},          // "no floor" must last this long before it is a cliff (a dropout or a dip of the nose is not)
+  {"cliff_inv",    0,     0,   1},             // 1: an invalid ToF answer (8190/8191) counts as "no floor" too; 0: only a valid far reading does
   {"tilt_stop",    25,    5,   60},            // deg from level = estop
   {"need_io",      0,     0,   1},             // 1: refuse to drive without cliff/bumper (PCF8574) — set in F1
   {"shunt_mohm",   100,   1,   1000},          // INA219 shunt resistor

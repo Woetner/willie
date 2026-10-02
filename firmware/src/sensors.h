@@ -22,7 +22,7 @@ struct SensorState {
   float tiltDeg = 0;                           // angle between body Z and gravity
   uint16_t tof[N_TOF] = {0, 0, 0, 0, 0};       // mm; 0 = no reading yet, 8190+ = nothing in range
   int32_t mv = 0, ma = 0;                      // pack volts / current from the INA219
-  uint32_t i2cErrors = 0;
+  uint32_t i2cErrors = 0, i2cRecoveries = 0;
 };
 static SensorState S;
 static uint8_t pcfOut = 0xFF;                  // PCF8574 output latch; 1 = input / released
@@ -78,15 +78,28 @@ static bool cliffTof(int i) {
   return cfg("cliff_on") > 0.5 && S.tofOk[i] && S.tof[i] && S.tof[i] > cfg("cliff_mm");
 }
 // "No floor" must last cliff_ms before it counts: the down-looking VL53L0X gives short dropouts (invalid 8190/8191)
-// when the floor is dark or very close, the nose dips under braking, or the motors add noise. Real edges stay
-// "far" for as long as the sensor passes over them. Checked every 2 ms from checkIo().
+// when the floor is dark or very close, the nose dips under braking, or the motors add noise, and a sensor hit by a
+// bus error can stay stuck on "invalid". So at half the time the sensor is restarted once (tofReset): a stuck one
+// reads the floor again and nothing locks, a real edge is still "far" after the restart and locks at cliff_ms.
+// Checked every 2 ms from checkIo().
+static bool tofReset(int i);
 static bool cliffDebounced(int side) {
   static uint32_t since[2] = {0, 0};
-  bool raw = cliffTof(side ? TOF_CR : TOF_CL);
-  if (!raw) { since[side] = 0; return false; }
+  static bool healed[2] = {false, false};
+  int idx = side ? TOF_CR : TOF_CL;
+  if (cfg("cliff_on") < 0.5f || !S.tofOk[idx]) { since[side] = 0; healed[side] = false; return false; }
   uint32_t now = millis();
-  if (!since[side]) since[side] = now;
-  return now - since[side] >= (uint32_t)cfg("cliff_ms");
+  // 0 = no reading yet (just after a restart). 8190/8191 = the sensor could not range (floor too close, dark, noise):
+  // unknown unless cliff_inv says it counts as no floor (a real edge on a dark floor can answer that too).
+  bool valid = S.tof[idx] > 0 && (S.tof[idx] < 8190 || cfg("cliff_inv") > 0.5f);
+  if (valid) {
+    if (S.tof[idx] <= cfg("cliff_mm")) { since[side] = 0; healed[side] = false; return false; }   // floor seen
+    if (!since[side]) since[side] = now;
+  } else if (!since[side]) {
+    return false;                                       // unknown and no episode running
+  }
+  if (!healed[side] && now - since[side] >= (uint32_t)cfg("cliff_ms") / 2) { healed[side] = true; tofReset(idx); }
+  return valid && now - since[side] >= (uint32_t)cfg("cliff_ms");
 }
 static bool cliffL() { return cliffDebounced(0); }
 static bool cliffR() { return cliffDebounced(1); }
@@ -238,8 +251,27 @@ static void tofRetry() {
   }
 }
 
+// Restart one running sensor: reset it with its XSHUT and run the normal start-up. Dropped sensors stay in reset so
+// nothing else answers on 0x29. About 25 ms.
+static bool tofReset(int i) {
+  for (int j = 0; j < N_TOF; j++) if (j != i && !S.tofOk[j]) pcfSetBit(XSHUT_TOF[j], false);
+  pcfSetBit(XSHUT_TOF[i], false);
+  delay(5);
+  pcfSetBit(XSHUT_TOF[i], true);
+  delay(10);
+  S.tof[i] = 0;
+  bool ok = tofStart(i);
+  S.tofOk[i] = ok;
+  if (ok) { tofSeen[i] = millis(); tofBad[i] = 0; }
+  else pcfSetBit(XSHUT_TOF[i], false);
+  return ok;
+}
+
 // I2C pins in use and how many addresses answered. If nothing answers on 21/22,
 // try the wires the other way round (SDA/SCL swapped is harmless, just silent).
+// 50 kHz: 8 devices on 10-30 cm jumper wires gave truncated MPU reads at 400 kHz (1 Oct, then 100 kHz); lowered
+// again on 2 Oct while the motors (no suppression capacitors yet) were corrupting transfers.
+static const uint32_t I2C_HZ = 50000;
 static uint8_t i2cSda = PIN_SDA, i2cScl = PIN_SCL, i2cFound = 0;
 
 static uint8_t i2cScan() {
@@ -250,10 +282,38 @@ static uint8_t i2cScan() {
 
 static void i2cStart(uint8_t sda, uint8_t scl) {
   Wire.end();
-  Wire.begin(sda, scl, 100000);              // 100 kHz: 8 devices on 10-30 cm jumper wires gave truncated MPU reads at 400 kHz (1 Oct)
+  Wire.begin(sda, scl, I2C_HZ);
   Wire.setTimeOut(5);                          // ms: a stuck bus must not stall loop() for long
   i2cSda = sda; i2cScl = scl;
   i2cFound = i2cScan();
+}
+
+// A transfer corrupted by noise can leave a sensor holding SDA low mid-byte, and it stays stuck until power-cycled.
+// Standard recovery: stop the bus, clock SCL up to 9 times so the slave finishes its byte, send a STOP, restart.
+static void i2cRecover() {
+  Wire.end();
+  pinMode(i2cScl, OUTPUT_OPEN_DRAIN);
+  pinMode(i2cSda, OUTPUT_OPEN_DRAIN);
+  digitalWrite(i2cSda, HIGH);
+  for (int k = 0; k < 9; k++) {
+    digitalWrite(i2cScl, LOW);  delayMicroseconds(10);
+    digitalWrite(i2cScl, HIGH); delayMicroseconds(10);
+  }
+  digitalWrite(i2cSda, LOW);  delayMicroseconds(10);   // STOP: SDA rises while SCL is high
+  digitalWrite(i2cScl, HIGH); delayMicroseconds(10);
+  digitalWrite(i2cSda, HIGH); delayMicroseconds(10);
+  Wire.begin(i2cSda, i2cScl, I2C_HZ);
+  Wire.setTimeOut(5);
+  S.i2cRecoveries++;
+}
+// 6 or more failed transfers within 200 ms = a stuck bus.
+static void i2cWatch() {
+  static uint32_t lastMs = 0, errAt = 0;
+  uint32_t now = millis();
+  if (now - lastMs < 200) return;
+  lastMs = now;
+  if (S.i2cErrors - errAt >= 6) i2cRecover();
+  errAt = S.i2cErrors;
 }
 
 static void sensorsInit() {

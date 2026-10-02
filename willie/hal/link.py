@@ -50,9 +50,9 @@ def parse_state(words: list[str]) -> dict:
 MCU_SETTINGS = {
     "pwm_cap": "drive.pwm_cap", "wheel_d": "drive.wheel_diameter", "track": "drive.track_width",
     "cpr": "drive.encoder_cpr", "wd_ms": "safety.watchdog_ms", "tilt_stop": "safety.tilt_stop_deg",
-    "cliff_on": "safety.cliff_stop", "cliff_mm": "safety.cliff_mm", "cliff_ms": "safety.cliff_ms", "pid_on": "drive.pid_on", "kp": "drive.pid_kp", "ki": "drive.pid_ki", "kd": "drive.pid_kd",
+    "cliff_on": "safety.cliff_stop", "cliff_mm": "safety.cliff_mm", "cliff_ms": "safety.cliff_ms", "cliff_inv": "safety.cliff_invalid", "pid_on": "drive.pid_on", "kp": "drive.pid_kp", "ki": "drive.pid_ki", "kd": "drive.pid_kd",
     "pan_min": "head.pan_min_deg", "pan_max": "head.pan_max_deg", "tilt_min": "head.tilt_min_deg",
-    "tilt_max": "head.tilt_max_deg", "servo_dps": "head.speed_dps",
+    "tilt_max": "head.tilt_max_deg", "servo_dps": "head.speed_dps", "servo_smooth": "head.smooth",
     "pan_c": ("head.pan_trim_us", 1500), "tilt_c": ("head.tilt_trim_us", 1500),
 }
 
