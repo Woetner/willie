@@ -96,6 +96,8 @@ class Remote:
         self._ptt_last = 0.0
         self._ptt_lock = threading.Lock()
         self._drive_seq = -1
+        self._local_listeners: list = []     # sockets of the Pi's own dashboard listening (listen.sock)
+        self._local_servers: list = []
 
     # ---------------------------------------------------------------- lifecycle
     @classmethod
@@ -131,10 +133,17 @@ class Remote:
         client.loop_start()
         threading.Thread(target=self._state_loop, name="willie-remote-state", daemon=True).start()
         log.info("remote bridge -> %s:%d", self.host, self.port)
+        self._serve_local()
 
     def close(self) -> None:
         self._stop.set()
         self._video_until = 0
+        for server, path in self._local_servers:
+            try:
+                server.close()
+                path.unlink()
+            except OSError:
+                pass
         if self.client:
             try:
                 self.client.publish("willie/online", "0", qos=1, retain=True).wait_for_publish(1)
@@ -443,9 +452,76 @@ class Remote:
         if r.get("ok") is False or r.get("fout"):
             self._publish("willie/event/drive", {"ok": False, "why": r.get("reden") or r.get("fout")})
 
+    # ---------------------------------------------------------------- the Pi's own dashboard (same machine)
+    # The dashboard is its own process, so it cannot reach the mic loop or the speaker. Two unix sockets next to the
+    # control socket: listen.sock streams the room as raw 16 kHz mono S16 to whoever connects, talk.sock takes raw
+    # 16 kHz mono S16 and plays it like willie/ptt/audio. Same rules: the face shows "watched", talking is refused in a
+    # conversation, the wake word is held off while it plays.
+    def _serve_local(self) -> None:
+        import socket as _socket
+        from willie import log as wlog
+        for name, loop in (("listen.sock", self._local_listen_loop), ("talk.sock", self._local_talk_loop)):
+            path = wlog.DATA_DIR / name
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            server.bind(str(path))
+            os.chmod(path, 0o660)
+            server.listen(2)
+            self._local_servers.append((server, path))
+            threading.Thread(target=loop, args=(server,), name=f"willie-{name}", daemon=True).start()
+
+    def _local_listen_loop(self, server) -> None:
+        from willie.audio import mic
+        while not self._stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            conn.settimeout(0.05)
+            self._local_listeners.append(conn)
+            mic.TAP = self._mic_tap
+            log.info("listening (dashboard) on")
+            self._refresh_watched()
+
+    def _local_drop(self, conn) -> None:
+        try:
+            self._local_listeners.remove(conn)
+            conn.close()
+        except (ValueError, OSError):
+            pass
+        log.info("listening (dashboard) off")
+        self._refresh_watched()
+
+    def _local_talk_loop(self, server) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._local_talk_client, args=(conn,), name="willie-talk", daemon=True).start()
+
+    def _local_talk_client(self, conn) -> None:
+        rest = b""
+        with conn:
+            while not self._stop.is_set():
+                try:
+                    data = conn.recv(4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                data = rest + data
+                cut = len(data) // 2 * 2
+                data, rest = data[:cut], data[cut:]
+                if data:
+                    self._ptt_audio(data)
+
     # ---------------------------------------------------------------- listening, push-to-talk
     def _listening(self) -> bool:
-        return time.monotonic() < self._listen_until
+        return time.monotonic() < self._listen_until or bool(self._local_listeners)
 
     def _ptt_open(self) -> bool:
         return self._ptt_proc is not None
@@ -486,7 +562,15 @@ class Remote:
             return
         if self._ptt_open():
             return                                   # the one who talks does not hear himself
-        self._publish("willie/audio", chunk)
+        if time.monotonic() < self._listen_until:
+            self._publish("willie/audio", chunk)
+        for conn in list(self._local_listeners):
+            try:
+                conn.send(chunk)
+            except TimeoutError:
+                pass                                 # a slow page: this chunk is lost, the next one is newer
+            except OSError:
+                self._local_drop(conn)
 
     def _ptt_audio(self, pcm: bytes) -> None:
         """Push-to-talk: raw 16 kHz mono S16 from the app, played on his speaker as it comes. Refused while he
@@ -501,6 +585,7 @@ class Remote:
         from willie.voice import wake
         wake.HOLD_UNTIL = time.monotonic() + PTT_IDLE_S + 1.0     # his own speaker must not wake him
         with self._ptt_lock:
+            self._ptt_last = time.monotonic()                # before the watcher exists, or it sees an old time and closes at once
             if self._ptt_proc is None:
                 self._ptt_proc = subprocess.Popen(
                     ["aplay", "-q", "-D", speech.DEVICE, "-f", "S16_LE", "-r", str(speech.CARD_RATE), "-c", "1",
@@ -509,7 +594,6 @@ class Remote:
                 self._refresh_watched()
                 self._publish("willie/event/ptt", {"ok": True, "on": True})
                 threading.Thread(target=self._ptt_watch, name="willie-ptt", daemon=True).start()
-            self._ptt_last = time.monotonic()
             try:
                 self._ptt_proc.stdin.write(loud)
                 self._ptt_proc.stdin.flush()
