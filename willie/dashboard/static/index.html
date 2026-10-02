@@ -17,6 +17,17 @@
   #conn { margin-left:auto; font-size:12px; color:var(--dim); }
   main { padding:16px; max-width:1000px; margin:0 auto; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px; }
+  .cam-ctl { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:18px; margin:12px 0; }
+  .cam-row { display:flex; align-items:center; gap:10px; margin:4px 0; }
+  .cam-row label { font-size:13px; color:var(--dim); min-width:64px; }
+  .cam-row input[type=range] { flex:1; }
+  .cam-row b { min-width:64px; text-align:right; font-variant-numeric:tabular-nums; }
+  .dpad { display:grid; grid-template-columns:repeat(3,52px); gap:6px; margin:4px 0 10px; }
+  .dpad button { width:52px; height:52px; font-size:18px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px; cursor:pointer; touch-action:none; user-select:none; }
+  .dpad button.on { background:#2f81f7; color:#fff; }
+  #talkBtn.on { background:#d1383d; color:#fff; }
+  .meter { height:6px; background:var(--panel); border-radius:3px; overflow:hidden; margin-top:8px; }
+  .meter span { display:block; height:100%; width:0; background:#2f81f7; transition:width .08s linear; }
   .tile { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
   .tile .k { color:var(--dim); font-size:12px; }
   .tile .v { font-size:22px; font-variant-numeric:tabular-nums; margin-top:2px; }
@@ -67,20 +78,43 @@
     <pre id="log"></pre>
   </section>
   <section id="tab-camera" class="hidden">
-    <div class="bar" style="position:static;border:0;padding-top:0">
-      <button class="btn" id="camArm">Arm driving (10 min)</button>
-      <span id="camArmText" style="color:var(--dim);font-size:12px"></span>
-    </div>
-    <div style="display:flex;align-items:center;gap:10px;margin:2px 0 10px;max-width:640px">
-      <label for="camSpeed" style="font-size:13px;color:var(--dim)">Top speed</label>
-      <input type="range" id="camSpeed" min="0.05" max="0.6" step="0.01" style="flex:1">
-      <b id="camSpeedVal" style="min-width:72px;text-align:right;font-variant-numeric:tabular-nums">…</b>
-    </div>
-    <div id="camBox" style="position:relative;max-width:640px">
-      <img id="camImg" alt="camera" style="width:100%;aspect-ratio:16/9;object-fit:contain;background:#0b0d10;border:1px solid var(--line);border-radius:10px;display:block">
+    <div id="camBox" style="position:relative;width:100%;background:#0b0d10;border:1px solid var(--line);border-radius:10px;overflow:hidden">
+      <img id="camImg" alt="camera" style="display:block;width:100%;height:80vh;object-fit:contain">
       <div id="camKeys" style="position:absolute;right:10px;bottom:10px;font:600 13px ui-monospace,Menlo,monospace;background:#000a;padding:6px 10px;border-radius:6px">idle</div>
     </div>
-    <p style="color:var(--dim);font-size:12px">Hold <b>W A S D</b> (or the arrow keys) to drive: W/S forward/back, A/D turn left/right. Hold <b>Shift</b> for full speed, otherwise half. <b>Top speed</b> is the same setting as drive.max_speed in Settings. Release = stop. Obstacle slow-down, cliff and bumper stops stay active.</p>
+    <div class="cam-ctl">
+      <div>
+        <div class="bar" style="position:static;border:0;padding:0 0 6px">
+          <button class="btn" id="camArm">Arm driving (10 min)</button>
+          <span id="camArmText" style="color:var(--dim);font-size:12px"></span>
+        </div>
+        <div class="dpad" id="drivePad">
+          <span></span><button data-k="w" aria-label="Forward">W</button><span></span>
+          <button data-k="a" aria-label="Turn left">A</button><button data-k="s" aria-label="Back">S</button><button data-k="d" aria-label="Turn right">D</button>
+        </div>
+        <div class="cam-row"><label for="camSpeed">Top speed</label><input type="range" id="camSpeed" min="0.05" max="0.6" step="0.01"><b id="camSpeedVal">…</b></div>
+      </div>
+      <div>
+        <div style="color:var(--dim);font-size:12px;padding:0 0 6px">Camera head (arrow keys)</div>
+        <div class="dpad" id="headPad">
+          <span></span><button data-k="up" aria-label="Look up">▲</button><span></span>
+          <button data-k="left" aria-label="Look left">◀</button><button data-k="centre" aria-label="Centre">●</button><button data-k="right" aria-label="Look right">▶</button>
+          <span></span><button data-k="down" aria-label="Look down">▼</button><span></span>
+        </div>
+        <div class="cam-row"><label for="panSlider">Pan</label><input type="range" id="panSlider" min="-90" max="90" step="1" value="0"><b id="panVal">0°</b></div>
+        <div class="cam-row"><label for="tiltSlider">Tilt</label><input type="range" id="tiltSlider" min="-30" max="45" step="1" value="0"><b id="tiltVal">0°</b></div>
+      </div>
+      <div>
+        <div style="color:var(--dim);font-size:12px;padding:0 0 6px">Ears and mouth</div>
+        <div class="bar" style="position:static;border:0;padding:0">
+          <button class="btn" id="listenBtn">Listen</button>
+          <button class="btn" id="talkBtn">Hold to talk (Space)</button>
+        </div>
+        <div class="meter"><span id="listenMeter"></span></div>
+        <div id="audioMsg" style="color:var(--dim);font-size:12px;margin-top:6px"></div>
+      </div>
+    </div>
+    <p style="color:var(--dim);font-size:12px">Drive with <b>W A S D</b> (Shift = full speed, otherwise half; arm first). <b>Arrow keys</b> move the camera head, <b>Space</b> talks. Release = stop. Obstacle slow-down, cliff and tilt stops stay active. While you listen or talk his face shows the <b>watched</b> look. Talking needs a secure page: open <b id="httpsLink">the HTTPS address</b> (port 8443, accept the certificate warning once) or use the WILL-E app; on plain HTTP the browser blocks the microphone.</p>
     <div class="grid" id="camTiles"></div>
   </section>
   <section id="tab-skills" class="hidden">
@@ -390,14 +424,16 @@ function camFeedOn(on) {                            // the stream (and rpicam-vi
   camFeed = on;
   $("#camImg").src = on ? "/api/camera/stream?t=" + Date.now() : "";
 }
+const CAM_KEYMAP = { w: "w", a: "a", s: "s", d: "d", arrowup: "up", arrowdown: "down", arrowleft: "left", arrowright: "right" };
 const camKey = (e, down) => {
   if (tab !== "camera" || e.target.matches("input,select,textarea")) return;
-  const k = e.key.toLowerCase(), map = { arrowup: "w", arrowdown: "s", arrowleft: "a", arrowright: "d" };
-  const key = map[k] || k;
-  if (key === "shift" || "wasd".includes(key) && key.length === 1) {
+  const k = e.key.toLowerCase();
+  if (k === " ") { e.preventDefault(); if (!e.repeat) down ? camTalkStart() : camTalkStop(); return; }
+  const key = k === "shift" ? "shift" : CAM_KEYMAP[k];
+  if (key) {
     e.preventDefault();
     down ? camKeys.add(key) : camKeys.delete(key);
-    camShow();
+    camKeysUI(); camShow();
   }
 };
 document.addEventListener("keydown", e => camKey(e, true));
@@ -409,9 +445,6 @@ async function camSpeedLoad() {
   const cfg = await api("/api/config").catch(() => null);
   if (!cfg) return;
   $("#camSpeed").value = cfg.values.drive.max_speed;
-  const portrait = Number(cfg.values.camera.rotation) % 180 !== 0;   // camera.rotation 90/270 = upright picture is 9:16
-  $("#camBox").style.maxWidth = portrait ? "300px" : "640px";
-  $("#camImg").style.aspectRatio = portrait ? "9/16" : "16/9";
   camSpeedShow(cfg.values.drive.max_speed);
 }
 let camSpeedTimer = null;
@@ -426,10 +459,133 @@ $("#camSpeed").addEventListener("input", e => {
     } catch (err) { $("#camSpeedVal").textContent = "not saved"; }
   }, 300);
 });
+// ---------- camera head (arrow keys, pad, sliders) ----------
+const PAN_SIGN = 1, TILT_SIGN = 1;                 // flip if an arrow moves the head the wrong way (same as the app)
+let camPan = 0, camTilt = 0;
+const camKeysUI = () => document.querySelectorAll("#drivePad button, #headPad button").forEach(b => b.classList.toggle("on", camKeys.has(b.dataset.k)));
+function camLook(send = true) {
+  camPan = Math.max(-90, Math.min(90, camPan)); camTilt = Math.max(-30, Math.min(45, camTilt));
+  $("#panSlider").value = camPan; $("#tiltSlider").value = camTilt;
+  $("#panVal").textContent = Math.round(camPan) + "°"; $("#tiltVal").textContent = Math.round(camTilt) + "°";
+  if (send) camPost("/api/head", { pan: camPan * PAN_SIGN, tilt: camTilt * TILT_SIGN }).catch(() => {});
+}
+$("#panSlider").addEventListener("input", e => { camPan = Number(e.target.value); camLook(); });
+$("#tiltSlider").addEventListener("input", e => { camTilt = Number(e.target.value); camLook(); });
+setInterval(() => {                                 // 10 Hz while an arrow is held; the firmware glides between the targets
+  if (tab !== "camera" || document.hidden) return;
+  const k = n => camKeys.has(n) ? 1 : 0, step = camKeys.has("shift") ? 6 : 3;
+  const dp = k("left") - k("right"), dt = k("up") - k("down");
+  if (dp || dt) { camPan += dp * step; camTilt += dt * step; camLook(); }
+}, 100);
+document.querySelectorAll("#drivePad button, #headPad button").forEach(b => {
+  const k = b.dataset.k;
+  if (k === "centre") { b.onclick = () => { camPan = 0; camTilt = 0; camLook(); }; return; }
+  b.addEventListener("pointerdown", e => { e.preventDefault(); b.setPointerCapture && b.setPointerCapture(e.pointerId); camKeys.add(k); camKeysUI(); camShow(); });
+  ["pointerup", "pointercancel"].forEach(ev => b.addEventListener(ev, () => { camKeys.delete(k); camKeysUI(); camShow(); }));
+});
+
+// ---------- listening and push-to-talk (raw 16 kHz mono S16 through /ws/audio, see willie/remote.py) ----------
+const audio = { ws: null, ctx: null, gain: null, at: 0, listen: false, talking: false, mic: null, timer: null };
+const audioMsg = t => { $("#audioMsg").textContent = t || ""; };
+const audioUrl = listen => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/audio?listen=${listen ? 1 : 0}`;
+function audioOpen(listen) {
+  return new Promise(resolve => {
+    const ws = new WebSocket(audioUrl(listen));
+    ws.binaryType = "arraybuffer";
+    audio.ws = ws;
+    ws.onmessage = e => {
+      if (typeof e.data === "string") { const m = JSON.parse(e.data); if (m.fout) { audioMsg(m.fout); audioStop(); } resolve(true); return; }
+      if (!audio.ctx) return;
+      const pcm = new Int16Array(e.data), f = new Float32Array(pcm.length);
+      let sum = 0;
+      for (let i = 0; i < pcm.length; i++) { f[i] = pcm[i] / 32768; sum += f[i] * f[i]; }
+      $("#listenMeter").style.width = Math.min(100, Math.sqrt(sum / pcm.length) * 400) + "%";
+      const b = audio.ctx.createBuffer(1, f.length, 16000);
+      b.copyToChannel(f, 0);
+      const src = audio.ctx.createBufferSource();
+      src.buffer = b; src.connect(audio.gain);
+      const now = audio.ctx.currentTime;
+      if (audio.at < now + 0.02) audio.at = now + 0.15;      // a small jitter buffer
+      src.start(audio.at); audio.at += b.duration;
+    };
+    ws.onclose = () => { if (audio.ws === ws) audioStop(); };
+    ws.onerror = () => resolve(false);
+  });
+}
+function audioStop() {
+  const w = audio.ws; audio.ws = null; audio.listen = false;
+  if (w) try { w.close(); } catch (e) {}
+  if (audio.ctx) try { audio.ctx.close(); } catch (e) {}
+  audio.ctx = null; audio.gain = null; audio.at = 0;
+  $("#listenBtn").textContent = "Listen"; $("#listenBtn").classList.remove("on");
+  $("#listenMeter").style.width = "0";
+}
+$("#listenBtn").onclick = async () => {
+  if (audio.listen) { audioStop(); audioMsg(""); return; }
+  audio.ctx = new AudioContext({ sampleRate: 16000 });
+  await audio.ctx.resume();
+  audio.gain = audio.ctx.createGain(); audio.gain.connect(audio.ctx.destination);
+  audio.listen = true;
+  if (audio.ws) try { audio.ws.close(); } catch (e) {}
+  await audioOpen(true);
+  $("#listenBtn").textContent = "Stop listening"; $("#listenBtn").classList.add("on");
+  audioMsg("listening");
+};
+const WORKLET = `class Capture extends AudioWorkletProcessor {
+  constructor(o) { super(); this.size = Math.round((o.processorOptions.rate || 16000) / 10); this.buf = new Int16Array(this.size); this.n = 0; }
+  process(inputs) { const ch = inputs[0] && inputs[0][0]; if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) { this.buf[this.n++] = Math.max(-1, Math.min(1, ch[i])) * 32767;
+      if (this.n === this.size) { const pcm = this.buf.buffer.slice(0); this.port.postMessage(pcm, [pcm]); this.n = 0; } }
+    return true; } }
+registerProcessor("capture", Capture);`;
+async function camTalkStart() {
+  if (audio.talking) return;
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    audioMsg("Push-to-talk needs HTTPS: open https://" + location.hostname + ":8443 (accept the certificate warning once), or use the WILL-E app."); return;
+  }
+  audio.talking = true; $("#talkBtn").classList.add("on");
+  if (audio.gain) audio.gain.gain.value = 0;                 // do not hear him hear you
+  try {
+    if (!audio.ws) await audioOpen(false);
+    if (!audio.mic) {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
+      const node = new AudioWorkletNode(ctx, "capture", { processorOptions: { rate: ctx.sampleRate } });
+      ctx.createMediaStreamSource(stream).connect(node);
+      node.port.onmessage = e => { if (audio.talking && audio.ws && audio.ws.readyState === 1) audio.ws.send(e.data); };
+      audio.mic = { stream, ctx };
+    }
+    await audio.mic.ctx.resume();
+    audioMsg("talking");
+    clearTimeout(audio.timer); audio.timer = setTimeout(camTalkStop, 30000);   // never an open mic for more than 30 s
+  } catch (err) { audioMsg("cannot talk: " + (err.message || err)); camTalkStop(); }
+}
+function camTalkStop() {
+  audio.talking = false; clearTimeout(audio.timer); $("#talkBtn").classList.remove("on");
+  if (audio.mic) try { audio.mic.ctx.suspend(); } catch (e) {}
+  if (audio.ws && audio.ws.readyState === 1) audio.ws.send(JSON.stringify({ talk: false }));
+  if (audio.gain) audio.gain.gain.value = 1;
+  audioMsg(audio.listen ? "listening" : "");
+}
+$("#talkBtn").addEventListener("pointerdown", e => { e.preventDefault(); $("#talkBtn").setPointerCapture && $("#talkBtn").setPointerCapture(e.pointerId); camTalkStart(); });
+["pointerup", "pointercancel"].forEach(ev => $("#talkBtn").addEventListener(ev, camTalkStop));
+// Never keep listening or talking from a page nobody looks at.
+document.addEventListener("visibilitychange", () => { if (document.hidden) { camTalkStop(); audioStop(); } });
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => { if (b.dataset.tab !== "camera") { camTalkStop(); audioStop(); } }));
+
+(() => {                                           // the link to this page over HTTPS (port 8443), where the microphone works
+  const l = $("#httpsLink");
+  if (location.protocol === "https:") { l.textContent = "this secure page"; return; }
+  const url = `https://${location.hostname}:8443`;
+  l.innerHTML = `<a href="${url}" style="color:#7fb4ff">${url}</a>`;
+})();
+let camBlockUntil = 0;
+$("#camImg").addEventListener("error", () => { camFeed = false; camBlockUntil = Date.now() + 2000; });   // the picture did not load (camera busy?): try again in 2 s
 $("#camArm").onclick = async () => { await camPost("/api/manual/arm", { on: !camArmed }); camKeys.clear(); camPoll(); };
 setInterval(camLoop, 100);
 setInterval(camPoll, 500);
-setInterval(() => camFeedOn(tab === "camera" && !document.hidden), 500);
+setInterval(() => camFeedOn(tab === "camera" && !document.hidden && Date.now() >= camBlockUntil), 500);
 document.addEventListener("visibilitychange", () => { if (document.hidden) { camKeys.clear(); if (camArmed) navigator.sendBeacon("/api/manual/drive", new Blob(['{"v":0,"w":0}'], { type: "application/json" })); } });
 
 // ---------- loop ----------

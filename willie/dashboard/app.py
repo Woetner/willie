@@ -5,17 +5,19 @@ settings YAML (read/write, the core hot-reloads it), the core's log file and sta
 """
 from __future__ import annotations
 
+import asyncio
 import collections
 import json
 import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 import psutil
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 
 from willie import __version__
@@ -89,12 +91,26 @@ def throttled() -> str | None:
         return None
 
 
+_stream_lock = threading.Lock()
+_stream_proc: subprocess.Popen | None = None      # the one camera stream the dashboard runs: a new viewer takes over
+
+
 def _mjpeg():
     """rpicam-vid MJPEG -> multipart frames. Frames are SOI (FFD8) ... EOI (FFD9), as in remote.py."""
+    global _stream_proc
+    with _stream_lock:
+        old = _stream_proc
+        if old is not None and old.poll() is None:      # a page that reloaded can leave its camera process behind
+            old.terminate()
+            try:
+                old.wait(3)
+            except subprocess.TimeoutExpired:
+                old.kill()
     proc = subprocess.Popen(
-        ["rpicam-vid", "--nopreview", "-t", "0", *camera.mode_args(), "--codec", "mjpeg", "-q", "50", "--width", "640",
-         "--height", "360", "--framerate", "10", "--autofocus-mode", "continuous", "--flush", "-o", "-"],
+        ["rpicam-vid", "--nopreview", "-t", "0", *camera.mode_args(), "--codec", "mjpeg", "-q", "50", "--width", "768",
+         "--height", "432", "--framerate", "10", "--autofocus-mode", "continuous", "--flush", "-o", "-"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    _stream_proc = proc
     buffer = b""
     turn = camera.rotation()
     try:
@@ -189,6 +205,65 @@ def create_app(cfg: Config) -> FastAPI:
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="l and r must be numbers")
         return control.request("debug_drive", timeout=0.5, l=left, r=right)
+
+    # Camera tab: the head (pan/tilt in degrees, limited by the firmware) and the room's sound. The mic loop and the
+    # speaker belong to the voice process, so audio goes through two unix sockets it serves (willie/remote.py):
+    # listen.sock streams raw 16 kHz mono S16 out, talk.sock takes it in (push-to-talk).
+    @app.post("/api/head")
+    def head(body: dict):
+        try:
+            pan, tilt = float(body.get("pan", 0)), float(body.get("tilt", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="pan and tilt must be numbers")
+        return control.request("look", timeout=0.5, pan=max(-95.0, min(95.0, pan)), tilt=max(-90.0, min(90.0, tilt)))
+
+    @app.websocket("/ws/audio")
+    async def ws_audio(ws: WebSocket, listen: int = 1):
+        await ws.accept()
+        reader = talker = None
+        task = None
+        try:
+            if listen:
+                try:
+                    reader, writer = await asyncio.open_unix_connection(str(wlog.DATA_DIR / "listen.sock"))
+                except OSError:
+                    await ws.send_text(json.dumps({"fout": "the voice service is not running"}))
+                    return
+
+                async def pump():
+                    while data := await reader.read(4096):
+                        await ws.send_bytes(data)
+                task = asyncio.create_task(pump())
+            await ws.send_text(json.dumps({"ok": True}))
+            while True:
+                msg = await ws.receive()
+                if msg["type"] == "websocket.disconnect":
+                    break
+                if msg.get("bytes"):
+                    if talker is None:
+                        try:
+                            _, talker = await asyncio.open_unix_connection(str(wlog.DATA_DIR / "talk.sock"))
+                        except OSError:
+                            continue
+                    talker.write(msg["bytes"])
+                elif msg.get("text") and talker is not None:        # {"talk": false}: end this push-to-talk
+                    try:
+                        if json.loads(msg["text"]).get("talk") is False:
+                            talker.close()
+                            talker = None
+                    except ValueError:
+                        pass
+        except (WebSocketDisconnect, RuntimeError, ConnectionError):
+            pass
+        finally:
+            if task:
+                task.cancel()
+            for w in (talker, locals().get("writer")):
+                if w is not None:
+                    try:
+                        w.close()
+                    except OSError:
+                        pass
 
     @app.post("/api/debug/clear")
     def debug_clear():
