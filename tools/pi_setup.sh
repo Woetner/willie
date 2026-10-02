@@ -98,6 +98,7 @@ sudo ufw default allow outgoing
 for net in 192.168.2.0/24 fe80::/10; do
   sudo ufw allow from "$net" to any port 22 proto tcp comment ssh
   sudo ufw allow from "$net" to any port 8080 proto tcp comment dashboard
+  sudo ufw allow from "$net" to any port 8443 proto tcp comment "dashboard https"
   sudo ufw allow from "$net" to any port 57700 proto tcp comment "spotify connect"
   sudo ufw allow from "$net" to any port 5353 proto udp comment mdns
 done

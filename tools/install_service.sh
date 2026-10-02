@@ -9,6 +9,9 @@ H=$(getent passwd "$U" | cut -d: -f6)
 # The services run as their own user `willie` (security audit, 25 Sep).
 bash "$REPO/tools/service_user.sh"
 
+# self-signed certificate for the dashboard's HTTPS address (as the repo's owner, so the key is theirs; group willie reads it)
+sudo -u "$U" env HOME="$H" bash "$REPO/tools/install_tls.sh"
+
 for unit in willie.service willie-voice.service willie-dashboard.service willie-dashboard.socket; do
   sed -e "s#@USER@#$U#g" -e "s#@HOME@#$H#g" "$REPO/systemd/$unit" > "/etc/systemd/system/$unit"
 done

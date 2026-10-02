@@ -1,10 +1,13 @@
 # On-demand dashboard (D20): systemd holds port 8080 and starts the dashboard
 # on the first browser connection. The dashboard exits by itself when idle.
+# 8443 is the same dashboard over HTTPS (self-signed, tools/install_tls.sh): the browser only gives a page the
+# microphone over HTTPS, and push-to-talk on the Camera tab needs it.
 [Unit]
 Description=WILL-E dashboard socket
 
 [Socket]
 ListenStream=8080
+ListenStream=8443
 Accept=no
 
 [Install]
