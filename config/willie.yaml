@@ -18,11 +18,12 @@ safety:
   watchdog_ms: 200
   tilt_stop_deg: 25
   cliff_mm: 140
+  cliff_ms: 250
   cliff_stop: true
   tof_brake: true
 power:
   pack_wh: 28.0
-  r_internal_mohm: 150
+  r_internal_mohm: 670
 head:
   pan_min_deg: -90
   pan_max_deg: 90

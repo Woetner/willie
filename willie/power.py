@@ -32,7 +32,7 @@ def usable_percent(v_cell_rest: float, v_cell_cutoff: float) -> float:
 class PowerEstimator:
     """Call `update(mv, ma, now)` every state tick (about every 2 s)."""
 
-    def __init__(self, cells: int = 3, pack_wh: float = 28.0, r_int_ohm: float = 0.15,
+    def __init__(self, cells: int = 3, pack_wh: float = 28.0, r_int_ohm: float = 0.67,
                  cutoff_v: float = 9.9, power_tau_s: float = 60.0, volt_tau_s: float = 20.0):
         self.cells, self.pack_wh, self.r_int = cells, pack_wh, r_int_ohm
         self.cutoff_v, self.power_tau, self.volt_tau = cutoff_v, power_tau_s, volt_tau_s

@@ -40,6 +40,7 @@ static Setting SETTINGS[] = {
   {"servo_idle",   800,   0,   10000},         // ms at target before the pulses stop (0 = never)
   {"cliff_on",     1,     0,   1},             // 0: the down-looking ToF never stop the wheels (bench with the wheels in the air)
   {"cliff_mm",     80,    30,  400},           // down-looking ToF reads more than this = no floor = cliff
+  {"cliff_ms",     250,   0,   2000},          // "no floor" must last this long before it is a cliff (a dropout or a dip of the nose is not)
   {"tilt_stop",    25,    5,   60},            // deg from level = estop
   {"need_io",      0,     0,   1},             // 1: refuse to drive without cliff/bumper (PCF8574) — set in F1
   {"shunt_mohm",   100,   1,   1000},          // INA219 shunt resistor

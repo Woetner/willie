@@ -27,13 +27,14 @@ safety:
   watchdog_ms:         {type: int, default: 200, min: 50, max: 500, unit: ms, help: Motors stop if no command within this time}
   tilt_stop_deg:       {type: int, default: 25, min: 10, max: 45, unit: °, help: Stop when tilted more than this}
   cliff_mm:            {type: int, default: 140, min: 30, max: 400, unit: mm, help: "A down-looking ToF that reads more than this has no floor under it (cliff). The floor reads 58-80 mm on the robot, so keep it about twice that"}
+  cliff_ms:            {type: int, default: 250, min: 0, max: 2000, unit: ms, help: "A cliff only counts when the down-looking ToF sees no floor for this long. Higher = fewer false locks from short dropouts, but the robot travels further before it stops at a real edge (at 0.25 m/s: 250 ms = 6 cm)"}
   cliff_stop:          {type: bool, default: true, help: "The two down-looking ToF stop the wheels when they see no floor. Turn off only on the bench with the wheels in the air"}
   tof_brake:           {type: bool, default: true, help: "The front ToF slow the robot down and stop it before an obstacle. Turn off only to test"}
 
 power:
   _label: Battery estimate (percentage, runtime)
   pack_wh:          {type: float, default: 28.0, min: 5, max: 100, unit: Wh, help: Usable energy of the full pack down to the cutoff voltage (3 x 2.8 Ah x 3.7 V = 31 Wh, minus margin)}
-  r_internal_mohm:  {type: int, default: 150, min: 0, max: 1000, unit: mOhm, help: Pack + BMS + wiring resistance, corrects the voltage sag under load}
+  r_internal_mohm:  {type: int, default: 670, min: 0, max: 1000, unit: mOhm, help: Pack + BMS + wiring resistance, corrects the voltage sag under load}
 
 head:
   _label: Head (pan / tilt)

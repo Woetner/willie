@@ -77,8 +77,19 @@ static bool bumpR() { return S.pcfOk && !(S.io & (1 << IO_BUMP_R)); }
 static bool cliffTof(int i) {
   return cfg("cliff_on") > 0.5 && S.tofOk[i] && S.tof[i] && S.tof[i] > cfg("cliff_mm");
 }
-static bool cliffL() { return cliffTof(TOF_CL); }
-static bool cliffR() { return cliffTof(TOF_CR); }
+// "No floor" must last cliff_ms before it counts: the down-looking VL53L0X gives short dropouts (invalid 8190/8191)
+// when the floor is dark or very close, the nose dips under braking, or the motors add noise. Real edges stay
+// "far" for as long as the sensor passes over them. Checked every 2 ms from checkIo().
+static bool cliffDebounced(int side) {
+  static uint32_t since[2] = {0, 0};
+  bool raw = cliffTof(side ? TOF_CR : TOF_CL);
+  if (!raw) { since[side] = 0; return false; }
+  uint32_t now = millis();
+  if (!since[side]) since[side] = now;
+  return now - since[side] >= (uint32_t)cfg("cliff_ms");
+}
+static bool cliffL() { return cliffDebounced(0); }
+static bool cliffR() { return cliffDebounced(1); }
 
 // ---- MPU6050: ±4 g, ±500 deg/s, 44 Hz low-pass ----
 static bool mpuInit() {
