@@ -19,6 +19,7 @@ safety:
   tilt_stop_deg: 25
   cliff_mm: 140
   cliff_ms: 250
+  cliff_invalid: false
   cliff_stop: true
   tof_brake: true
 power:
@@ -66,6 +67,9 @@ memory:
   context_chars: 4000
 skills:
   brandstof_url: http://192.168.2.151:8000  # home server (S5)
+camera:
+  rotation: '90'
+  wide_fov: true
 privacy:
   mute: false
   camera_allowed: true

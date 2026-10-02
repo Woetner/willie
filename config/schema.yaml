@@ -28,6 +28,7 @@ safety:
   tilt_stop_deg:       {type: int, default: 25, min: 10, max: 45, unit: °, help: Stop when tilted more than this}
   cliff_mm:            {type: int, default: 140, min: 30, max: 400, unit: mm, help: "A down-looking ToF that reads more than this has no floor under it (cliff). The floor reads 58-80 mm on the robot, so keep it about twice that"}
   cliff_ms:            {type: int, default: 250, min: 0, max: 2000, unit: ms, help: "A cliff only counts when the down-looking ToF sees no floor for this long. Higher = fewer false locks from short dropouts, but the robot travels further before it stops at a real edge (at 0.25 m/s: 250 ms = 6 cm)"}
+  cliff_invalid:       {type: bool, default: false, help: "Off: a down-looking ToF that cannot range (invalid, e.g. the floor is too close while he pitches) is ignored; only a valid far reading is a cliff. On: invalid counts as no floor too. Turn on for a table or the workbench, where a dark floor below the edge can also read invalid"}
   cliff_stop:          {type: bool, default: true, help: "The two down-looking ToF stop the wheels when they see no floor. Turn off only on the bench with the wheels in the air"}
   tof_brake:           {type: bool, default: true, help: "The front ToF slow the robot down and stop it before an obstacle. Turn off only to test"}
 
@@ -45,6 +46,7 @@ head:
   pan_trim_us:   {type: int, default: 0, min: -300, max: 300, unit: µs, help: Servo centre trim}
   tilt_trim_us:  {type: int, default: 0, min: -300, max: 300, unit: µs, help: Servo centre trim}
   speed_dps:     {type: int, default: 120, min: 10, max: 400, unit: °/s, help: Head move speed}
+  smooth:        {type: float, default: 9.0, min: 0, max: 40, unit: rad/s, help: "How softly the head starts and stops. Lower = softer and slower to settle, higher = snappier. 0 = the old constant-speed move"}
 
 face:
   _label: Face
@@ -140,6 +142,11 @@ skills:
   _label: Skills
   brandstof_url:   {type: str, default: "http://192.168.2.151:8000", help: "Brandstof health monitor on the home server (food, activity, sleep, training, air)"}
   disabled:        {type: str, default: "", help: "Skills switched off, comma-separated (use the Skills tab)"}
+
+camera:
+  _label: Camera
+  rotation:        {type: choice, default: "90", options: ["0", "90", "180", "270"], help: "Turn every picture clockwise by this many degrees (live view, dashboard, photos the AI looks at). The Camera Module 3 sits sideways in the pod, so 90 makes it upright. rpicam cannot do 90 itself, so the Pi turns each JPEG with Pillow"}
+  wide_fov:        {type: bool, default: true, help: "Use the whole sensor (2304x1296 mode) instead of the cropped 1536x864 mode that libcamera picks for small pictures: a 1.5x wider view at the same sharpness. Off = the old narrower view"}
 
 privacy:
   _label: Privacy
