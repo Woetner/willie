@@ -35,9 +35,18 @@ class ConfigError(ValueError):
         self.errors = errors
 
 
+_schema_cache: tuple[float, dict] | None = None
+
+
 def load_schema() -> dict:
-    with open(SCHEMA_PATH, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    """The parsed schema, cached by file time: parsing it costs ~0.3 s of CPU on the Pi 3 A+, and
+    several threads build a Config() every few seconds (found in Phase P: 100 % CPU while asleep)."""
+    global _schema_cache
+    mtime = SCHEMA_PATH.stat().st_mtime
+    if _schema_cache is None or _schema_cache[0] != mtime:
+        with open(SCHEMA_PATH, encoding="utf-8") as f:
+            _schema_cache = (mtime, yaml.safe_load(f))
+    return copy.deepcopy(_schema_cache[1])
 
 
 def fields(schema: dict):

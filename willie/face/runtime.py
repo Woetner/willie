@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import select
 import struct
 import sys
 import threading
@@ -17,6 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import font
+from .backlight import Backlight
 from .framebuffer import Framebuffer, open_all
 from .renderer import PICTURE_BOX, STATES, View, Renderer
 
@@ -190,6 +192,11 @@ class Face:
         self._busy: list[str] = []   # labels of running background jobs (Face.busy)
         self._level = 0.0
         self.on_pet = None           # fn() on every accepted touch (mood event, G2)
+        self.on_wake = None          # fn() on a touch while asleep (Phase P): wakes him instead of a pet
+        self.sleep_settings = config.snapshot().get("sleep", {}) if config else {}
+        self.backlight = Backlight()
+        self.dark = False            # deep sleep: screen black, backlight off, no rendering
+        self._asleep_since = None
         self.failure = None
         self.console = None
         self.frames = self.dirty_rows = 0
@@ -242,7 +249,8 @@ class Face:
                 if self.config and now >= next_config:
                     try:
                         self.config.reload()
-                        self.settings = self.config.snapshot()["face"]
+                        snapshot = self.config.snapshot()
+                        self.settings, self.sleep_settings = snapshot["face"], snapshot.get("sleep", {})
                     except Exception as exc:
                         log.warning("face settings unchanged: %s", exc)
                     next_config = now+2
@@ -258,12 +266,31 @@ class Face:
                         elif self._pinout_on(now):
                             for gesture in self.touch.gestures:
                                 self.pinout_gesture(gesture, now)
+                        elif released and self._view.muted and self.on_wake:
+                            self._wake_touch(self.touch.gestures)
                         elif released:
                             self.pet()
                     except OSError as exc:
                         log.warning("touch disconnected: %s", exc)
                         self.touch.close()
                         self.touch = None
+                if self._sleep_dark(now):
+                    if not self.dark:
+                        self.dark = True
+                        for buffer, display in zip(buffers, self.displays):
+                            buffer.fill((0, 0, 0))
+                            display.present(buffer)
+                        self.backlight.set(self.sleep_settings.get("backlight_gpio", 0), False)
+                    # Nothing to draw: wait for a finger (or 1 s, for the config and the switch).
+                    if self.touch:
+                        select.select([self.touch.fd], [], [], 1.0)
+                    else:
+                        self._stop.wait(1.0)
+                    continue
+                if self.dark:
+                    self.dark = False
+                    self.backlight.set(self.sleep_settings.get("backlight_gpio", 0), True)
+                    renderers = [Renderer() for _ in self.displays]   # repaint everything
                 render_started = self.clock()
                 view = self.snapshot(now)
                 for renderer, buffer, display in zip(renderers, buffers, self.displays):
@@ -500,6 +527,29 @@ class Face:
         left = max(0.0, 1 - age/c["timeout"]) if c["timeout"] else 0.0
         answered_age = None if c["answered"] is None else now - c["answered"]
         return (c["question"], c["hold"], left, max(0.0, c["timeout"] - age), c["answer"], answered_age, age)
+
+    # ---- Deep sleep (Phase P, D31) ------------------------------------------------------
+    def _sleep_dark(self, now) -> bool:
+        """Asleep (muted + sleep face, nothing on screen, no question waiting) for sleep.dim_after_s."""
+        with self._lock:
+            asleep = (self._view.muted and self._view.state == "sleep" and self._confirm is None
+                      and now >= self._show_until and not self._pinout_on(now))
+        if not asleep:
+            self._asleep_since = None
+            return False
+        if self._asleep_since is None:
+            self._asleep_since = now
+        return now - self._asleep_since >= float(self.sleep_settings.get("dim_after_s", 10))
+
+    def _wake_touch(self, gestures) -> None:
+        """A touch while asleep: wake him (sleep.wake_touch: any tap, or only a finger held 1 s)."""
+        kinds = {g[0] for g in gestures}
+        if self.sleep_settings.get("wake_touch") == "hold" and "long" not in kinds:
+            return
+        self._asleep_since = None
+        if self.dark:
+            self.backlight.set(self.sleep_settings.get("backlight_gpio", 0), True)
+        threading.Thread(target=self.on_wake, name="wake-touch", daemon=True).start()
 
     def pet(self):
         now = self.clock()

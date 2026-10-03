@@ -124,7 +124,11 @@ async def amain():
             for key, value in mcu_settings(cfg.get).items():
                 link.cfg(key, value)
 
-    link.on_hello = push_mcu_settings        # the firmware boots with its own defaults
+    def on_hello():
+        push_mcu_settings()                  # the firmware boots with its own defaults
+        sleeper.on_hello()                   # ... and awake
+
+    link.on_hello = on_hello
 
     # F1/G2: safety gate, motion primitives, mood; reached through the control socket.
     from willie import control
@@ -138,6 +142,11 @@ async def amain():
     body = control.Body(link, safety, motion, mood)
     from willie.behavior.tree import Behaviours
     body.behaviours = Behaviours(body, cfg.get)
+    # Phase P: deep sleep follows privacy.mute; he also falls asleep by himself.
+    from willie.sleep import Sleep
+    sleeper = Sleep(cfg, link, body)
+    body.asleep = sleeper.asleep
+    cfg.on_change(lambda old, new: sleeper.apply())
     link.on_message = lambda words: on_mcu_message(words, motion, mood, link)
     cfg.on_change(lambda old, new: setattr(link, "ping_hz", new["link"]["ping_hz"]))
     cfg.on_change(lambda old, new: push_mcu_settings())
@@ -154,6 +163,7 @@ async def amain():
         asyncio.create_task(supervise("body", lambda: body_loop(link, safety, mood))),
         asyncio.create_task(supervise("control", lambda: control.serve(body))),
         asyncio.create_task(supervise("behaviour", body.behaviours.run)),
+        asyncio.create_task(supervise("sleep", sleeper.run_loop)),
     ]
     log.info("core running, RSS %.1f MB", _rss_mb())
     await stop.wait()

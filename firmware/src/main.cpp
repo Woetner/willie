@@ -71,8 +71,13 @@ static void triggerEstop(uint8_t reason) {
 }
 
 static bool otaActive = false;
+static bool asleep = false;                         // deep sleep (Phase P): see sleepEnter()
 
 static bool motionAllowed() {
+  if (asleep) {
+    sendLine(Link, "err asleep");
+    return false;
+  }
   if (otaActive) {
     sendLine(Link, "err ota");
     return false;
@@ -148,11 +153,11 @@ static void odoReset() {
 //    <io hex> <mV> <mA> <ax> <ay> <az mg> <gx> <gy> <gz 0.1 dps> <tilt 0.1 deg>
 //    <pan> <tilt 0.1 deg> <pwmL> <pwmR %> <flags hex> <i2c errors> <cliff tof L> <cliff tof R mm>
 // flags: bits 0-4 estop (bump_l, bump_r, cliff_l, cliff_r, tilt), 5 pcf ok, 6 mpu ok, 7 ina ok,
-//        8-10 tof L/C/R ok, 11 encoders ok, 12 motors active, 13-14 cliff tof L/R ok
+//        8-10 tof L/C/R ok, 11 encoders ok, 12 motors active, 13-14 cliff tof L/R ok, 15 asleep
 static void sendState() {
   uint32_t flags = estop | S.pcfOk << 5 | S.mpuOk << 6 | S.inaOk << 7 | S.tofOk[0] << 8 |
                    S.tofOk[1] << 9 | S.tofOk[2] << 10 | encOk << 11 | motionActive << 12 |
-                   S.tofOk[3] << 13 | S.tofOk[4] << 14;
+                   S.tofOk[3] << 13 | S.tofOk[4] << 14 | (uint32_t)asleep << 15;
   sendf("st %lu %ld %ld %d %d %d %d %d %u %u %u %02X %ld %ld %d %d %d %d %d %d %d %d %d %d %d %X %lu %u %u",
         (unsigned long)millis(), (long)encoderTicks(0), (long)encoderTicks(1),
         (int)odoX, (int)odoY, (int)(odoTh * 1000), (int)odoV, (int)(odoW * 1000),
@@ -249,6 +254,37 @@ static void otaCommand(const char *cmd) {
   }
 }
 
+// ---------------------------------------------------------------- deep sleep (Phase P)
+// `sleep 1`: wheels braked and drive/look refused, servo pulses off, every ToF stopped and held in reset,
+// MPU6050 in its sleep mode, camera LED off, CPU 240 -> 80 MHz (the APB clock stays 80 MHz, so the
+// 921600 link is unchanged), `st` at sleep_hz. The INA219 keeps being read: the Pi's battery rules still
+// run. `sleep 0` undoes it and starts the sensors again (~0.3 s). A reset always boots awake; the Pi
+// sends `sleep 1` again when it hears `hello`.
+static void sleepEnter() {
+  if (asleep) return;
+  wheelsOpen();
+  motorsBrake();
+  for (auto &s : servos) { ledcWrite(s.pin, 0); s.active = false; }
+  for (int i = 0; i < N_TOF; i++) {
+    if (S.tofOk[i]) tofDev[i].stopContinuous();
+    tofDrop(i);
+    if (S.pcfOk) pcfSetBit(XSHUT_TOF[i], false);
+  }
+  if (S.mpuOk) i2cWriteReg(ADDR_MPU, 0x6B, 0x40);   // PWR_MGMT_1: SLEEP
+  ledSet(false);
+  setCpuFrequencyMhz(80);
+  asleep = true;
+}
+
+static void sleepExit() {
+  if (!asleep) return;
+  setCpuFrequencyMhz(240);
+  asleep = false;
+  if (S.mpuOk) S.mpuOk = mpuInit();                 // clears the sleep bit
+  tofInit();
+  tiltSinceMs = 0;
+}
+
 // ---------------------------------------------------------------- commands
 static float argf(bool &ok) {
   char *w = strtok(nullptr, " ");
@@ -294,6 +330,7 @@ static void handleLine(char *line) {
   } else if (!strcmp(cmd, "look")) {               // look <pan deg> <tilt deg>
     float p = argf(ok), t = argf(ok);
     if (!ok) { sendLine(Link, "err args"); return; }
+    if (asleep) { sendLine(Link, "err asleep"); return; }
     servosLook(p, t);
   } else if (!strcmp(cmd, "led")) {
     ledSet(argf(ok) > 0.5f);
@@ -315,6 +352,11 @@ static void handleLine(char *line) {
   } else if (!strcmp(cmd, "odo0")) {
     odoReset();
     sendLine(Link, "ok odo0");
+  } else if (!strcmp(cmd, "sleep")) {              // sleep 1|0 (Phase P)
+    float on = argf(ok);
+    if (!ok) { sendLine(Link, "err args"); return; }
+    if (on > 0.5f) sleepEnter(); else sleepExit();
+    sendf("ok sleep %d", asleep);
   } else if (!strcmp(cmd, "stat?")) {
     sendStat();
   } else if (!strcmp(cmd, "hello?")) {
@@ -387,15 +429,17 @@ void loop() {
     ESP.restart();
   }
 
-  if (S.pcfOk && tPcf.due(now) && pcfRead()) checkIo();
-  i2cWatch();
-  mpuRetry();
-  tofRetry();
-  if (S.mpuOk && tImu.due(now)) { mpuUpdate(); checkTilt(); }
-  if (tTof.due(now)) tofUpdate();
+  if (!asleep) {                                    // asleep: nothing moves, only the battery is watched
+    if (S.pcfOk && tPcf.due(now) && pcfRead()) checkIo();
+    i2cWatch();
+    mpuRetry();
+    tofRetry();
+    if (S.mpuOk && tImu.due(now)) { mpuUpdate(); checkTilt(); }
+    if (tTof.due(now)) tofUpdate();
+    if (tOdo.due(now)) odoUpdate();
+    if (tServo.due(now)) servosUpdate();
+  }
   if (S.inaOk && tIna.due(now)) inaUpdate();
-  if (tOdo.due(now)) odoUpdate();
-  if (tServo.due(now)) servosUpdate();
 
   if (pidSignFault) {                               // set by the wheel task (wheels.h)
     pidSignFault = false;
@@ -405,14 +449,15 @@ void loop() {
     wdTripped = false;
     sendf("ev wd %lu", (unsigned long)millis());
   }
-  float hz = cfg("stream_hz");
+  float hz = cfg(asleep ? "sleep_hz" : "stream_hz");
   if (hz > 0) {
     tState.periodUs = (uint32_t)(1e6f / hz);
     if (tState.due(now)) sendState();
   }
-  if (tBlink.due(now)) digitalWrite(PIN_LED, !digitalRead(PIN_LED));   // 1 Hz = alive
+  if (tBlink.due(now)) digitalWrite(PIN_LED, asleep ? LOW : !digitalRead(PIN_LED));   // 1 Hz = alive, dark = asleep
   if (tDebug.due(now))
     Serial.printf("up %lus pings %lu bad %lu wd %lu i2c_err %lu estop %02X\n", millis() / 1000,
                   (unsigned long)pings, (unsigned long)badLines, (unsigned long)wdTrips,
                   (unsigned long)S.i2cErrors, estop);
+  if (asleep) delay(5);                             // let the idle task halt the CPU; the UART buffers 1 KB
 }

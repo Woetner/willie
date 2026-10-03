@@ -42,6 +42,7 @@ def parse_state(words: list[str]) -> dict:
     st["estop"] = [n for i, n in enumerate(ESTOP_BITS) if f >> i & 1]
     st["ok"] = {n: bool(f >> b & 1) for n, b in OK_BITS.items()}
     st["moving"] = bool(f >> 12 & 1)
+    st["asleep"] = bool(f >> 15 & 1)
     return st
 
 
@@ -54,6 +55,7 @@ MCU_SETTINGS = {
     "pan_min": "head.pan_min_deg", "pan_max": "head.pan_max_deg", "tilt_min": "head.tilt_min_deg",
     "tilt_max": "head.tilt_max_deg", "servo_dps": "head.speed_dps", "servo_smooth": "head.smooth",
     "pan_c": ("head.pan_trim_us", 1500), "tilt_c": ("head.tilt_trim_us", 1500),
+    "sleep_hz": "sleep.mcu_hz",
 }
 
 
@@ -215,6 +217,10 @@ class Link:
 
     def cfg(self, key: str, value: float):
         self.send("cfg", key, f"{value:g}")
+
+    def sleep(self, on: bool):
+        """Deep sleep (Phase P): sensors off, 80 MHz, `st` at sleep_hz; drive and look refused."""
+        self.send("sleep", int(bool(on)))
 
     # ---- ping --------------------------------------------------------------
     async def ping(self, timeout: float = 0.1) -> float | None:

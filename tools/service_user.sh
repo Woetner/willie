@@ -34,9 +34,13 @@ for dir in "$REPO/.local" "$HOME_DIR/.config/willie" "$HOME_DIR/.local/share/wil
 done
 [ -f "$REPO/.env" ] && chown "$OWNER:$SVC" "$REPO/.env" && chmod 640 "$REPO/.env"
 
+# Deep sleep (Phase P): a root-owned copy, so the service user can never change what sudo runs.
+install -m 755 -o root -g root "$REPO/tools/power_mode.sh" /usr/local/sbin/willie-power-mode
+
 cat > /etc/sudoers.d/willie-service <<SUDO
-# The services may only switch the robot off or restart it (zet_uit, battery cut-off).
-$SVC ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot
+# The services may only switch the robot off or restart it (zet_uit, battery cut-off),
+# and switch the Pi between awake and deep sleep (Phase P).
+$SVC ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot, /usr/local/sbin/willie-power-mode sleep, /usr/local/sbin/willie-power-mode wake
 SUDO
 chmod 440 /etc/sudoers.d/willie-service
 visudo -cf /etc/sudoers.d/willie-service >/dev/null

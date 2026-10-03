@@ -154,6 +154,16 @@ privacy:
   mute:            {type: bool, default: false, help: Mic and camera off}
   camera_allowed:  {type: bool, default: true, help: Camera may be used}
 
+sleep:
+  _label: Deep sleep (Phase P)
+  auto:            {type: bool, default: true, help: "Fall asleep by himself: after idle_min without anything happening, and always in quiet hours"}
+  idle_min:        {type: int, default: 15, min: 1, max: 600, unit: min, help: "Awake and nothing happens this long = asleep (no conversation, command, touch or mission)"}
+  night_idle_min:  {type: int, default: 5, min: 1, max: 120, unit: min, help: "Same, when woken during quiet hours"}
+  dim_after_s:     {type: int, default: 10, min: 0, max: 600, unit: s, help: "The sleeping face shows this long, then the screen goes black (and the backlight off)"}
+  wake_touch:      {type: choice, default: tap, options: [tap, hold], help: "What wakes him on the screen: a tap, or a finger held 1 s (if the cat keeps waking him)"}
+  backlight_gpio:  {type: int, default: 0, min: 0, max: 27, help: "Pi GPIO (BCM) of the backlight switch, high = on (P5); 0 = none: the screen is only made black"}
+  mcu_hz:          {type: float, default: 1.0, min: 0.2, max: 50, unit: Hz, help: "ESP32 state stream while asleep (50 Hz awake)"}
+
 dashboard:
   _label: Dashboard
   idle_minutes:    {type: int, default: 5, min: 1, max: 120, unit: min, help: Dashboard process exits after this long without a browser (D20); port 8080 stays open via systemd}

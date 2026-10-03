@@ -58,6 +58,9 @@ def music_face(face, spotify) -> None:
     from willie.config import Config
     config, next_dance = Config(), 0.0
     while True:
+        if face.dark:                            # deep sleep (Phase P): Spotify is stopped, the screen black
+            time.sleep(5)
+            continue
         track = spotify.now_playing()
         face.music(track)
         now = time.monotonic()
@@ -119,7 +122,45 @@ def main() -> int:
     sleep_now = threading.Event()        # set by sleep mode: ends a conversation right away
     remote = Remote.from_env(face, wake_stop, sleep_now)
     from willie import control              # mood events + resting face from the core (G2)
+    # Deep sleep (Phase P): the core may switch privacy.mute by itself (idle, night). Follow it within
+    # 1 s: stop the wake-word wait, show the sleep face, tell the app - without a chime.
+    def follow_sleep_switch():
+        from willie.config import Config
+        config = Config()                    # one instance: reload() is an mtime check, Config() parses the schema
+        while True:
+            try:
+                config.reload()
+                mode = "sleep" if config.get("privacy.mute") else "idle"
+            except Exception:
+                time.sleep(1)
+                continue
+            if remote and mode != remote.mode_shown:
+                if remote.mode_shown is not None:
+                    remote._guard(lambda data: remote._mode(data, chime_on=False), {"mode": mode})
+                remote.mode_shown = mode
+            elif not remote and mode != follow_sleep_switch.last:
+                wake_stop.set()
+            follow_sleep_switch.last = mode
+            time.sleep(1)
+    follow_sleep_switch.last = None
+    threading.Thread(target=follow_sleep_switch, name="sleep-switch", daemon=True).start()
+
+    def wake_by_touch():
+        """A tap on the sleeping screen = the app's "idle" switch (Phase P)."""
+        print("woken by a touch on the screen", flush=True)
+        if remote:
+            remote._guard(remote._mode, {"mode": "idle"})
+            return
+        from willie.config import Config
+        Config().update({"privacy": {"mute": False}})
+        speech.silence(False)
+        face.indicators(muted=False)
+        face.set_state("idle", "SAY HEY WILLIE")
+        wake_stop.set()
+        chime.play("idle")
+
     if face:
+        face.on_wake = wake_by_touch
         face.on_pet = lambda: control.event("pet")
         if face.touch:
             willie_tools.CONFIRM = face.confirm  # risky tools need a finger on the glass

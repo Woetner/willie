@@ -11,6 +11,7 @@ one JSON object per line, and get one JSON object back. Robot-local, so no MQTT 
     {"cmd": "event", "name": "wake"}      -> mood event from another process
     {"cmd": "event", "name": "mission_start"|"mission_end"}   a Phase K mission owns the wheels
     {"cmd": "mood"}                       -> values + the AI context line + resting face
+    {"cmd": "event", "name": "activity"}  something happened (app command): resets the auto-sleep timer (Phase P)
 
 CLI (on the Pi, with the core running):
     .venv/bin/python -m willie.control state
@@ -49,6 +50,8 @@ class Body:
         self.conversation = False       # a voice session is open: behaviours sit still (G3)
         self.mission = False            # a Phase K mission drives him: behaviours sit still
         self.last_command = 0.0         # monotonic time of the last move/turn from outside
+        self.last_activity = time.monotonic()   # anything from outside: the auto-sleep timer (willie/sleep.py)
+        self.asleep = lambda: False     # deep sleep (Phase P), set by core: wheels and head refuse
         self.behaviours = None          # behavior.tree.Behaviours, set by core
         self._power = None              # willie.power.PowerEstimator, built on first use
         self.debug_armed_until = 0.0    # monotonic: the dashboard's Debug tab may drive the wheels until then
@@ -161,10 +164,17 @@ class Body:
             "mood": self.mood.snapshot(),
         }
 
+    ACTIVE = {"move", "turn", "look", "debug_drive", "manual_drive", "mission_cancel", "event"}
+    MOVING = {"move", "turn", "look", "debug_drive", "manual_drive"}
+
     async def handle(self, req: dict) -> dict:
         cmd = req.get("cmd")
         if cmd == "state":
             return self.state()
+        if cmd in self.ACTIVE:
+            self.last_activity = time.monotonic()
+        if cmd in self.MOVING and self.asleep():
+            return {"fout": "hij slaapt (diepe slaap): maak hem eerst wakker in de app of met een tik op zijn scherm"}
         if cmd == "move":
             self.last_command = time.monotonic()
             return await self.motion.move(float(req["m"]), req.get("speed"))
@@ -192,6 +202,8 @@ class Body:
                 return {"ok": True}
             if name in ("mission_start", "mission_end"):
                 self.mission = name == "mission_start"
+                return {"ok": True}
+            if name == "activity":
                 return {"ok": True}
             return {"ok": self.mood.event(name)}
         if cmd == "mood":

@@ -81,6 +81,8 @@ class Remote:
         self.host, self.port, self.user, self.password = host, port, user, password
         self.session_active = False          # set by the voice loop: the speaker is taken
         self._activity_at = 0.0              # monotonic time of the last fresh willie/activity
+        self._activity_sent = 0.0
+        self.mode_shown = None               # "idle"/"sleep" as last applied by _mode (Phase P watcher)
         self.client = None
         self._stop = threading.Event()
         self._camera = threading.Lock()      # one owner of the camera at a time (S8 design point)
@@ -222,6 +224,10 @@ class Remote:
         }.get(message.topic)
         if handler is None:
             return
+        if message.topic != "willie/cmd/mode" and time.monotonic() - self._activity_sent > 30:
+            self._activity_sent = time.monotonic()   # the app is in use: no auto-sleep (Phase P)
+            from willie import control
+            control.event("activity")
         if message.topic in ("willie/cmd/video", "willie/cmd/listen", "willie/cmd/drive"):
             handler(data)                            # cheap, keeps the lease / the 10 Hz rhythm exact
         else:
@@ -263,9 +269,11 @@ class Remote:
                 self.face.set_state("idle", "SAY HEY WILLIE")
         self._publish("willie/event/say", {"ok": bool(backend), "text": text})
 
-    def _mode(self, data: dict) -> None:
+    def _mode(self, data: dict, chime_on: bool = True) -> None:
         """Idle (awake, listening for "Hey Willie") or sleep (mic off, sleep face). Stored as
-        privacy.mute, so it survives a restart and the dashboard shows the same switch."""
+        privacy.mute, so it survives a restart and the dashboard shows the same switch.
+        Also called for a tap on the sleeping screen and, without the chime, when the core
+        put him to sleep or woke him by itself (Phase P, willie/sleep.py)."""
         mode = str(data.get("mode", ""))
         if mode in ("garage", "garage_off"):
             # Garage mode (K1) from the app: the voice loop picks it up within 2 s.
@@ -277,6 +285,7 @@ class Remote:
             return
         if mode not in ("idle", "sleep"):
             return
+        self.mode_shown = mode               # first, so the sleep-switch watcher does not repeat it
         from willie.config import Config
 
         cfg = Config()
@@ -301,7 +310,7 @@ class Remote:
             self.face.set_state("sleep" if mode == "sleep" else "idle", "" if mode == "sleep" else "SAY HEY WILLIE")
         if self.wake_stop:
             self.wake_stop.set()             # the voice loop re-reads the mode right away
-        if not self.session_active:
+        if chime_on and not self.session_active:
             from willie.audio import chime
             chime.play(mode)
         self._publish("willie/event/mode", {"mode": mode})

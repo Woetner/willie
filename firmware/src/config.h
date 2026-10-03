@@ -47,6 +47,7 @@ static Setting SETTINGS[] = {
   {"need_io",      0,     0,   1},             // 1: refuse to drive without cliff/bumper (PCF8574) — set in F1
   {"shunt_mohm",   100,   1,   1000},          // INA219 shunt resistor
   {"stream_hz",    50,    0,   100},           // `st` line rate (0 = off)
+  {"sleep_hz",     1,     0.2, 50},            // `st` line rate while asleep (Phase P)
 };
 static const int N_SETTINGS = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
 

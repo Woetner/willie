@@ -3,6 +3,7 @@
 A priority list, checked at 2 Hz: the first behaviour that wants to run owns the body;
 when the winner changes, the running one is cancelled (its motion stops with it).
 
+    sleep     deep sleep (privacy.mute, Phase P)             -> nothing; the MCU streams at 1 Hz then
     hold      estop latched, no MCU state, or battery empty  -> never move by himself
     talk      a conversation is open                          -> sit still, face the person
     mission   search/adventure/sentry (Phase K) drives him    -> hands off the wheels
@@ -48,6 +49,8 @@ class Behaviours:
     # ---- selection ----------------------------------------------------------
     def choose(self) -> str:
         body = self.body
+        if self.get("privacy.mute"):
+            return "sleep"
         st = body.link.state
         age = time.perf_counter() - body.link.state_t if st else None
         if st is None or age is None or age > 0.5 or st.get("estop") or body.safety.battery_state == "cutoff":

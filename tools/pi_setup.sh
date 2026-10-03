@@ -19,7 +19,7 @@ say "2/7 packages (no mosquitto on the Pi: D22; no pigpio: D18)"
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y install \
   git rsync python3-venv python3-dev i2c-tools \
   libjpeg-turbo-progs \
-  libspeexdsp1          # djpeg: pictures on the face; speexdsp: live mic echo cancel + noise + AGC
+  libspeexdsp1 iw       # djpeg: pictures on the face; speexdsp: live mic echo cancel + noise + AGC; iw: Wi-Fi power save in deep sleep (Phase P)
 command -v rpicam-hello >/dev/null || sudo apt-get -y install rpicam-apps-lite
 
 say "3/7 interfaces: I2C + SPI on; serial console OFF, UART hardware ON (GPIO14/15 = MCU link, D18)"
