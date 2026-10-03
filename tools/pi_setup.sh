@@ -47,7 +47,10 @@ camera_auto_detect=1
 # ILI9486 + ads7846 (the old tft35a overlay is gone since kernel 6.18). speed=48000000 is what the SPI block turns into
 # 41.7 MHz (250 MHz / 6); fps=150 is the fbtft deferred-io rate — at the default
 # 60 its 16.7 ms sleep, not SPI, was the thing capping the blink at 17 fps.
-dtoverlay=fbtft,spi0-0,ili9486,reset_pin=25,dc_pin=24,regwidth=16,width=320,height=480,rotate=90,bgr,speed=48000000,fps=150,txbuflen=65536
+# Two lines: the firmware reads only the first 98 characters of a config.txt line, and the one-line form
+# lost bgr, speed, fps and txbuflen without any error (3 Oct: red and blue swapped, 32 MHz, 30 fps).
+dtoverlay=fbtft,spi0-0,ili9486,reset_pin=25,dc_pin=24,regwidth=16,width=320,height=480
+dtparam=rotate=90,bgr,speed=48000000,fps=150,txbuflen=65536
 dtoverlay=ads7846,cs=1,penirq=17,speed=1000000,pmax=255,swapxy,xohms=60
 # I2S mics (2x INMP441) + amp (MAX98357A) — chosen and tested in steps B6/B7:
 dtoverlay=googlevoicehat-soundcard
