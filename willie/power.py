@@ -34,12 +34,14 @@ class PowerEstimator:
 
     def __init__(self, cells: int = 3, pack_wh: float = 28.0, r_int_ohm: float = 0.67,
                  cutoff_v: float = 9.9, power_tau_s: float = 60.0, volt_tau_s: float = 120.0,
-                 charge_jump_pct: float = 30.0, slew_pct_per_min: float = 1.0):
+                 charge_jump_pct: float = 30.0, slew_pct_per_min: float = 3.0,
+                 fuse_tau_s: float = 1800.0):
         self.cells, self.pack_wh, self.r_int = cells, pack_wh, r_int_ohm
         self.cutoff_v, self.power_tau, self.volt_tau = cutoff_v, power_tau_s, volt_tau_s
         self._t = self._p = self._v = None
         self.charge_jump = charge_jump_pct
-        self.slew = slew_pct_per_min          # how fast the shown % may move when not charging
+        self.slew = slew_pct_per_min          # cap on how fast the shown % may move when not charging
+        self.fuse_tau = fuse_tau_s            # how slowly the voltage estimate corrects the energy count
         self._shown = None
         self._peak = 0.0
         self.charging = False
@@ -54,7 +56,6 @@ class PowerEstimator:
         volts, amps = mv / 1000.0, max(0.0, (ma or 0) / 1000.0)
         power = volts * amps
         rest_v = volts + amps * self.r_int    # the voltage the pack would have without the load
-        dt_ok = self._t is not None
         dt = 0.0
         if self._t is None:
             self._p, self._v = power, rest_v
@@ -78,14 +79,16 @@ class PowerEstimator:
             self._v += (rest_v - self._v) * kv
         self._t = now
         est = usable_percent(self._v / self.cells, self.cutoff_v / self.cells)
-        # Like a phone: the shown value never jumps. Estimate = slow average of the sag-corrected
-        # voltage, then the display follows it at `slew` %/min (a real pack drains ~0.2 %/min).
-        # While charging it follows the estimate straight away.
+        # Like a fuel gauge: the display counts the energy drawn (INA219, a few multiplications per
+        # tick) and the slow voltage estimate only corrects the drift (tau `fuse_tau`). The charger
+        # bypasses the INA219, so while charging the display follows the voltage estimate instead.
         if self._shown is None or self.charging:
             self._shown = est
         else:
-            step = self.slew * (dt / 60.0 if dt_ok else 0.0)
-            self._shown += max(-step, min(step, est - self._shown))
+            counted = self._shown - 100.0 * power * (dt / 3600.0) / self.pack_wh
+            fused = counted + min(1.0, dt / self.fuse_tau) * (est - counted)
+            step = self.slew * dt / 60.0
+            self._shown += max(-step, min(step, fused - self._shown))
         pct = self._shown
         runtime = None
         if self._p >= 0.5:                    # below half a watt the number means nothing

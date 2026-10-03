@@ -79,8 +79,13 @@ def test_display_is_calm_under_load_swings():
     assert max(shown) - min(shown) <= 4
 
 
-def test_display_does_not_rise_without_charging_and_creeps_down():
-    est = PowerEstimator()
+def test_display_counts_energy_and_voltage_only_corrects_slowly():
+    est = PowerEstimator(pack_wh=28.0)
     first = est.update(12000, 100, 0.0)["battery_pct"]
-    out = est.update(11000, 100, 600.0)["battery_pct"]                 # 10 min, voltage far lower
-    assert first - 12 <= out < first                                   # slew 1 %/min
+    for t in range(2, 3602, 2):                                        # 1 h at 12 V * 2 A = 24 Wh drawn
+        out = est.update(10660, 2000, float(t))["battery_pct"]
+    assert first - out >= 20                                           # counted, not just the slow voltage pull
+    est2 = PowerEstimator()
+    a = est2.update(12000, 100, 0.0)["battery_pct"]
+    b = est2.update(11000, 100, 600.0)["battery_pct"]                  # voltage far lower: corrects, slowly
+    assert a - 15 < b < a
