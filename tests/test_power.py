@@ -55,7 +55,7 @@ def test_jump_of_30_points_means_charging_and_back_means_unplugged():
         assert est.update(11300, 300, float(t))["charging"] is False   # settled around 30 %
     out = est.update(12500, 300, 60.0)                                 # charger lifts the pack
     assert out["charging"] is True
-    for t in range(62, 200, 2):                                        # smoothing catches up, stays latched
+    for t in range(62, 200, 2):                                        # stays latched while charging
         out = est.update(12500, 300, float(t))
     assert out["charging"] is True
     assert est.update(11300, 300, 200.0)["charging"] is False          # unplugged: big drop
@@ -67,3 +67,20 @@ def test_slow_drift_is_not_charging_and_no_pack_clears_it():
         assert est.update(11000 + i * 5, 300, float(t))["charging"] is False
     est.update(12500, 300, 400.0)
     assert est.update(0, 0, 402.0)["charging"] is False
+
+
+def test_display_is_calm_under_load_swings():
+    est = PowerEstimator()
+    est.update(11800, 100, 0.0)
+    shown = []
+    for i in range(1, 120):                                            # 4 min of load swinging 0.1 <-> 2.5 A
+        amps = 2500 if i % 6 < 3 else 100
+        shown.append(est.update(11800 - amps * 0.8, amps, i * 2.0)["battery_pct"])
+    assert max(shown) - min(shown) <= 4
+
+
+def test_display_does_not_rise_without_charging_and_creeps_down():
+    est = PowerEstimator()
+    first = est.update(12000, 100, 0.0)["battery_pct"]
+    out = est.update(11000, 100, 600.0)["battery_pct"]                 # 10 min, voltage far lower
+    assert first - 12 <= out < first                                   # slew 1 %/min

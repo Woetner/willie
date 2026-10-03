@@ -33,43 +33,60 @@ class PowerEstimator:
     """Call `update(mv, ma, now)` every state tick (about every 2 s)."""
 
     def __init__(self, cells: int = 3, pack_wh: float = 28.0, r_int_ohm: float = 0.67,
-                 cutoff_v: float = 9.9, power_tau_s: float = 60.0, volt_tau_s: float = 20.0,
-                 charge_jump_pct: float = 30.0):
+                 cutoff_v: float = 9.9, power_tau_s: float = 60.0, volt_tau_s: float = 120.0,
+                 charge_jump_pct: float = 30.0, slew_pct_per_min: float = 1.0):
         self.cells, self.pack_wh, self.r_int = cells, pack_wh, r_int_ohm
         self.cutoff_v, self.power_tau, self.volt_tau = cutoff_v, power_tau_s, volt_tau_s
         self._t = self._p = self._v = None
         self.charge_jump = charge_jump_pct
+        self.slew = slew_pct_per_min          # how fast the shown % may move when not charging
+        self._shown = None
+        self._peak = 0.0
         self.charging = False
         self.used_wh = 0.0                    # energy drawn since the core started
 
     def update(self, mv, ma, now: float) -> dict:
         empty = {"charging": False, "battery_pct": None, "power_w": None, "runtime_min": None, "used_wh": round(self.used_wh, 2)}
         if not mv or mv < 5000:               # no pack (bench on USB): the INA219 sees ~0 V
-            self._t = self._p = self._v = None
+            self._t = self._p = self._v = self._shown = None
             self.charging = False
             return empty
         volts, amps = mv / 1000.0, max(0.0, (ma or 0) / 1000.0)
         power = volts * amps
         rest_v = volts + amps * self.r_int    # the voltage the pack would have without the load
+        dt_ok = self._t is not None
+        dt = 0.0
         if self._t is None:
             self._p, self._v = power, rest_v
         else:
             # The charger bypasses the INA219, so charging shows only as a jump: plugged in, the
-            # pack voltage lifts the percentage by `charge_jump` points or more within seconds
-            # (the smoothed value lags); a drop that size again = unplugged.
+            # instant percentage rises `charge_jump` points above the slow average. Unplugged, it
+            # falls that far below the highest value seen while charging.
             low = self.cutoff_v / self.cells
-            jump = usable_percent(rest_v / self.cells, low) - usable_percent(self._v / self.cells, low)
-            if jump >= self.charge_jump:
-                self.charging = True
-            elif jump <= -self.charge_jump:
-                self.charging = False
+            raw = usable_percent(rest_v / self.cells, low)
+            if not self.charging:
+                if raw - usable_percent(self._v / self.cells, low) >= self.charge_jump:
+                    self.charging, self._peak = True, raw
+            else:
+                self._peak = max(self._peak, raw)
+                if raw <= self._peak - self.charge_jump:
+                    self.charging = False
             dt = max(0.0, now - self._t)
             self.used_wh += power * dt / 3600.0
             ka, kv = min(1.0, dt / self.power_tau), min(1.0, dt / self.volt_tau)
             self._p += (power - self._p) * ka
             self._v += (rest_v - self._v) * kv
         self._t = now
-        pct = usable_percent(self._v / self.cells, self.cutoff_v / self.cells)
+        est = usable_percent(self._v / self.cells, self.cutoff_v / self.cells)
+        # Like a phone: the shown value never jumps. Estimate = slow average of the sag-corrected
+        # voltage, then the display follows it at `slew` %/min (a real pack drains ~0.2 %/min).
+        # While charging it follows the estimate straight away.
+        if self._shown is None or self.charging:
+            self._shown = est
+        else:
+            step = self.slew * (dt / 60.0 if dt_ok else 0.0)
+            self._shown += max(-step, min(step, est - self._shown))
+        pct = self._shown
         runtime = None
         if self._p >= 0.5:                    # below half a watt the number means nothing
             runtime = int(round(self.pack_wh * pct / 100.0 / self._p * 60.0))
