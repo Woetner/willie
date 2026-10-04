@@ -480,3 +480,14 @@ def test_every_phase_of_a_turn_has_its_own_face(face):
     face.event("turn_pending")
     face.event("dropped", "noise")
     assert face.snapshot().state == "waiting"              # it was only noise
+
+    # A one-word answer is too short for a turn: sound -> hearing, quiet -> understanding,
+    # the server's words keep it there, and with no answer it falls back to waiting.
+    face.event("voice_start")
+    assert face.snapshot().state == "hearing"
+    face.event("voice_stop")
+    assert face.snapshot().state == "understanding"
+    face.clock.now += Face.UNDERSTAND_S + .1
+    assert face.snapshot().state == "waiting"
+    face.event("heard", "ja")                              # words read with no local turn: still shown
+    assert face.snapshot().state == "understanding"

@@ -441,6 +441,7 @@ class Speaker:
 SPEECH_OVER_ROOM = 2.5
 SPEECH_MIN = 0.10            # never call anything under 10 % FS (after gain) speech
 TURN_END_S = 0.8             # this much quiet after speech = his turn is over -> thinking
+VOICE_HINT_S = 0.12          # the face shows "hearing" from here, long before a burst counts as a turn
 SPEECH_MIN_S = 0.4           # shorter bursts (a cough, a click, a cup on the desk) are no turn
 PREROLL_MAX_S = 15.0         # audio kept while the session opens (the one-breath question)
 
@@ -541,7 +542,7 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             stop_spotter = wake.Spotter() if wake.available() else None
         except Exception:
             stop_spotter = None
-    user_speaking, speech_start, last_speech, turn_open = False, 0.0, 0.0, False
+    user_speaking, speech_start, last_speech, turn_open, voiced = False, 0.0, 0.0, False, False
     preroll: deque[bytes] = deque(maxlen=int(PREROLL_MAX_S * 1000 / CHUNK_MS))
     loop = asyncio.get_running_loop()
     if recorder is not None:
@@ -645,6 +646,9 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 last_speech = now
                 if not user_speaking:
                     user_speaking, speech_start = True, now
+                if not voiced and now - speech_start >= VOICE_HINT_S and (gate is None or gate.state == "open"):
+                    voiced = True
+                    on_event("voice_start", "")      # face only: sound first, a turn only after SPEECH_MIN_S
                 # Garage mode: only a voice the gate let through makes the face listen.
                 if (not turn_open and now - speech_start >= SPEECH_MIN_S
                         and (gate is None or gate.state == "open")):
@@ -655,6 +659,9 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 if turn_open:
                     turn_open = False
                     on_event("user_turn_end", "")
+                elif voiced:
+                    on_event("voice_stop", "")       # too short to be a turn: the face waits for the server
+                voiced = False
             if sent % 20 == 0:                       # every 2 s
                 on_event("uplink", f"{sent} chunks, loudest {loudest * 100:.1f}% FS, "
                                    f"room {detector.room() * 100:.1f}%")
@@ -1083,7 +1090,8 @@ async def session(
 
     def event(kind: str, detail: str) -> None:
         if standby.on and kind in ("speaking", "turn_complete", "said", "heard",
-                                   "user_speaking", "user_turn_end", "interrupted"):
+                                   "user_speaking", "user_turn_end", "interrupted",
+                                   "voice_start", "voice_stop"):
             return
         if kind == "wake_again":
             activity[0] = loop.time()

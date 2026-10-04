@@ -193,6 +193,7 @@ class Face:
         self._audio = deque(maxlen=1500)  # 30 s at 20 ms; amplitudes only, no stored audio
         self._audio_until = 0.0
         self._return_to_listening = False
+        self._state_since = 0.0
         self._busy: list[str] = []   # labels of running background jobs (Face.busy)
         self._level = 0.0
         self.on_pet = None           # fn() on every accepted touch (mood event, G2)
@@ -345,10 +346,14 @@ class Face:
         except (OSError, ValueError, KeyError, TypeError):
             return {"battery": None, "charging": False}
 
+    UNDERSTAND_S = 6.0          # "GOT IT..." with no answer, tool or words after this long = it was noise
+
     def set_state(self, state, text="", *, code=""):
         state = state.replace(" ", "_")
         if state not in STATES:
             raise ValueError(f"unknown face state: {state}")
+        if state != self._view.state:
+            self._state_since = self.clock()
         if state == "show":
             self.show(text or "...")
             return
@@ -753,6 +758,15 @@ class Face:
             elif kind == "user_speaking":
                 if self._view.state != "talking":
                     self.set_state("hearing")
+            elif kind == "voice_start":               # sound in the mic, before it counts as a turn
+                if self._view.state in ("listening", "waiting", "understanding"):
+                    self.set_state("hearing")
+            elif kind == "voice_stop":                # a short word or a click: no turn, but the server may answer
+                if self._view.state == "hearing":
+                    self.set_state("understanding")
+            elif kind == "heard":                     # the server read words: it is working on them
+                if self._view.state in ("listening", "waiting"):
+                    self.set_state("understanding")
             elif kind == "turn_pending":              # you went quiet, the words are not read yet
                 if self._view.state != "talking":
                     self.set_state("understanding")
@@ -821,6 +835,8 @@ class Face:
                 if self._return_to_listening:
                     self.set_state("waiting")
                     self._return_to_listening = False
+            if self._view.state == "understanding" and now - self._state_since > self.UNDERSTAND_S:
+                self.set_state("waiting")             # nothing came of it: a noise, not a question
             v = replace(self._view, level=self._level)
             if self._busy and v.state not in ("talking", "error", "low_battery"):
                 v.label, v.state = self._busy[-1]
