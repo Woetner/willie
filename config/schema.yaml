@@ -96,6 +96,9 @@ voice:
   robot_filter:    {type: float, default: 0.3, min: 0, max: 1, help: Amount of robot voice filter}
   wake_sensitivity: {type: float, default: 0.35, min: 0.1, max: 0.8, help: "How easily 'Hey Willie' wakes him (cutoff = 1 - this). Higher = hears it softer and further away, but more false wakes. 0.35 = cutoff 0.65 (0.5 woke too easily, Wouter 25 Sep)"}
   wake_gain:       {type: float, default: 8.0, min: 1, max: 32, help: "Digital mic gain for wake word + recorder (INMP441 is quiet; left channel only)"}
+  doa_spacing:     {type: float, default: 0.078, min: 0.03, max: 0.2, unit: m, help: "Effective mic spacing for sound direction (fitted by make mic-tune)"}
+  doa_offset:      {type: float, default: 0.0, min: -10, max: 10, unit: samples, help: "Left/right lag a voice straight ahead already shows, at 48 kHz (fitted by make mic-tune)"}
+  doa_flip:        {type: bool, default: false, help: "Mirror the sound-direction sign (fitted by make mic-tune)"}
   clean:           {type: bool, default: true, help: "Live conversation mic: noise suppression + automatic gain (speexdsp). Off = the fixed wake gain, which clips a close voice"}
   denoise_db:      {type: int, default: -15, min: -40, max: 0, unit: dB, help: "How hard steady noise (fan, fridge, printer) is pushed down. More negative = quieter room, but voices get a watery edge"}
   aec:             {type: bool, default: true, help: "Echo cancellation: removes his own voice from the mic, so you can talk over him (barge-in)"}

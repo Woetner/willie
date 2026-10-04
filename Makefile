@@ -12,7 +12,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash flash-link monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test bench-aec voice-enroll garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs
+        pull-config run-local fw flash flash-link monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test bench-aec bench-doa mic-tune mic-tune-undo voice-enroll garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs
 
 help:
 	@echo "Pi"
@@ -33,6 +33,9 @@ help:
 	@echo "  make voice-pi     hands-free loop in the foreground (the willie-voice service does this at boot)"
 	@echo "  make voice-logs   follow what the hands-free service hears and does"
 	@echo "  make wake-test    2 min wake-word bench (S=600 for longer), service paused meanwhile"
+	@echo "  make bench-doa    G4 sound direction: live angle, or A='0 45 -45' to test positions"
+	@echo "  make mic-tune     guided mic tuning: noise, gain, sound-direction fit, 10-try check (writes settings after asking)"
+	@echo "  make mic-tune-undo  restore the settings from before the last mic-tune"
 	@echo "  make live-talk    spoken session until Ctrl-C, no wake word (S=60 for a timed one)"
 	@echo "  make voice-samples make the candidate voice samples on the Pi (V='Orus Schedar' for only those)"
 	@echo "  make voices       play the voice samples one after another on the Mac"
@@ -155,6 +158,15 @@ wake-test: sync
 
 bench-aec: sync
 	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/aec_delay.py'
+
+bench-doa: sync
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/doa.py $(FLIP) $(A)'
+
+mic-tune: sync
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/mic_tune.py'
+
+mic-tune-undo: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/bench/mic_tune.py undo'
 
 live-talk: sync
 	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/live_talk.py $(S)'
