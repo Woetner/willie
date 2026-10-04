@@ -61,8 +61,8 @@ DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
 # than written ones, and the model needs telling not to slow down for clarity.
 LIVE_EXTRA = (
     "Dit is een gesprek via een luidspreker. Praat in een vlot, stevig tempo, "
-    "niet langzaam of overdreven duidelijk. Hou elke beurt kort: een of twee "
-    "zinnen, daarna stil zijn. Val niet terug op beleefdheidsformules."
+    "niet langzaam of overdreven duidelijk. De lengte volgt de vraag (zie 'Hoe je praat'): "
+    "een opdracht of feit kort, een uitleg volledig. Val niet terug op beleefdheidsformules."
 )
 
 
@@ -503,7 +503,7 @@ class Standby:
 async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Event,
                       activity: list[float], on_event, ready: asyncio.Event | None = None,
                       recorder: subprocess.Popen | None = None, standby: Standby | None = None,
-                      gate=None) -> None:
+                      gate=None, local=None) -> None:
     """Mic -> adapter. Starts before the session is open: what Wouter says straight after
     "Hey Willie" is kept (`ready` not set yet) and sent the moment the session is ready, so
     "Hey Willie, hoe laat is het?" works in one breath (23 Sep). `recorder` is the wake
@@ -531,6 +531,16 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
     loud: list[bytes] = []                  # barge-in candidates while he talks
     detector = SpeechDetector()
     sent, loudest = 0, 0.0
+    # T4: "Hey Willie" / "Willie" while he talks stops him. The wake model listens to the fixed-gain
+    # mic; his own echo rarely sounds like his name. Off: voice.stop_word.
+    stop_spotter, was_speaking = None, False
+    held_local: list[bytes] = []
+    if settings.get("stop_word", True):
+        try:
+            from willie.voice import wake
+            stop_spotter = wake.Spotter() if wake.available() else None
+        except Exception:
+            stop_spotter = None
     user_speaking, speech_start, last_speech, turn_open = False, 0.0, 0.0, False
     preroll: deque[bytes] = deque(maxlen=int(PREROLL_MAX_S * 1000 / CHUNK_MS))
     loop = asyncio.get_running_loop()
@@ -569,10 +579,16 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 up = cleaner.process(mic.s16(decimated, clean.IN_GAIN), played)
             peak = _peak(chunk)
             if ready is not None and not ready.is_set():
-                preroll.append(up)
+                if local is None:
+                    preroll.append(up)
+                else:           # T7: the one-breath command ("Hey Willie, stop") is judged locally too
+                    held_local += local.feed(up, detector.is_speech(peak), loop.time())
                 continue
             while preroll:
                 await adapter.send_audio(preroll.popleft())
+            if held_local:
+                await _send_gated(adapter, held_local)
+                held_local = []
             if standby is not None:
                 standby.recent.append(up)
                 if standby.on:
@@ -589,6 +605,16 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             # than his own voice coming back through the microphone (after AEC: than
             # what is left of it).
             if speaker.speaking(loop.time()):
+                if stop_spotter is not None:
+                    if not was_speaking:
+                        stop_spotter.reset()
+                    if stop_spotter.feed(chunk):
+                        was_speaking = False
+                        on_event("stop_word", "")
+                        speaker.stop()
+                        await adapter.interrupt()
+                        continue
+                was_speaking = True
                 if speaker.echo is not None:
                     # 50 = off: at volume 0.8 his leftover echo is as loud as Wouter at 1 m
                     # (bench with his real voice, 25 Sep), so he interrupted himself.
@@ -604,17 +630,15 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 if len(loud) == BARGE_IN_CHUNKS:    # through: the held start of the words too
                     for held in loud[:-1]:
                         await adapter.send_audio(held)
+            was_speaking = False
             now = loop.time()
             speech = detector.is_speech(peak)
-            if gate is None:
-                await adapter.send_audio(up)
+            if gate is not None:
+                await _send_gated(adapter, gate.feed(chunk, speech, now))
+            elif local is not None:
+                await _send_gated(adapter, local.feed(up, speech, now))
             else:
-                from willie.voice.gate import END
-                for out in gate.feed(chunk, speech, now):
-                    if out == END:
-                        await adapter.end_audio()
-                    else:
-                        await adapter.send_audio(out)
+                await adapter.send_audio(up)
             sent += 1
             loudest = max(loudest, peak)
             if speech:
@@ -646,6 +670,48 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             await process.wait()
 
 
+async def _send_gated(adapter: VoiceAdapter, chunks: list[bytes]) -> None:
+    """What a gate (garage voice check, local first) let through; b"" = the turn is over."""
+    for out in chunks:
+        if out == b"":
+            await adapter.end_audio()
+        else:
+            await adapter.send_audio(out)
+
+
+def local_first(loop, audio, event):
+    """T7: the gate that answers short commands without Gemini, or None (switched off, no home
+    server link). Its worker thread reaches the session through the loop."""
+    try:
+        from willie.config import Config
+        if not Config().get("voice.local_first"):
+            return None
+    except Exception:
+        return None
+    from willie.skills import huis
+    if huis.HUB_CALL is None:
+        return None
+    import base64
+    from pathlib import Path
+    from willie.audio import speech
+    from willie.face.runtime import Face
+    from willie.voice import local
+
+    def transcribe(pcm: bytes):
+        result = huis.HUB_CALL("versta", {"pcm": base64.b64encode(pcm).decode()}, 4)
+        return result.get("tekst") if isinstance(result, dict) and "fout" not in result else None
+
+    phrases = local.Phrases(lambda text: speech.gemini_pcm(text, os.environ.get("GEMINI_API_KEY", "")),
+                            Path.home() / ".cache" / "willie" / "phrases")
+    threading.Thread(target=phrases.warm, name="phrases", daemon=True).start()
+    router = local.Router(
+        transcribe, willie_tools.call, lambda pcm: loop.call_soon_threadsafe(audio, pcm), phrases,
+        on_event=lambda kind, detail="": loop.call_soon_threadsafe(event, kind, detail),
+        battery=Face._read_battery, volume=speech.volume, wrap_up=willie_tools.WRAP_UP.set,
+        noise_filter=bool(Config().get("voice.noise_filter")))
+    return local.LocalFirst(router.route)
+
+
 def show(args: dict, face=None) -> dict:
     """Update the session's face owner; never open a competing framebuffer writer."""
     text = str(args.get("tekst", "")).strip()
@@ -663,6 +729,35 @@ SHOW = Tool(
     {"type": "object", "properties": {"tekst": {"type": "string", "description": "Maximaal ~180 tekens."}},
      "required": ["tekst"]},
     handler=lambda args: asyncio.to_thread(show, args),
+)
+
+
+def show_card(args: dict, face=None) -> dict:
+    """T6: a structured card on the face while he explains."""
+    if face is None:
+        return {"fout": "geen scherm beschikbaar"}
+    from willie.face import card
+    built = card.build(args)
+    if isinstance(built, str):
+        return {"fout": built}
+    return face.show_card(built)
+
+
+CARD = Tool(
+    "kaart",
+    "Zet een kaart op je scherm vóór je iets uitlegt: punten of stappen (regels), vergelijk (links, rechts), "
+    "getal (waarde, regels = bijschrift) of staaf (staven, eenheid). Trefwoorden, geen zinnen; jij vertelt.",
+    {"type": "object", "properties": {
+        "soort": {"type": "string", "enum": ["punten", "stappen", "vergelijk", "getal", "staaf"]},
+        "titel": {"type": "string"},
+        "regels": {"type": "array", "items": {"type": "string"}, "description": "Hooguit 5, elk hooguit 60 tekens."},
+        "links": {"type": "object", "properties": {"kop": {"type": "string"}, "regels": {"type": "array", "items": {"type": "string"}}},
+                  "description": "Kolom: kop + hooguit 4 korte regels."},
+        "rechts": {"type": "object", "properties": {"kop": {"type": "string"}, "regels": {"type": "array", "items": {"type": "string"}}}},
+        "waarde": {"type": "string", "description": "Getal met eenheid."},
+        "staven": {"type": "array", "items": {"type": "object", "properties": {"naam": {"type": "string"}, "waarde": {"type": "number"}}}},
+        "eenheid": {"type": "string"},
+    }, "required": ["soort", "titel"]},
 )
 
 
@@ -758,7 +853,8 @@ def willie_tool_list(face=None, web_search: bool = True) -> list[Tool]:
     screen = Tool(SHOW.name, SHOW.description, SHOW.parameters, handler=lambda args: show(args, face))
     photo = Tool(SHOW_PICTURE.name, SHOW_PICTURE.description, SHOW_PICTURE.parameters,
                  handler=lambda args: asyncio.to_thread(show_picture, args, face))
-    tools = [screen, photo, *wrapped]
+    cards = Tool(CARD.name, CARD.description, CARD.parameters, handler=lambda args: show_card(args, face))
+    tools = [screen, cards, photo, *wrapped]
     if web_search:
         from willie.voice import search
 
@@ -852,6 +948,30 @@ def configured_followup() -> float:
         return 20.0
 
 
+def configured_windows() -> tuple[float, float]:
+    """(voice.followup_command_s, voice.followup_question_s) from the live willie.yaml."""
+    try:
+        from willie.config import Config
+        config = Config()
+        return float(config.get("voice.followup_command_s")), float(config.get("voice.followup_question_s"))
+    except Exception:
+        return 8.0, 30.0
+
+
+def followup_window(base: float | None, said: str, tool: bool, windows: tuple[float, float]) -> float | None:
+    """T3: how long he keeps listening after his answer. He asked something: longer. He only
+    confirmed a command (a tool ran, a few words): shorter. Otherwise voice.followup_s."""
+    if not base:
+        return base
+    command_s, question_s = windows
+    said = said.strip()
+    if said.endswith("?"):
+        return max(base, question_s)
+    if tool and len(said) <= 40:
+        return min(base, command_s)
+    return base
+
+
 def configured_standby() -> float:
     """voice.standby_s: after niet_voor_mij, how long he stays connected but silent."""
     try:
@@ -864,7 +984,7 @@ def configured_standby() -> float:
 def configured_clean() -> dict:
     """voice.clean / denoise_db / aec / aec_delay_ms / barge_in: the live uplink's cleaning."""
     values = {"clean": True, "denoise_db": -15, "aec": True, "aec_delay_ms": 295.0, "barge_in": 50.0,
-              "pickup_delay_s": 1.5}
+              "pickup_delay_s": 1.5, "stop_word": True}
     try:
         from willie.config import Config
         cfg = Config()
@@ -932,6 +1052,11 @@ async def session(
     # Face: "thinking" only once the server has heard words in this turn. The mic's own
     # level detector says when the turn *ends*; the transcription says it *was speech*.
     turn = {"heard": False, "ended": False}
+    # T3: what his last answer was, for the follow-up window: a question of his own waits longer,
+    # a done command ("Gedaan.") shorter.
+    last = {"said": "", "tool": False}
+    running = {"tools": 0}       # a tool still at work (a search, a photo) is not silence: no idle close
+    windows = configured_windows()
     standby = Standby()
     standby_s = configured_standby()
     willie_tools.WRAP_UP.clear()
@@ -976,6 +1101,16 @@ async def session(
             stop.set()
         elif kind == "tool":
             activity[0] = loop.time()
+            last["tool"] = True
+            running["tools"] += 1
+        elif kind == "tool_result":
+            activity[0] = loop.time()
+            running["tools"] = max(0, running["tools"] - 1)
+        elif kind == "dropped":                    # the noise filter: he heard a sound, not a sentence
+            emit(kind, detail)
+            return
+        elif kind == "stop_word":
+            threading.Thread(target=_chime, args=("idle",), daemon=True).start()
         elif kind == "heard":
             activity[0] = loop.time()
             add_turn("user", detail)
@@ -987,15 +1122,23 @@ async def session(
                 on_event(kind, detail)
             return
         elif kind == "said":
+            last["said"] += detail
+            if face:
+                face.caption(detail)
             add_turn("willie", detail)
             if on_event:
                 on_event(kind, detail)
             return
         elif kind == "user_speaking":
             turn["heard"] = turn["ended"] = False
+            last["said"], last["tool"] = "", False
         elif kind == "user_turn_end":
+            if on_event:
+                on_event("speech_end", "")         # journal (T0): the transcript arrives later than the quiet
             if not turn["heard"]:
                 turn["ended"] = True               # wait for words before "thinking"
+                if face:
+                    face.event("turn_pending")      # but not still "listening": show it
                 return
             turn["heard"] = False
         elif kind in ("speaking", "turn_complete"):
@@ -1023,11 +1166,30 @@ async def session(
 
     adapter.on_audio(audio)
     adapter.on_event(event)
+    if face:
+        # T4: a tap on the screen while he talks stops him (the face loop calls this from its thread).
+        def stop_talking():
+            # Called from the face's thread: everything that touches the session runs on its loop.
+            def on_loop():
+                speaker.stop()
+                asyncio.ensure_future(adapter.interrupt())
+            loop.call_soon_threadsafe(on_loop)
+        face.on_stop = stop_talking
+
+        # T6: MEER / HERHAAL on a card ask him, in this conversation, without a word from Wouter.
+        def card_button(name: str) -> None:
+            activity[0] = loop.time()
+            text = ("[SCHERM] Wouter tikte op MEER: ga dieper in op het onderwerp van de kaart, met nieuwe inhoud."
+                    if name == "MEER" else
+                    "[SCHERM] Wouter tikte op HERHAAL: zeg je laatste uitleg nog eens, korter en in andere woorden.")
+            asyncio.run_coroutine_threadsafe(adapter.send_text(text), loop)
+        face.on_card = card_button
     if gate is not None:
         gate.on_event = lambda kind, detail="": event(kind, detail) if kind == "wake_again" else emit(kind, detail)
     # The mic runs from the start: whatever he hears while the session opens is kept.
+    local = local_first(loop, audio, event) if gate is None else None
     mic_task = asyncio.create_task(_microphone(adapter, speaker, stop, activity, event, ready, recorder,
-                                               standby, gate))
+                                               standby, gate, local))
     # zoek_op too when a free key exists: the free key cannot use the model's own search.
     tools = willie_tool_list(face, web_search=not native_search or bool(os.environ.get("GEMINI_API_KEY_FREE")))
     if gate is None:
@@ -1090,9 +1252,12 @@ async def session(
             # under a pinout and then ignored the next question).
             if face and getattr(face, "showing", lambda: False)():
                 activity[0] = loop.time()
-            last = max(activity[0], speaker.busy_until)
-            if idle_timeout and loop.time() - last >= idle_timeout:
-                emit("idle", f"{idle_timeout:.0f} s without words")
+            if running["tools"]:
+                activity[0] = loop.time()
+            quiet_since = max(activity[0], speaker.busy_until)
+            window = followup_window(idle_timeout, last["said"], last["tool"], windows)
+            if window and loop.time() - quiet_since >= window:
+                emit("idle", f"{window:.0f} s without words")
                 stop.set()
 
     tasks = [mic_task, asyncio.create_task(idle_watch())]
@@ -1107,6 +1272,11 @@ async def session(
         results = await asyncio.gather(*tasks, return_exceptions=True)
         speaker.stop()
         await adapter.close()
+        if face:
+            face.on_stop = face.on_card = None
+        if local is not None:
+            local.close()
+            emit("local", " ".join(f"{k}={v}" for k, v in local.stats.items()))
         if control is not None:
             control.pop("say", None)
         if resume is not None:

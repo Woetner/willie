@@ -42,6 +42,8 @@ class Touch:
     moved = False
     calibration: dict = {}
 
+    released_at, released_raw = (240.0, 160.0), (None, None)     # where the last touch came down
+
     def __init__(self, path):
         self.fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         self.pending = b""
@@ -103,6 +105,7 @@ class Touch:
                 if self.down and value == 0:
                     tapped = True
                     where = self.start or (240.0, 160.0)
+                    self.released_at, self.released_raw = where, self.raw
                     if self.moved:
                         self.gestures.append(("release",))
                     elif now - self.down_at >= self.LONG_S:
@@ -180,6 +183,7 @@ class Face:
         self._dance_until = 0.0
         self._shown_text = ""
         self._shown_image = None
+        self._shown_card = None
         self._shown_flash = False
         self._page_offset = 0
         self._pinout = None          # K1: willie.face.pinout.Pinout while a pinout is shown
@@ -192,9 +196,15 @@ class Face:
         self._busy: list[str] = []   # labels of running background jobs (Face.busy)
         self._level = 0.0
         self.on_pet = None           # fn() on every accepted touch (mood event, G2)
+        self.on_stop = None          # fn(): a tap while he talks stops him (T4); set by the live session
+        self.on_card = None          # fn("MEER" | "HERHAAL"): a button on a card (T6); set by the live session
+        self._calib = None           # the four-cross touch calibration while it runs
+        self._pressed = ("", -10.0)  # (card button, lit until)
+        self._caption = ""
         self.on_wake = None          # fn() on a touch while asleep (Phase P): wakes him instead of a pet
         self.sleep_settings = config.snapshot().get("sleep", {}) if config else {}
         self.backlight = Backlight()
+        self._torch_until = 0.0      # flashlight: full white screen until this time
         self.dark = False            # deep sleep: screen black, backlight off, no rendering
         self._asleep_since = None
         self.failure = None
@@ -251,6 +261,8 @@ class Face:
                         self.config.reload()
                         snapshot = self.config.snapshot()
                         self.settings, self.sleep_settings = snapshot["face"], snapshot.get("sleep", {})
+                        if self.settings.get("calibrate") and self._calib is None and self.touch is not None:
+                            self.calibrate()
                     except Exception as exc:
                         log.warning("face settings unchanged: %s", exc)
                     next_config = now+2
@@ -261,13 +273,26 @@ class Face:
                     try:
                         self.touch.calibration = self.settings
                         released = self.touch.poll()
-                        if self._confirm is not None:
+                        if released:
+                            log.info("touch at %.0f,%.0f (raw %s) %s", *self.touch.released_at, self.touch.released_raw,
+                                     [g[0] for g in self.touch.gestures])
+                        if self._calib is not None:
+                            if released:
+                                self._calibrate_tap(now, self.touch.released_raw)
+                        elif self._confirm is not None:
                             self.confirm_input(now, self.touch.down, self.touch.down_at, self.touch.gestures)
+                        elif self._torch_on(now):
+                            if released:
+                                self.flashlight(False)
                         elif self._pinout_on(now):
                             for gesture in self.touch.gestures:
                                 self.pinout_gesture(gesture, now)
                         elif released and self._view.muted and self.on_wake:
                             self._wake_touch(self.touch.gestures)
+                        elif released and self._card_tap(now, self.touch.gestures):
+                            pass
+                        elif released and self._view.state == "talking" and self.on_stop and not self.showing():
+                            threading.Thread(target=self.on_stop, name="tap-stop", daemon=True).start()
                         elif released:
                             self.pet()
                     except OSError as exc:
@@ -369,13 +394,24 @@ class Face:
             return {"fout": "geen tekst"}
         with self._lock:
             self._shown_text = text
-            self._shown_image = None
+            self._shown_image = self._shown_card = None
             self._pinout_until = 0
             self._show_started = self.clock()
             pages = max(1, (len(font.lines(text, 36))+6)//7)
             self._show_until = self._show_started+max(15, pages*6)
             self._page_offset = 0
         return {"getoond": text}
+
+    def show_card(self, card: dict, seconds: float = 45.0):
+        """T6: a bullet, step, comparison, number or bar card (willie/face/card.py). One page: a tap returns."""
+        with self._lock:
+            self._shown_text = card.get("titel") or "kaart"
+            self._shown_image, self._shown_card = None, card
+            self._pinout_until = 0
+            self._show_started = self.clock()
+            self._show_until = self._show_started + seconds
+            self._page_offset = 0
+        return {"getoond": card.get("titel") or card["soort"]}
 
     def show_image(self, picture, seconds=20, flash=False):
         """Put a `willie.face.picture.Picture` on the show card. Scaling and pixel
@@ -390,13 +426,24 @@ class Face:
                 prepared[key] = (fitted.width, fitted.height, display.convert(fitted.rgb))
         with self._lock:
             self._shown_text = picture.title
-            self._shown_image = prepared
+            self._shown_image, self._shown_card = prepared, None
             self._shown_flash = flash
             self._pinout_until = 0
             self._show_started = self.clock()
             self._show_until = self._show_started + seconds
             self._page_offset = 0
         return {"getoond": picture.title}
+
+    def flashlight(self, on: bool = True, seconds: float | None = None) -> dict:
+        """Full white screen as a flashlight. A tap or `flashlight(False)` ends it; it also ends by itself
+        after `seconds` (default face.flashlight_s) so a forgotten torch cannot drain the battery."""
+        seconds = float(self.settings.get("flashlight_s", 300) if seconds is None else seconds)
+        with self._lock:
+            self._torch_until = self.clock()+seconds if on and seconds > 0 else 0.0
+        return {"zaklamp": "aan" if on else "uit"}
+
+    def _torch_on(self, now) -> bool:
+        return now < self._torch_until
 
     def dismiss(self):
         with self._lock:
@@ -532,8 +579,8 @@ class Face:
     def _sleep_dark(self, now) -> bool:
         """Asleep (muted + sleep face, nothing on screen, no question waiting) for sleep.dim_after_s."""
         with self._lock:
-            asleep = (self._view.muted and self._view.state == "sleep" and self._confirm is None
-                      and now >= self._show_until and not self._pinout_on(now))
+            asleep = (self._view.muted and self._view.state == "sleep" and self._confirm is None and self._calib is None
+                      and now >= self._show_until and not self._pinout_on(now) and not self._torch_on(now))
         if not asleep:
             self._asleep_since = None
             return False
@@ -551,13 +598,120 @@ class Face:
             self.backlight.set(self.sleep_settings.get("backlight_gpio", 0), True)
         threading.Thread(target=self.on_wake, name="wake-touch", daemon=True).start()
 
+    # ---- Touch helpers ---------------------------------------------------------------------
+    def _tap_point(self, gestures):
+        """Where the finger came down, for buttons: a tap, a long press, or a touch that slid a
+        little (a resistive panel jitters past MOVE_PX easily, and then there is no "tap")."""
+        for gesture in gestures:
+            if gesture[0] in ("tap", "long"):
+                return gesture[1], gesture[2]
+        if any(g[0] == "release" for g in gestures) and self.touch is not None:
+            return getattr(self.touch, "released_at", None)
+        return None
+
+    @staticmethod
+    def _hit(point, box, margin=14) -> bool:
+        x, y, w, h = box
+        return point is not None and x - margin <= point[0] <= x + w + margin and y - margin <= point[1] <= y + h + margin
+
+    # ---- Touch calibration (face.calibrate) ----------------------------------------------
+    CALIB_POINTS = ((40, 40), (440, 40), (440, 280), (40, 280))      # TL, TR, BR, BL on the 480x320 screen
+    CALIB_TIMEOUT_S = 90.0
+
+    def calibrate(self) -> None:
+        """Start the four-cross calibration screen (also: set face.calibrate in the dashboard)."""
+        with self._lock:
+            self._calib = {"raw": [], "started": self.clock(), "done": None}
+
+    def _calibrate_tap(self, now: float, raw) -> None:
+        with self._lock:
+            c = self._calib
+            if c is None or c["done"] is not None or raw is None or None in raw or now - c["started"] < 0.6:
+                return
+            c["raw"].append(tuple(raw))
+            c["started"] = now                                   # debounce between crosses
+            if len(c["raw"]) < len(self.CALIB_POINTS):
+                return
+            values = self.calibration_from(c["raw"])
+            c["done"] = now
+            c["ok"] = values is not None
+        try:
+            if self.config is not None:
+                self.config.update({"face": {**(values or {}), "calibrate": False}})
+        except Exception as exc:
+            log.warning("could not save the touch calibration: %s", exc)
+        if values:
+            self.settings = {**self.settings, **values}
+            log.info("touch calibrated: %s", values)
+
+    @classmethod
+    def calibration_from(cls, raw: list) -> dict | None:
+        """Four raw (x, y) readings at CALIB_POINTS -> the face.touch_* settings, or None when the
+        taps make no sense (two crosses at the same spot)."""
+        (tl, tr, br, bl), (px0, py0), (px1, py1) = raw, cls.CALIB_POINTS[0], cls.CALIB_POINTS[2]
+        across = ((tr[0] + br[0]) - (tl[0] + bl[0])) / 2, ((tr[1] + br[1]) - (tl[1] + bl[1])) / 2
+        swap = abs(across[1]) > abs(across[0])
+        if swap:
+            tl, tr, br, bl = [(p[1], p[0]) for p in (tl, tr, br, bl)]
+        left, right = (tl[0] + bl[0]) / 2, (tr[0] + br[0]) / 2
+        top, bottom = (tl[1] + tr[1]) / 2, (bl[1] + br[1]) / 2
+        if abs(right - left) < 300 or abs(bottom - top) < 300:
+            return None
+        per_x, per_y = (right - left) / (px1 - px0), (bottom - top) / (py1 - py0)
+        x_at_0, x_at_480 = left - px0 * per_x, right + (480 - px1) * per_x
+        y_at_0, y_at_320 = top - py0 * per_y, bottom + (320 - py1) * per_y
+        clamp = lambda v: int(max(0, min(4095, round(v))))
+        return {"touch_x_min": clamp(min(x_at_0, x_at_480)), "touch_x_max": clamp(max(x_at_0, x_at_480)),
+                "touch_y_min": clamp(min(y_at_0, y_at_320)), "touch_y_max": clamp(max(y_at_0, y_at_320)),
+                "touch_swap_xy": bool(swap), "touch_flip_x": bool(x_at_0 > x_at_480), "touch_flip_y": bool(y_at_0 > y_at_320)}
+
+    def _calib_view(self, now: float):
+        c = self._calib
+        if c is None:
+            return None
+        if c["done"] is not None:
+            if now - c["done"] > 2.0:
+                self._calib = None
+                return None
+            return (len(self.CALIB_POINTS), c.get("ok", False))
+        if now - c["started"] > self.CALIB_TIMEOUT_S:
+            self._calib = None
+            try:
+                if self.config is not None:
+                    self.config.update({"face": {"calibrate": False}})
+            except Exception:
+                pass
+            return None
+        return (len(c["raw"]), None)
+
+    def _card_tap(self, now: float, gestures) -> bool:
+        """A tap on MEER or HERHAAL while a card shows (T6); a tap anywhere else still closes it."""
+        with self._lock:
+            if not (self._shown_card and now < self._show_until and self.on_card):
+                return False
+            point = self._tap_point(gestures)
+            for name, box in Renderer.CARD_BUTTONS.items():
+                if self._hit(point, box):
+                    self._show_until = max(self._show_until, now + 45)     # he keeps explaining: keep the card
+                    if now < self._pressed[1] + 3.0:                       # one press per answer, not one per tap
+                        return True
+                    self._pressed = (name, now + 1.2)                      # lights up: the tap was seen
+                    threading.Thread(target=self.on_card, args=(name,), name="card-button", daemon=True).start()
+                    return True
+        return False
+
+    def caption(self, text: str) -> None:
+        """T6 live captions: the words he is saying (the Live API's own transcript of his voice)."""
+        with self._lock:
+            self._caption = (self._caption + text)[-120:]
+
     def pet(self):
         now = self.clock()
         with self._lock:
             if now < self._pet_until-1.15:  # 250 ms contact debounce
                 return
             if now < self._show_until:
-                pages = 1 if self._shown_image else max(1, (len(font.lines(self._shown_text, 36))+6)//7)
+                pages = 1 if self._shown_image or self._shown_card else max(1, (len(font.lines(self._shown_text, 36))+6)//7)
                 if pages == 1:
                     self._show_until = 0
                 else:
@@ -598,18 +752,31 @@ class Face:
                 self._view.mic = False
             elif kind == "user_speaking":
                 if self._view.state != "talking":
-                    self.set_state("listening")
+                    self.set_state("hearing")
+            elif kind == "turn_pending":              # you went quiet, the words are not read yet
+                if self._view.state != "talking":
+                    self.set_state("understanding")
+            elif kind == "dropped":                   # it was a noise, not a sentence
+                if self._view.state in ("hearing", "understanding"):
+                    self.set_state("waiting")
             elif kind == "user_turn_end":
                 if self._view.state != "talking":
                     self.set_state("thinking")
+            elif kind == "tool":
+                if self._view.state != "talking":
+                    self.set_state("working")
+            elif kind == "tool_result":
+                if self._view.state == "working":
+                    self.set_state("thinking")
             elif kind == "speaking":
+                self._caption = ""
                 self._return_to_listening = False
                 self.set_state("talking")
             elif kind == "interrupted":
                 self._audio.clear()
                 self._level = self._audio_until = 0
                 self._return_to_listening = False
-                self.set_state("listening")
+                self.set_state("hearing")             # you broke in
             elif kind == "turn_complete":
                 self._return_to_listening = True
             elif kind == "error":
@@ -652,7 +819,7 @@ class Face:
             if now >= self._audio_until:
                 self._level = 0.0
                 if self._return_to_listening:
-                    self.set_state("listening")
+                    self.set_state("waiting")
                     self._return_to_listening = False
             v = replace(self._view, level=self._level)
             if self._busy and v.state not in ("talking", "error", "low_battery"):
@@ -672,14 +839,22 @@ class Face:
             # Sentry mode (K5): on guard is the resting face while it runs.
             if v.mode == "SENTRY" and v.state in ("idle", "sleep", "curious", "happy", "sad"):
                 v.state = "sentry"
+            v.caption = self._caption if self.settings.get("captions", True) else ""
+            calib = self._calib_view(now)
             confirm = self._confirm_view(now)
-            if confirm is not None:
+            if calib is not None:
+                v.state, v.calib = "calibrate", calib
+            elif confirm is not None:
                 # A question waiting for his finger wins over everything: it is why he stopped.
                 v.state, v.confirm = "confirm", confirm
+            elif self._torch_on(now):
+                v.state = "flashlight"
             elif self._pinout_on(now) and v.state not in ("error", "low_battery"):
                 v.state, v.pinout = "pinout", self._pinout.frozen()
             elif now < self._show_until and v.state not in ("error", "low_battery"):
                 v.state, v.text, v.image = "show", self._shown_text, self._shown_image
+                v.card = self._shown_card
+                v.pressed = self._pressed[0] if now < self._pressed[1] else ""
                 v.image_age, v.flash = now - self._show_started, self._shown_flash
                 v.page = int((now-self._show_started)//6)+self._page_offset
             return v

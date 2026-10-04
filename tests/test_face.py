@@ -52,16 +52,16 @@ def test_audio_envelope_follows_playback_and_holds_through_tail(face):
     face.clock.now = 101.1
     assert face.snapshot().level > .5
     face.clock.now = 101.21
-    assert face.snapshot().state == "listening" and face.snapshot().level == 0
+    assert face.snapshot().state == "waiting" and face.snapshot().level == 0
 
 
 def test_interruption_clears_pending_audio_and_never_bounces_later(face):
     face.audio(array.array("h", [15000]*24000).tobytes(), starts_at=101)
     face.event("interrupted")
     face.clock.now = 101.5
-    assert face.snapshot().state == "listening" and face.snapshot().level == 0
+    assert face.snapshot().state == "hearing" and face.snapshot().level == 0
     face.clock.now = 103
-    assert face.snapshot().state == "listening"
+    assert face.snapshot().state == "hearing"
 
 
 def test_show_survives_voice_events_but_not_error(face):
@@ -176,7 +176,7 @@ def test_text_wrap_preserves_long_words_and_engineering_symbols():
     wrapped = font.lines(text,36)
     assert all(len(line)<=36 for line in wrapped)
     assert "A"*80 in "".join(wrapped)
-    assert "OHM" in " ".join(wrapped) and "UF" in " ".join(wrapped)
+    assert "Ω" in " ".join(wrapped) and "µF" in " ".join(wrapped)      # real symbols since the glyph font
 
 
 def test_touch_reads_release_even_when_input_events_are_split(monkeypatch):
@@ -277,7 +277,7 @@ def test_busy_shows_researching_except_while_talking(face):
         face.event("turn_complete")
         face.event("interrupted")                    # back to listening -> busy wins again
         assert face.snapshot().label == "RESEARCHING..."
-    assert face.snapshot().label == "" and face.snapshot().state == "listening"
+    assert face.snapshot().label == "" and face.snapshot().state == "hearing"
 
 
 def test_busy_can_show_the_camera(face):
@@ -344,3 +344,139 @@ def test_badges_render_and_never_reach_the_camera_flag(face):
         assert fb.memory[row] == empty.memory[row]
     face.activity([])
     assert face.snapshot().badges == ()
+
+
+CARDS = [
+    {"soort": "punten", "titel": "Slaap", "regels": ["Vaste opstaantijd", "7 tot 8 uur", "Geen scherm het laatste uur"]},
+    {"soort": "stappen", "titel": "Carburateur", "regels": ["Benzinekraan dicht", "Vlotterkamer los", "Sproeier doorblazen"]},
+    {"soort": "vergelijk", "titel": "Langer of regelmatiger",
+     "links": {"kop": "Langer", "regels": ["helpt onder 7 uur", "daarboven weinig winst"]},
+     "rechts": {"kop": "Vaste tijden", "regels": ["klok loopt gelijk", "minder hart- en vaatziekten"]}},
+    {"soort": "getal", "titel": "Slaapduur", "waarde": "7-9 uur", "regels": ["voor volwassenen"]},
+    {"soort": "staaf", "titel": "Slaap per nacht", "eenheid": " u",
+     "staven": [{"naam": "ma", "waarde": 6.5}, {"naam": "di", "waarde": 7.2}, {"naam": "wo", "waarde": 5.9}]},
+]
+
+
+@pytest.mark.parametrize("args", CARDS, ids=[c["soort"] for c in CARDS])
+def test_cards_build_show_render_and_a_tap_returns(face, args):
+    from willie.face import card
+    built = card.build(args)
+    assert isinstance(built, dict)
+    assert face.show_card(built) == {"getoond": args["titel"]}
+    view = face.snapshot()
+    assert view.state == "show" and view.card == built and face.showing()
+    plain, drawn = Framebuffer.canvas(), Framebuffer.canvas()
+    Renderer().draw(plain, replace(view, card=None), 1.0)
+    Renderer().draw(drawn, view, 1.0)
+    assert bytes(plain.memory) != bytes(drawn.memory)
+    face.pet()
+    assert face.snapshot().state != "show"
+    face.show("gewone tekst")
+    assert face.snapshot().card is None                   # a later plain text is not drawn as the old card
+
+
+def test_card_says_what_is_missing():
+    from willie.face import card
+    assert "regels" in card.build({"soort": "punten", "titel": "x"})
+    assert "links" in card.build({"soort": "vergelijk", "titel": "x", "rechts": {"kop": "b", "regels": ["1"]}})
+    assert "soort" in card.build({"soort": "taart"})
+    assert "getal" in card.build({"soort": "staaf", "staven": [{"naam": "a", "waarde": "veel"}]})
+
+
+def test_captions_follow_his_words_and_card_buttons_reach_the_session(face):
+    """T6: live captions while talking; MEER / HERHAAL on a card call on_card and keep the card."""
+    from willie.face import card
+    face.event("ready"); face.event("speaking")
+    face.caption("Vaste tijden zijn beter, zolang je aan ongeveer ")
+    face.caption("zeven uur slaap komt.")
+    view = face.snapshot()
+    assert view.state == "talking" and view.caption.endswith("zeven uur slaap komt.")
+    plain, drawn = Framebuffer.canvas(), Framebuffer.canvas()
+    Renderer().draw(plain, replace(view, caption=""), 1.0)
+    Renderer().draw(drawn, view, 1.0)
+    assert bytes(plain.memory) != bytes(drawn.memory)
+    face.event("turn_complete"); face.event("speaking")
+    assert face.snapshot().caption == ""                              # a new answer starts clean
+
+    got = []
+    face.touch, face.on_card = object(), got.append
+    face.show_card(card.build(CARDS[0]))
+    assert not face._card_tap(face.clock(), [("tap", 100.0, 150.0)])      # the card itself: not a button
+    assert face._card_tap(face.clock(), [("tap", 290.0, 298.0)])          # MEER
+    for _ in range(50):
+        if got:
+            break
+        time.sleep(0.01)
+    assert got == ["MEER"] and face.snapshot().state == "show"
+
+
+def test_buttons_take_a_touch_that_slid_and_calibration_solves_the_panel(face):
+    """A resistive panel jitters: a touch that moved past MOVE_PX is a "release", and still presses a button."""
+    got = []
+    face.touch = type("T", (), {"released_at": (410.0, 270.0), "released_raw": (3000, 2500)})()
+
+    # Four crosses on a panel whose x axis runs backwards: raw 3200 at the left edge, 900 at the right.
+    raw = lambda x, y: (3200 - x / 480 * 2300, 580 + y / 320 * 2380)
+    values = Face.calibration_from([raw(*p) for p in Face.CALIB_POINTS])
+    assert values["touch_flip_x"] and not values["touch_flip_y"] and not values["touch_swap_xy"]
+    assert abs(values["touch_x_min"] - 900) <= 2 and abs(values["touch_x_max"] - 3200) <= 2
+    assert abs(values["touch_y_min"] - 580) <= 2 and abs(values["touch_y_max"] - 2960) <= 2
+    swapped = Face.calibration_from([tuple(reversed(raw(*p))) for p in Face.CALIB_POINTS])
+    assert swapped["touch_swap_xy"] and swapped["touch_flip_x"]
+    assert Face.calibration_from([(100, 100)] * 4) is None
+
+    face.calibrate()
+    assert face.snapshot().state == "calibrate" and face.snapshot().calib == (0, None)
+    for point in Face.CALIB_POINTS:
+        face.clock.now += 1.0
+        face._calibrate_tap(face.clock(), raw(*point))
+    assert face.snapshot().calib == (4, True) and face.settings["touch_flip_x"] is True
+    face.clock.now += 3.0
+    assert face.snapshot().state != "calibrate"
+
+
+def test_new_font_has_lower_case_accents_and_spaces():
+    assert font.normalise("Één café, 10 µF") == "Één café, 10 µF"
+    blank, text = Framebuffer.canvas(), Framebuffer.canvas()
+    Renderer().draw(blank, View(state="show", text="   "), 1.0)
+    Renderer().draw(text, View(state="show", text="a b"), 1.0)
+    assert bytes(blank.memory) != bytes(text.memory)
+
+
+def test_flashlight_is_full_white_ends_on_tap_and_by_itself(face):
+    clock = face.clock
+    face.flashlight(True, 60)
+    assert face.snapshot().state == "flashlight"
+    fb = Framebuffer.canvas()
+    Renderer().draw(fb, face.snapshot(), 0, {"brightness": 5})
+    assert fb.memory[:64] == b"\xff" * 64               # brightness setting does not dim it
+    face.flashlight(False)
+    assert face.snapshot().state != "flashlight"
+    face.flashlight(True, 60)
+    clock.now += 61
+    assert face.snapshot().state != "flashlight"
+
+
+def test_every_phase_of_a_turn_has_its_own_face(face):
+    face.event("ready")
+    assert face.snapshot().state == "listening"            # waiting after the wake word
+    face.event("user_speaking")
+    assert face.snapshot().state == "hearing"              # you are talking
+    face.event("turn_pending")
+    assert face.snapshot().state == "understanding"        # quiet, words not read yet
+    face.event("user_turn_end")
+    assert face.snapshot().state == "thinking"
+    face.event("tool", "web_search")
+    assert face.snapshot().state == "working"
+    face.event("tool_result", "ok")
+    assert face.snapshot().state == "thinking"
+    face.event("speaking")
+    assert face.snapshot().state == "talking"
+    face.event("turn_complete")
+    face.clock.now += 5
+    assert face.snapshot().state == "waiting"              # his turn is over, yours
+    face.event("user_speaking")
+    face.event("turn_pending")
+    face.event("dropped", "noise")
+    assert face.snapshot().state == "waiting"              # it was only noise

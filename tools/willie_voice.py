@@ -33,7 +33,8 @@ from willie.audio import chime, speech
 from willie.brain import memory
 from willie.face.runtime import Face
 from willie import control
-from willie.voice import garage, gemini_live, wake
+from willie.voice import face_speaker, garage, gemini_live, wake
+from willie.voice.journal import Journal
 
 # Follow-up window: voice.followup_s (20 s) unless WILLIE_IDLE_TIMEOUT overrides it (bench).
 IDLE_TIMEOUT = os.environ.get("WILLIE_IDLE_TIMEOUT")
@@ -121,6 +122,7 @@ def main() -> int:
     wake_stop = threading.Event()        # set by the phone app's idle/sleep switch
     sleep_now = threading.Event()        # set by sleep mode: ends a conversation right away
     remote = Remote.from_env(face, wake_stop, sleep_now)
+    journal_now: list[Journal] = []      # the running conversation's journal (T0), for the token meter
     from willie import control              # mood events + resting face from the core (G2)
     # Deep sleep (Phase P): the core may switch privacy.mute by itself (idle, night). Follow it within
     # 1 s: stop the wake-word wait, show the sleep face, tell the app - without a chime.
@@ -192,13 +194,33 @@ def main() -> int:
         huis.HUB_CALL = remote.hub_call
         from willie.skills import kennis
         kennis.HUB_CALL = remote.hub_call
+        from willie.skills import mail
+        mail.HUB_CALL = remote.hub_call
+        from willie.skills import muziek
+        muziek.HUB_CALL = remote.hub_call
         # Token meter (J3): each session's tokens to the hub, in a thread so a slow server
         # never holds up the next conversation. Server down = that record is lost.
         from willie import usage
-        usage.HOOK = lambda record: threading.Thread(
-            target=remote.hub_call, args=("gebruik_sessie", record, 5), daemon=True).start()
+        def meter(record):
+            if journal_now and record.get("source") == "robot":
+                journal_now[0].usage(record)         # the same counts, on the conversation's own record (T0)
+            threading.Thread(target=remote.hub_call, args=("gebruik_sessie", record, 5), daemon=True).start()
+        usage.HOOK = meter
+        # T10: the test sheet once a week (Sunday before dawn), result to the Talk tab.
+        def weekly_sheet():
+            from willie.voice import sheet
+            while True:
+                time.sleep(600)
+                try:
+                    sheet.run(lambda summary: remote.hub_call("g1_rapport", summary, 10),
+                              busy=lambda: bool(journal_now) or garage.enabled())
+                except Exception as exc:
+                    print(f"weekly sheet failed: {exc}", file=sys.stderr, flush=True)
+        threading.Thread(target=weekly_sheet, name="weekly-sheet", daemon=True).start()
     from willie.skills import garage as garage_skill
     garage_skill.FACE = face               # pinouts + step plans on the face (K1)
+    from willie.skills import zaklamp
+    zaklamp.FACE = face                    # flashlight: the screen full white
     from willie import missions
     missions.FACE = face                   # search / adventure / sentry faces (K3-K5)
     # Spotify (willie/skills/spotify.py): music and his voice share one sound card.
@@ -244,6 +266,8 @@ def main() -> int:
                 control.event("wake")
                 control.request("event", timeout=0.3, name="conversation_start")
                 print("wake!", flush=True)
+                if face_speaker.enabled():          # G4: turn towards the voice, off the main loop
+                    threading.Thread(target=face_speaker.face, args=(wake.LAST.get("raw"),), daemon=True).start()
                 # A local chime instead of a spoken "Ja?" (23 Sep): the cloud TTS took ~1 s
                 # and the mic heard it. The recorder keeps running, so a question said
                 # straight after "Hey Willie" reaches the model once the session is open.
@@ -259,9 +283,13 @@ def main() -> int:
                 transcript: list = []
 
                 words = {"heard": "", "said": ""}
+                journal = Journal("robot", dict(wake.LAST))
+                journal_now[:] = [journal]
+                willie_tools.FEEDBACK_HOOK = journal.feedback      # "dat was te lang" -> the turn he judged (T1)
 
                 def on_event(kind: str, detail: str) -> None:
                     elapsed = time.monotonic() - started
+                    journal.event(kind, detail)
                     if kind == "user_turn_end":
                         turn_end[:] = [elapsed]
                         control.event("user_speaking")
@@ -285,7 +313,7 @@ def main() -> int:
                         print(f"  [{elapsed:5.1f}s]      {detail}")
                     elif kind == "uplink":
                         print(f"  [{elapsed:5.1f}s] mic {detail}")
-                    elif kind in ("idle", "error", "interrupted", "standby", "wake_again"):
+                    elif kind in ("idle", "error", "interrupted", "standby", "wake_again", "dropped", "local", "stop_word"):
                         print(f"  [{elapsed:5.1f}s] {kind} {detail}".rstrip())
                     # What Gemini heard and said, per turn, first 80 characters (25 Sep:
                     # to see what sets off the repeated answers). Local journal only.
@@ -302,16 +330,43 @@ def main() -> int:
                 try:
                     sleep_now.clear()
                     followup = float(IDLE_TIMEOUT) if IDLE_TIMEOUT else gemini_live.configured_followup()
-                    asyncio.run(gemini_live.session(gemini_key, idle_timeout=followup, on_event=on_event,
-                                                    face=face, cancel=sleep_now, recorder=recorder,
-                                                    transcript=transcript))
+                    # T10: a failed connection is tried once more, and never ends in silence.
+                    for attempt in (1, 2):
+                        try:
+                            asyncio.run(gemini_live.session(gemini_key, idle_timeout=followup, on_event=on_event,
+                                                            face=face, cancel=sleep_now,
+                                                            recorder=recorder if attempt == 1 else None,
+                                                            transcript=transcript))
+                            break
+                        except RuntimeError as exc:
+                            print(f"session failed (try {attempt}): {exc}", file=sys.stderr, flush=True)
+                            journal.record["retries"] = attempt
+                            if attempt == 2:
+                                journal.event("error", str(exc))
+                                chime.play("error")
+                                try:                     # in words too, when the sentence is already on disk
+                                    from willie.voice import local
+                                    phrases = local.Phrases(lambda text: (_ for _ in ()).throw(RuntimeError("niet in de cache")),
+                                                            Path.home() / ".cache" / "willie" / "phrases")
+                                    speech._play_pcm(phrases.pcm(local.NO_LINK), 24000)
+                                except Exception:
+                                    pass
+                                if face:
+                                    face.error("GEEN VERBINDING")
+                                raise
                 finally:
                     control.event("conversation_end")
+                    control.request("look", timeout=0.5, pan=0, tilt=0)   # the head back to straight ahead (T8)
                     # Music back on, or what he was asked to play - not after sleep mode.
                     threading.Thread(target=spotify.after_talk, args=(not sleep_now.is_set(),),
                                      daemon=True).start()
                     if remote:
                         remote.session_active = False
+                        # T0: every wake and turn to the home server, false wakes included.
+                        journal_now.clear()
+                        willie_tools.FEEDBACK_HOOK = None
+                        threading.Thread(target=remote.hub_call, args=("gesprek_log", journal.finish(), 10),
+                                         daemon=True).start()
                     if transcript:
                         # Word-for-word into long-term memory, then merged into facts.md in
                         # the background: the wake word is listening again meanwhile.

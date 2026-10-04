@@ -11,13 +11,15 @@ from .framebuffer import Recorder, changed_bands
 
 STATES = ("idle", "curious", "listening", "thinking", "talking", "happy", "sad",
           "surprised", "sleep", "low_battery", "error", "seeing", "show", "connecting", "watched",
-          "dancing", "pinout", "confirm", "sentry")
+          "dancing", "pinout", "confirm", "sentry", "flashlight",
+          "hearing", "understanding", "working", "waiting")
 # Where a picture goes, in logical 480x320 coordinates: the whole screen except a 36 px bar
 # at the bottom for the title and the mic/camera flags, which stay visible (D17).
 PICTURE_BOX = (0, 0, 480, 284)
 REVEAL_S = .45              # the photo opens like an eyelid from its centre line
 FLASH_S = .12               # camera photos start with a short shutter flash
 CYAN, AMBER, RED, WHITE = (57, 208, 255), (255, 190, 72), (255, 99, 105), (221, 238, 242)
+GREEN = (96, 235, 130)      # hearing you: the only green on the face
 # Someone is looking through his camera from the phone app (S8). Its own colour, used for
 WATCHED = (255, 60, 90)    # nothing else, so it can never be mistaken for a mood (D17).
 
@@ -50,6 +52,10 @@ class View:
     # Touch confirmation (Face.confirm): (question, hold 0..1, time left 0..1, seconds left,
     # answer True/False/None, seconds since the answer or None, seconds since it appeared)
     confirm: tuple | None = None
+    card: dict | None = None    # T6: a card from willie/face/card.py while it is on screen
+    caption: str = ""           # T6: what he is saying right now, on the label line while he talks
+    calib: tuple | None = None  # touch calibration: (crosses done, None | True | False once finished)
+    pressed: str = ""           # the card button just tapped ("MEER" / "HERHAAL"): drawn filled for a moment
 
 
 def colour(value, fallback):
@@ -151,9 +157,16 @@ class Renderer:
         base = colour(settings.get("eye_color"), CYAN)
         dim = mix(bg, base, .28)
         surface.fill(p.ink(bg))
+        if view.calib is not None:
+            self._calibrate(p, view.calib, base, dim)
+            return
         state = view.state
         if state not in STATES:
             state = "idle"
+        if state == "flashlight":
+            self._flashlight(p, view, base)
+            return
+        hud = settings.get("eye_style", "hud") == "hud"
         if state == "show" and hasattr(surface, "layout") and (view.image or {}).get(surface.layout()):
             self._photo(p, view, base, dim, bg)
             return
@@ -184,13 +197,17 @@ class Renderer:
             "pinout": (100, 106, 100, 106, 0, 0),
             "confirm": (100, 106, 100, 106, 0, 0),
             "sentry": (104, 104, 104, 104, 0, 0),
+            "hearing": (104, 112, 104, 112, 0, -2),        # you are talking: wide open
+            "understanding": (96, 70, 96, 70, 0, 4),       # you stopped, the words are being read: narrowed
+            "working": (94, 85, 94, 85, -10, -12),         # a tool is running (same pose as thinking)
+            "waiting": (101, 98, 101, 98, 0, 0),           # his turn is over, yours: calm
         }
         dt = .04 if self.last_time is None else max(0, min(.1, now-self.last_time))
         self.last_time = now
         ease = 1-math.exp(-dt*13)
         target = targets[state]
         self.pose = [v+(t-v)*ease for v,t in zip(self.pose, target)]
-        target_colour = RED if state == "error" else WATCHED if state in ("watched", "sentry") else AMBER if state in ("thinking", "low_battery", "connecting") else base
+        target_colour = RED if state == "error" else WATCHED if state in ("watched", "sentry") else GREEN if state == "hearing" else AMBER if state in ("thinking", "low_battery", "connecting", "understanding", "working") else base
         self.eye_colour = mix(self.eye_colour, target_colour, ease)
         eye = self.eye_colour
         if state == "sleep":
@@ -230,13 +247,17 @@ class Renderer:
         if state in ("sleep", "happy", "error", "dancing"):
             blink = 1
         h1, h2 = h1*blink, h2*blink
-        if state == "listening":
+        if state in ("listening", "hearing", "waiting"):
             # Pulse in 8 steps: a smooth pulse repainted two 130-row rings every frame (D6).
-            ring = mix(bg, base, .22+.12*round(4*(1+math.sin(now*3)))/4)
+            # Hearing pulses fast and green, waiting slowly and faint.
+            speed, depth = (7, .20) if state == "hearing" else (1.2, .06) if state == "waiting" else (3, .12)
+            ring = mix(bg, eye, .22+depth*round(4*(1+math.sin(now*speed)))/4)
             for cx in (158, 322):
                 p.ellipse(cx, 157, 65, 64, ring)
                 p.ellipse(cx, 157, 62, 61, bg)
-        style = settings.get("eye_style", "round")
+        style = settings.get("eye_style", "hud")
+        if hud and not bare:
+            self._hud(p, view, state, eye, dim, bg, now)
         for side, (cx, w, h) in enumerate(((158+gx,w1,h1),(322+gx,w2,h2))):
             cy = 157+gy
             if state in ("watched", "sentry"):
@@ -266,6 +287,20 @@ class Renderer:
                 if style == "visor":
                     h *= .72
                     w *= 1.2
+                if style == "hud":
+                    # A lens: glowing rim, iris, a darker band, a bright core with a pupil and a glint.
+                    rx, ry = w/2, max(2, h/2)
+                    p.ellipse(cx, cy, rx+3, ry+3, mix(bg, eye, .30))
+                    p.ellipse(cx, cy, rx, ry, eye)
+                    if h > 36:
+                        p.ellipse(cx, cy, rx-9, ry-9, mix(bg, eye, .42))
+                        p.ellipse(cx, cy, rx-16, ry-16, mix(eye, WHITE, .22))
+                        p.ellipse(cx, cy, rx*.26, ry*.26, mix(bg, eye, .12))
+                        p.ellipse(cx-rx*.36, cy-ry*.40, 5, 4, WHITE)
+                    if state == "sad":
+                        direction = -1 if side == 0 else 1
+                        p.line(cx-w/2-8, cy-h/2-direction*10, cx+w/2+8, cy-h/2+direction*10, 23, bg)
+                    continue
                 radius = 3 if style == "pixel" else min(32, h*.42)
                 p.round_rect(cx-w/2-2, cy-h/2-2, w+4, h+4, radius+2, mix(bg, eye, .24))
                 p.round_rect(cx-w/2, cy-h/2, w, max(3,h), radius, eye)
@@ -281,9 +316,9 @@ class Renderer:
                 p.line(x, y-size, x, y+size, 2, AMBER)
         if bare:
             return
-        if state in ("thinking", "connecting"):
+        if state in ("thinking", "connecting", "understanding", "working"):
             for i in range(3):
-                p.ellipse(221+i*19, 230, 3, 3, eye if int(now*3)%3 == i else dim)
+                p.ellipse(221+i*19, 230, 3, 3, eye if int(now*(6 if state == "understanding" else 3))%3 == i else dim)
         if state == "dancing":
             # Two notes drifting up beside the eyes, inside the eye band (D6: few rows).
             for x, offset in ((62, 0.0), (418, 0.5)):
@@ -307,22 +342,89 @@ class Renderer:
                   "sad":"OH, WELL", "surprised":"WAIT, WHAT?", "sleep":"RECHARGING" if view.charging else "ZZZ...",
                   "low_battery":"TIME TO RECHARGE", "error":"OOPS", "seeing":"TAKING A LOOK",
                   "connecting":"CONNECTING", "watched":"WOUTER IS WATCHING", "dancing":"GROOVING",
-                  "sentry":"ON GUARD"}
+                  "sentry":"ON GUARD", "hearing":"I HEAR YOU", "understanding":"GOT IT...",
+                  "working":"WORKING ON IT", "waiting":"YOUR TURN"}
         # Asleep from the phone app = muted + sleep face: the Zzz label, the MIC MUTED flag stays on top.
         label = "MIC MUTED" if view.muted and state != "sleep" else view.label or labels.get(state, "RIGHT HERE")
+        if state == "talking" and view.caption and not view.muted:
+            # Live captions: the last words that fit, never starting mid-word.
+            tail = font.normalise(view.caption)[-37:]
+            label = tail.split(" ", 1)[-1] if len(tail) == 37 and " " in tail else tail
         p.centre(label, 271, 2, eye if state in ("error","low_battery","watched","sentry") else WHITE)
+        if hud:
+            half = len(font.normalise(label))*6 + 14
+            if 240 - half > 60:
+                for x0, x1 in ((40, 240-half), (240+half, 440)):
+                    p.rect(x0, 278, x1-x0, 1, dim)
+                p.rect(40, 276, 2, 5, eye)
+                p.rect(438, 276, 2, 5, eye)
         if state == "sentry" and not view.watched:
             self._sentry_frame(p, now)
         detail = view.code[:48] if state == "error" else view.text[:48]
         if view.music and state != "error":
-            # Now playing: small, on the bottom line, a note in front of it.
-            music = view.music[:44]
-            p.centre(music, 299, 1, mix(dim, eye, .5))
-            self._note(p, 240-len(music)*3-12, 304, mix(dim, eye, .5), small=True)
+            # Now playing: on the bottom line at scale 2 (12 px a letter), a note in front of it.
+            music = view.music[:32]
+            p.centre(music, 296, 2, mix(dim, eye, .75))
+            self._note(p, 240-len(music)*6-16, 304, mix(dim, eye, .75), small=True)
         elif detail:
             p.centre(detail, 299, 1, dim)
         else:
             p.line(225, 302, 255, 302, 2, dim)
+
+    CARD_BUTTONS = {"MEER": (224, 272, 108, 42), "HERHAAL": (340, 272, 132, 42)}
+
+    @staticmethod
+    def _button(p, box, text, tint, bg, on=False, scale=2):
+        """A HUD button: thin outline, a bright bar on the left edge, the label; filled when chosen."""
+        x, y, w, h = box
+        p.round_rect(x, y, w, h, 6, tint)
+        if not on:
+            p.round_rect(x+2, y+2, w-4, h-4, 5, bg)
+            p.rect(x+2, y+8, 3, h-16, tint)
+        p.text(text, x + (w - len(text)*6*scale)/2, y + h/2 - 3.5*scale, scale, bg if on else tint)
+
+    def _hud(self, p, view, state, eye, dim, bg, now):
+        """The HUD around the eyes: screen brackets, a reticle ring per eye with ticks, a centre
+        mark, and what moves only in states whose frames change anyway (D6: an idle face is cheap)."""
+        for x, dx in ((8, 1), (471, -1)):
+            for y, dy in ((8, 1), (311, -1)):
+                p.rect(min(x, x+dx*16), y, 17, 1, dim)
+                p.rect(x, min(y, y+dy*16), 1, 17, dim)
+        p.rect(24, 44, 432, 1, mix(bg, dim, .7))
+        ring = mix(bg, eye, .34)
+        for cx in (158, 322):
+            p.ellipse(cx, 157, 73, 73, ring)
+            p.ellipse(cx, 157, 71, 71, bg)
+            for ax, ay in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+                p.rect(cx+ax*78-(1 if ax == 0 else 4), 157+ay*78-(1 if ay == 0 else 4), 3 if ax == 0 else 9, 3 if ay == 0 else 9, eye)
+            for ax, ay in ((.707, -.707), (.707, .707), (-.707, .707), (-.707, -.707)):
+                p.rect(cx+ax*77-1, 157+ay*77-1, 3, 3, dim)
+        if state in ("thinking", "connecting", "understanding", "working"):
+            for cx in (158, 322):                       # three bright marks circling each reticle
+                for i in range(3):
+                    a = now*(5 if state == "understanding" else 2.2) + i*2.094
+                    p.ellipse(cx+math.cos(a)*72, 157+math.sin(a)*72, 4, 4, eye if i == 0 else mix(bg, eye, .6))
+        if state == "talking":
+            lit = round(max(0, min(1, view.level))*7)   # his voice as two level meters
+            for x in (22, 448):
+                for i in range(7):
+                    p.rect(x, 200-i*14, 10, 9, eye if i < lit else mix(bg, dim, .8))
+
+    def _calibrate(self, p, calib, eye, dim):
+        """Touch calibration: one cross at a time; (done so far, result once finished)."""
+        from willie.face.runtime import Face
+        done, ok = calib
+        total = len(Face.CALIB_POINTS)
+        if done >= total:
+            p.centre("AANRAKING INGESTELD" if ok else "MISLUKT, PROBEER OPNIEUW", 150, 2, eye if ok else RED)
+            return
+        p.centre("TIK OP HET KRUIS", 134, 2, WHITE)
+        p.centre(f"{done + 1} / {total}", 164, 2, dim)
+        x, y = Face.CALIB_POINTS[done]
+        p.ellipse(x, y, 16, 16, dim)
+        p.ellipse(x, y, 14, 14, (0, 0, 0))
+        p.rect(x-22, y-1, 45, 3, eye)
+        p.rect(x-1, y-22, 3, 45, eye)
 
     def _photo(self, p, view, eye, dim, bg):
         """A picture over (nearly) the whole screen, revealed like an opening eyelid."""
@@ -354,6 +456,17 @@ class Renderer:
             p.text("CAM", 380, 298, 1, WHITE)
         mic = "MUTED" if view.muted else "MIC" if view.mic else "MIC OFF"
         p.text(mic, 414, 298, 1, AMBER if view.muted else eye if view.mic else dim)
+
+    def _flashlight(self, p, view, eye):
+        """Flashlight: the whole panel full white (not scaled by face.brightness), only the privacy flags
+        (D17) and the way out stay as small dark text in the bottom corners."""
+        p.fb.fill((255, 255, 255))
+        ink = (60, 60, 60)
+        p.text("TAP TO TURN OFF", 14, 300, 1, ink)
+        if view.camera:
+            p.ellipse(372, 304, 3, 3, RED)
+            p.text("CAM", 380, 300, 1, ink)
+        p.text("MUTED" if view.muted else "MIC" if view.mic else "MIC OFF", 414, 300, 1, ink)
 
     def _pinout(self, p, view, eye, dim, bg):
         """K1: a zoomable pin drawing over the picture box, the pin detail in the bottom bar."""
@@ -455,21 +568,21 @@ class Renderer:
         # Unknown is explicitly unknown, never a fabricated battery or connection.
         if view.paid:
             # The conversation costs money (paid Gemini key, free key refused): amber badge.
-            p.round_rect(274, 21, 36, 17, 3, AMBER)
-            p.text("PAID", 280, 26, 1, (0, 0, 0))
+            p.round_rect(188, 21, 36, 17, 3, AMBER)
+            p.text("PAID", 194, 26, 1, (0, 0, 0))
         link = "LINK --" if view.connected is None else "LINK OK" if view.connected else "OFFLINE"
-        p.text(link, 229, 25, 1, dim if view.connected is None else base if view.connected else AMBER)
+        p.text(link, 252, 23, 2, dim if view.connected is None else base if view.connected else AMBER)
         battery = "--" if view.battery is None else f"{view.battery}%"
-        p.text(battery, 357, 23, 2, AMBER if view.battery is not None and view.battery < 20 else WHITE)
-        p.round_rect(418, 21, 34, 17, 3, dim)
-        p.rect(421, 24, 28, 11, bg)
-        p.rect(453, 26, 3, 7, dim)
+        p.text(battery, 350, 23, 2, AMBER if view.battery is not None and view.battery < 20 else WHITE)
+        p.round_rect(412, 20, 44, 22, 3, dim)
+        p.rect(415, 23, 38, 16, bg)
+        p.rect(457, 26, 4, 10, dim)
         if view.battery is not None:
-            fill = max(0, min(100, view.battery))*24/100
+            fill = max(0, min(100, view.battery))*34/100
             if fill:
-                p.rect(423, 26, fill, 7, AMBER if view.battery < 20 else base)
+                p.rect(417, 25, fill, 12, AMBER if view.battery < 20 else base)
         if view.charging:
-            p.text("+", 407, 23, 1, AMBER)
+            p.text("+", 398, 23, 2, AMBER)
         # These flags report actual device activity, independently of expression.
         privacy = "MIC MUTED" if view.muted else "MIC LIVE" if view.mic else "MIC OFF"
         p.text(privacy, 24, 53, 2, AMBER if view.muted else base if view.mic else dim)
@@ -561,6 +674,13 @@ class Renderer:
             p.fb.blit(x, y, w, h, pixels)
             p.text(font.normalise(view.text)[:40], 24, 288, 2, WHITE)
             p.text("TAP TO RETURN", 368, 293, 1, dim)
+            return
+        if view.card:
+            from willie.face import card
+            card.draw(p, view.card, {"eye": eye, "dim": dim, "white": WHITE, "red": RED})
+            p.text("TAP TO RETURN", 24, 293, 1, dim)
+            for name, box in self.CARD_BUTTONS.items():       # T6: ask for more, or hear it again
+                self._button(p, box, name, eye, bg, on=view.pressed == name)
             return
         for cx in (423, 446):
             p.round_rect(cx-7, 77, 14, 20, 5, eye)
