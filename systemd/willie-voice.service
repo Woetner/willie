@@ -25,8 +25,10 @@ ExecStart=@HOME@/willie/.venv/bin/python tools/willie_voice.py
 Restart=always
 RestartSec=5
 # RAM (D21, §5.5): wake word ~30 + face ~17 + live session ~32 MB, measured 21 Sep.
-MemoryHigh=130M
-MemoryMax=160M
+# +40 MB for the radio (U5b): mpv is a child of this process and counts here. The radio and
+# Spotify never play together, so this is the same room librespot uses in its own unit.
+MemoryHigh=170M
+MemoryMax=200M
 
 [Install]
 WantedBy=multi-user.target

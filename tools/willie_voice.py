@@ -53,8 +53,8 @@ def muted() -> bool:
         return False
 
 
-def music_face(face, spotify) -> None:
-    """While Spotify plays on his speaker: the track on the face, and now and then a dance
+def music_face(face, music) -> None:
+    """While Spotify or the radio plays on his speaker: the track or station on the face, and now and then a dance
     (face.dance_every_s on average, face.dance_s long; the face only dances when it rests)."""
     from willie.config import Config
     config, next_dance = Config(), 0.0
@@ -62,7 +62,8 @@ def music_face(face, spotify) -> None:
         if face.dark:                            # deep sleep (Phase P): Spotify is stopped, the screen black
             time.sleep(5)
             continue
-        track = spotify.now_playing()
+        music.sync()                             # the music.source setting changed: switch source
+        track = music.now_playing()
         face.music(track)
         now = time.monotonic()
         if not track:
@@ -81,21 +82,21 @@ def music_face(face, spotify) -> None:
         time.sleep(1)
 
 
-def run_garage(face, remote, key: str, sleep_now, spotify) -> None:
+def run_garage(face, remote, key: str, sleep_now, music) -> None:
     """Garage mode (K1): always listening, only to Wouter, until it is switched off."""
     def on_event(kind: str, detail: str) -> None:
         if kind in ("gate", "danger", "go_away", "idle", "error", "wake_again", "tool", "tool_result", "ready"):
             print(f"  [garage] {kind} {detail}".rstrip(), flush=True)
 
     print("garage mode: listening without the wake word", flush=True)
-    spotify.TALKING = True                     # the conversation holds the sound card
-    threading.Thread(target=spotify.pause_for_talk, daemon=True).start()
+    music.talking(True)                        # the conversation holds the sound card
+    threading.Thread(target=music.pause_for_talk, daemon=True).start()
     control.event("wake")
     try:
         garage.Garage(face, remote, key, sleep_now, on_event,
                       remember=lambda t, started: remember_session(t, started, key), muted=muted).run()
     finally:
-        threading.Thread(target=spotify.after_talk, args=(False,), daemon=True).start()
+        threading.Thread(target=music.after_talk, args=(False,), daemon=True).start()
     print("garage mode off\n", flush=True)
 
 
@@ -223,11 +224,11 @@ def main() -> int:
     zaklamp.FACE = face                    # flashlight: the screen full white
     from willie import missions
     missions.FACE = face                   # search / adventure / sentry faces (K3-K5)
-    # Spotify (willie/skills/spotify.py): music and his voice share one sound card.
-    from willie.skills import spotify
-    speech.MUSIC = spotify
+    # Spotify + radio (willie/music.py): music and his voice share one sound card.
+    from willie import music
+    speech.MUSIC = music
     if face:
-        threading.Thread(target=music_face, args=(face, spotify), name="music-face", daemon=True).start()
+        threading.Thread(target=music_face, args=(face, music), name="music-face", daemon=True).start()
     try:
         while True:
             try:
@@ -243,7 +244,7 @@ def main() -> int:
                     continue
                 speech.silence(False)
                 if garage.enabled():
-                    run_garage(face, remote, gemini_key, sleep_now, spotify)
+                    run_garage(face, remote, gemini_key, sleep_now, music)
                     continue
                 if face:
                     face.indicators(muted=False)
@@ -272,8 +273,8 @@ def main() -> int:
                 # and the mic heard it. The recorder keeps running, so a question said
                 # straight after "Hey Willie" reaches the model once the session is open.
                 # Music pauses first (and lets go of the card), then the chime.
-                spotify.TALKING = True
-                threading.Thread(target=lambda: (spotify.pause_for_talk(), chime.play("idle")),
+                music.talking(True)
+                threading.Thread(target=lambda: (music.pause_for_talk(), chime.play("idle")),
                                  daemon=True).start()
 
                 started = time.monotonic()
@@ -358,7 +359,7 @@ def main() -> int:
                     control.event("conversation_end")
                     control.request("look", timeout=0.5, pan=0, tilt=0)   # the head back to straight ahead (T8)
                     # Music back on, or what he was asked to play - not after sleep mode.
-                    threading.Thread(target=spotify.after_talk, args=(not sleep_now.is_set(),),
+                    threading.Thread(target=music.after_talk, args=(not sleep_now.is_set(),),
                                      daemon=True).start()
                     if remote:
                         remote.session_active = False

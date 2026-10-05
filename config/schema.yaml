@@ -177,3 +177,10 @@ link:
   port:            {type: str, default: /dev/serial0, restart: true, help: Serial port to the ESP32 (Pi UART on GPIO14/15)}
   baud:            {type: int, default: 921600, min: 9600, max: 2000000, restart: true, help: Must match the firmware}
   ping_hz:         {type: float, default: 2.0, min: 0.2, max: 50, unit: Hz, help: Link health pings (round-trip time shown in the dashboard)}
+music:
+  _label: Music (Spotify and radio)
+  source:          {type: choice, options: [spotify, radio], default: spotify, help: "Which music source answers play/pause/skip/volume. Changing it here (or in the app) while something plays switches over at once; saying 'zet de radio aan' or 'terug naar Spotify' changes it too"}
+  station:         {type: str, default: "", help: "The radio station that played last (set by himself; 'zet de radio aan' resumes it)"}
+  radio_volume:    {type: int, default: 50, min: 0, max: 100, unit: "%", help: "Radio volume (mpv software volume, 100 = the stream's own level)"}
+  stations:        {type: str, default: "Radio 10=http://playerservices.streamtheworld.com/api/livestream-redirect/RADIO10.mp3; Qmusic=https://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_live_96.mp3; Qmusic Non-stop=https://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_nonstop_96.mp3; NPO Sterren NL=https://icecast.omroep.nl/radio2-sterrennl-mp3", help: "Radio stations: 'Name=stream URL; Name=stream URL'. Any MP3/AAC internet stream works; he answers to the name"}
+

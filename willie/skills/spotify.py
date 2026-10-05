@@ -67,7 +67,8 @@ DECLARATIONS = [
             "'mijn_playlist' voor een playlist van Wouter zelf, 'favorieten' voor zijn opgeslagen "
             "nummers. Zonder 'wat' gaat de muziek verder waar hij was. In een gesprek start de "
             "muziek zodra je uitgepraat bent en stopt het gesprek: zeg dus alleen kort wat je "
-            "opzet (een halve zin), stel geen vraag terug."
+            "opzet (een halve zin), stel geen vraag terug. Dit zet de radio uit (er speelt steeds "
+            "maar een bron); zonder 'wat' gaat het terug naar Spotify als hij van de radio af wil."
         ),
         "parameters": {
             "type": "object",
@@ -398,15 +399,25 @@ def _find(wat: str, soort: str) -> tuple[str, dict]:
 
 # ------------------------------------------------------------------ tools
 
+def _take_over_from_radio() -> None:
+    """Spotify becomes the music source: the radio stops (U5b), one source at a time."""
+    from willie.skills import radio
+    with radio.SWITCH:
+        radio.set_source("spotify")
+        radio.stop()
+
+
 def speel_muziek(wat: str = "", soort: str = "nummer") -> dict:
     try:
         wat = (wat or "").strip()
         soort = soort if soort in SOORTEN else "nummer"
         if not wat and soort != "favorieten":
             _device_id()
+            _take_over_from_radio()
             return {**_do("hervatten", _play), "speelt": "verder waar het was"}
         said, body = _find(wat, soort)
         _device_id()                        # fail now, while he can still say so
+        _take_over_from_radio()
         return {**_do(said, lambda: _play(body)), "speelt": said}
     except SpotifyError as exc:
         return {"fout": str(exc)}
@@ -414,6 +425,9 @@ def speel_muziek(wat: str = "", soort: str = "nummer") -> dict:
 
 def muziek_bediening(actie: str) -> dict:
     global _resume, _pending
+    from willie.skills import radio
+    if radio.active():
+        return radio.bediening(actie)
     try:
         if actie == "pauze":
             if TALKING:
@@ -438,6 +452,9 @@ def muziek_bediening(actie: str) -> dict:
 
 
 def muziek_volume(procent: int) -> dict:
+    from willie.skills import radio
+    if radio.active():
+        return radio.volume(procent)
     try:
         procent = max(0, min(100, int(procent)))
         _api("PUT", "/me/player/volume", {"volume_percent": procent, "device_id": _device_id()})
@@ -447,6 +464,9 @@ def muziek_volume(procent: int) -> dict:
 
 
 def wat_speelt_er() -> dict:
+    from willie.skills import radio
+    if radio.active():
+        return radio.wat_speelt_er()
     try:
         player = _api("GET", "/me/player") or {}
     except SpotifyError as exc:

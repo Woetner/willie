@@ -48,6 +48,8 @@ help:
 	@echo "  make spotify-setup  install librespot: WILL-E becomes a Spotify speaker"
 	@echo "  make spotify-login  link the Web API (asks for the app id/secret on the Pi, opens nothing)"
 	@echo "  make spotify-logs   follow the Spotify receiver log"
+	@echo "Radio"
+	@echo "  make radio-setup    install mpv: live internet radio on his speaker"
 	@echo "Self-improvement (runs Claude Code on the Mac, never deploys)"
 	@echo "  make improve       do the changes WILL-E was asked for, on a branch"
 	@echo "  make improve-watch keep watching for spoken requests"
@@ -154,6 +156,10 @@ voice-logs:
 	ssh -t $(PI) 'journalctl -u willie-voice -f -n 30 -o cat'
 
 wake-test: sync
+# ---------------------------------------------------------------- Radio (skills/radio.py)
+radio-setup: sync
+	ssh -t $(PI) 'sudo bash $(PI_DIR)/tools/install_radio.sh'
+
 	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/wake.py $(or $(S),120)'
 
 bench-aec: sync
