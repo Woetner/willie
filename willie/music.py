@@ -61,6 +61,7 @@ def now_playing() -> str:
 
 def sync() -> None:
     """The setting says one source, the other one still plays: switch over. Cheap (local state only)."""
+    radio.refresh_sound()
     if spotify.TALKING or radio.TALKING or radio.SWITCH.locked():
         return
     wanted = radio.source()

@@ -222,3 +222,33 @@ def test_song_and_station_take_turns_on_the_face(rig, monkeypatch):
     answers["media-title"] = "Qmusic_nl_live_96.mp3"    # a file name is not a song
     clock[0] = 100
     assert radio.song() == ""
+
+
+def test_klank_sets_bass_treble_and_applies_it_live(rig, monkeypatch):
+    cfg, started, _ = rig
+    cfg.v.update({"music.bass": 0, "music.treble": 0})
+    sent = []
+    monkeypatch.setattr(radio, "_ipc", lambda *c: sent.append(c))
+    assert radio._filter() == ""                                   # neutral: no filter at all
+    radio.speel_radio("Radio 10")
+    result = radio.radio_klank(bas=4, hoog=-2)
+    assert result["bas"] == 4 and result["hoog"] == -2
+    assert sent[-1] == ("set_property", "af", "lavfi=[bass=g=4,treble=g=-2,alimiter=limit=0.9]")
+    assert radio.radio_klank(preset="stem")["bas"] == -3
+    assert radio.radio_klank(bas=99)["bas"] == 8 and "let_op" in radio.radio_klank(bas=8)
+    assert "fout" in radio.radio_klank(preset="disco")
+
+
+def test_a_changed_setting_is_applied_by_the_watcher(rig, monkeypatch):
+    cfg, _, _ = rig
+    cfg.v.update({"music.bass": 0, "music.treble": 0})
+    sent = []
+    monkeypatch.setattr(radio, "_ipc", lambda *c: sent.append(c))
+    radio.speel_radio("Radio 10")
+    music.sync()
+    assert not [c for c in sent if c[1] == "af"]
+    cfg.v["music.treble"] = 3                                      # dashboard
+    music.sync()
+    assert sent[-1][1:] == ("af", "lavfi=[bass=g=0,treble=g=3,alimiter=limit=0.9]")
+    music.sync()
+    assert len([c for c in sent if c[1] == "af"]) == 1             # not re-sent every second

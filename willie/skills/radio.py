@@ -39,6 +39,8 @@ IPC_TIMEOUT_S = 0.4
 TITLE_EVERY_S = 5.0         # how often the current song (ICY title) is asked from mpv
 ALTERNATE_S = 5.0           # the face line has room for ~32 characters: station and song take turns
 
+PRESETS = {"normaal": (0, 0), "warm": (4, -2), "stem": (-3, 3), "bas": (6, 1)}   # (bass, treble) dB
+
 DECLARATIONS = [
     {
         "name": "speel_radio",
@@ -53,6 +55,23 @@ DECLARATIONS = [
         "parameters": {
             "type": "object",
             "properties": {"zender": {"type": "string", "description": "Naam van de zender. Leeg = de laatste."}},
+        },
+    },
+    {
+        "name": "radio_klank",
+        "description": (
+            "Verander de klank van de radio: 'bas' en 'hoog' in dB (-10 tot +8, 0 = neutraal), of een "
+            "'preset': normaal, warm, stem (voor praatzenders), bas. Gebruik dit bij 'meer bas', "
+            "'minder hoge tonen', 'maak het warmer'. Vraag zonder argumenten naar de huidige stand. "
+            "Per stap: ongeveer 3 dB; boven +6 gaat zijn kleine speaker vervormen. Werkt alleen voor de radio."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "bas": {"type": "integer", "description": "Bas in dB, -10..8"},
+                "hoog": {"type": "integer", "description": "Hoge tonen in dB, -10..8"},
+                "preset": {"type": "string", "enum": list(PRESETS), "description": "Vaste instelling."},
+            },
         },
     },
     {
@@ -185,6 +204,33 @@ def _volume() -> int:
         return 50
 
 
+_applied_sound = ""
+
+
+def _filter() -> str:
+    """The mpv audio filter for the bass/treble settings; "" when both are 0. The limiter keeps the
+    boost from clipping on a loud station."""
+    global _applied_sound
+    try:
+        bass, treble = int(_settings().get("music.bass")), int(_settings().get("music.treble"))
+    except Exception:
+        bass = treble = 0
+    _applied_sound = f"{bass},{treble}"
+    if not bass and not treble:
+        return ""
+    return f"lavfi=[bass=g={bass},treble=g={treble},alimiter=limit=0.9]"
+
+
+def refresh_sound() -> None:
+    """The bass/treble setting changed (dashboard, app, voice) while the radio plays: apply it live."""
+    if not playing():
+        return
+    before = _applied_sound
+    flt = _filter()
+    if _applied_sound != before:
+        _ipc("set_property", "af", flt)
+
+
 def _spawn(name: str, url: str) -> None:
     global _proc, _current
     with _lock:
@@ -194,7 +240,7 @@ def _spawn(name: str, url: str) -> None:
         # no config, no scripts (no ytdl/python startup), a small cache: keeps RSS low on the Pi
         command = ["mpv", "--no-config", "--no-video", "--no-terminal", "--really-quiet",
                    "--load-scripts=no", "--ytdl=no", "--idle=no",
-                   f"--audio-device={DEVICE}", f"--volume={_volume()}",
+                   f"--audio-device={DEVICE}", f"--volume={_volume()}", f"--af={_filter()}",
                    "--cache=yes", "--cache-secs=10", "--demuxer-max-bytes=2MiB", "--demuxer-max-back-bytes=0",
                    "--network-timeout=10",
                    "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5",
@@ -378,6 +424,30 @@ def speel_radio(zender: str = "") -> dict:
         return {"fout": str(exc)}
 
 
+def radio_klank(bas: int | None = None, hoog: int | None = None, preset: str = "") -> dict:
+    try:
+        if preset:
+            if preset not in PRESETS:
+                return {"fout": f"Onbekende preset. Kies uit: {', '.join(PRESETS)}."}
+            bas, hoog = PRESETS[preset]
+        changes = {}
+        for key, value in (("bass", bas), ("treble", hoog)):
+            if value is not None:
+                changes[key] = max(-10, min(8, int(value)))
+        if changes:
+            _settings().update({"music": changes})
+            refresh_sound()
+        cfg = _settings()
+        stand = {"bas": cfg.get("music.bass"), "hoog": cfg.get("music.treble")}
+        if max(stand.values()) > 6:
+            stand["let_op"] = "boven +6 dB kan zijn speaker vervormen"
+        if not playing():
+            stand["opmerking"] = "geldt zodra de radio aan staat"
+        return {"ok": True, **stand}
+    except (ValueError, TypeError) as exc:
+        return {"fout": str(exc)}
+
+
 def radio_zenders() -> dict:
     return {"zenders": list(stations()), "speelt": _current if playing() else "niets",
             "bron": source()}
@@ -432,7 +502,7 @@ def wat_speelt_er() -> dict:
             "muziekvolume": _volume()}
 
 
-HANDLERS = {"speel_radio": speel_radio, "radio_zenders": radio_zenders}
+HANDLERS = {"speel_radio": speel_radio, "radio_zenders": radio_zenders, "radio_klank": radio_klank}
 
 
 def card() -> dict:
