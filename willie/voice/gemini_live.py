@@ -32,7 +32,7 @@ from datetime import datetime
 
 import websockets
 
-from willie import usage
+from willie import control as core_control, usage
 from willie.audio import speech
 from willie.voice import tools as willie_tools
 from willie.voice.base import Tool, VoiceAdapter
@@ -80,6 +80,10 @@ MONTHS = ("januari", "februari", "maart", "april", "mei", "juni", "juli", "augus
 def _get(message: dict, camel: str, snake: str):
     """The Live API has answered in both spellings on different model versions."""
     return message.get(camel) or message.get(snake)
+
+
+# Session events that are also mood events in the core (G2, config/mood.yaml).
+MOOD_EVENTS = {"ready": "wake", "user_speaking": "user_speaking", "speaking": "talking", "error": "error"}
 
 
 class GeminiLiveAdapter(VoiceAdapter):
@@ -1041,6 +1045,8 @@ async def session(
         face.set_state("connecting")
 
     def emit(kind, detail=""):
+        if kind in MOOD_EVENTS:
+            core_control.event(MOOD_EVENTS[kind])        # G2: the mood engine in the core
         if face:
             face.event(kind, detail)
         if on_event:

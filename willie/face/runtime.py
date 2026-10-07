@@ -726,6 +726,9 @@ class Face:
             self._pet_until = now+1.4
         if self.on_pet:
             self.on_pet()
+        else:
+            from willie import control
+            control.event("pet")                # G2: a touch is a pet for the mood engine
 
     def audio(self, pcm: bytes, rate=24000, *, starts_at=None):
         """Queue 20 ms RMS envelopes at playback time, rather than at network arrival."""

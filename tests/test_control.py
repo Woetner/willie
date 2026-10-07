@@ -64,3 +64,16 @@ def test_manual_drive_needs_arming_and_is_gated(core):
     assert ask("manual_state")["armed"]
     assert not ask("manual_arm", on=False)["armed"]
     assert "not armed" in ask("manual_drive", v=1, w=0)["fout"]
+
+
+def test_charging_feeds_the_mood_every_five_seconds(monkeypatch):
+    from types import SimpleNamespace
+    events = []
+    body = control.Body(SimpleNamespace(state={}), SimpleNamespace(scan=None, get=lambda k: 1.0),
+                        SimpleNamespace(busy=""), SimpleNamespace(event=events.append))
+    body._power = SimpleNamespace(update=lambda mv, ma, now: {"charging": True})
+    clock = iter([100.0, 102.0, 106.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+    for _ in range(3):
+        body._power_numbers({})
+    assert events == ["charging", "charging"]

@@ -47,6 +47,7 @@ class Body:
 
     def __init__(self, link, safety, motion, mood):
         self.link, self.safety, self.motion, self.mood = link, safety, motion, mood
+        self._charge_mood = 0.0
         self.conversation = False       # a voice session is open: behaviours sit still (G3)
         self.mission = False            # a Phase K mission drives him: behaviours sit still
         self.last_command = 0.0         # monotonic time of the last move/turn from outside
@@ -141,7 +142,12 @@ class Body:
             self._power = PowerEstimator(pack_wh=float(get("power.pack_wh")),
                                          r_int_ohm=float(get("power.r_internal_mohm")) / 1000.0,
                                          cutoff_v=float(get("safety.battery_cutoff_v")))
-        return self._power.update(st.get("mv"), st.get("ma"), time.monotonic())
+        now = time.monotonic()
+        out = self._power.update(st.get("mv"), st.get("ma"), now)
+        if out.get("charging") and now - self._charge_mood >= 5.0:
+            self._charge_mood = now
+            self.mood.event("charging")             # G2: +0.02 energy per 5 s on the charger
+        return out
 
     def state(self) -> dict:
         st = self.link.state or {}
