@@ -54,6 +54,7 @@ class Body:
             "tof_mm": [st.get("tof_l"), st.get("tof_c"), st.get("tof_r")],
             "estop": st.get("estop", []),
             "battery_v": None if not st.get("mv") else st["mv"] / 1000,
+            "battery_ma": None if not st.get("ok", {}).get("ina") else st.get("ma"),
             "battery": self.safety.battery_state,
             "busy": self.motion.busy,
             "conversation": self.conversation,

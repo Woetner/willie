@@ -130,7 +130,8 @@ function bodyTiles(b) {
   const estop = (b.estop || []).length ? "ESTOP " + b.estop.join(", ") : (b.busy || b.behaviour || "idle");
   return moodTile +
     tile("Body", estop, b.state_age_s == null ? "no MCU state" : `ToF ${b.tof_mm.join(" / ")} mm`) +
-    tile("Battery", b.battery_v == null ? "n/a" : b.battery_v.toFixed(2) + " V", b.battery);
+    tile("Battery", b.battery_v == null ? "n/a" : b.battery_v.toFixed(2) + " V",
+      b.battery_ma == null ? b.battery : `${b.battery} · ${b.battery_ma} mA`);
 }
 
 // ---------- logs ----------
