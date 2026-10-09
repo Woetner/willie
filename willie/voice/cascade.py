@@ -92,29 +92,49 @@ SPOKEN = (
 # is not said is not paid as speech - the largest part of the bill.
 MARK = "[SCHERM]"
 SCREEN_LLM = "openai:gpt-5-mini@minimal, gemini:gemini-3.5-flash-lite@minimal"
-TALK_LESS = (
+_TALK_LESS = (
     "Talk less, show more. You have a screen; Wouter reads it while you talk. Say at most two short sentences, "
-    "about 25 words in all: the answer itself. A command gets one or two words ('Done.'). Everything else that "
+    "about 25 words in all: the answer itself. A command gets one or two words ('{done}'). Everything else that "
     "helps him - the numbers, the steps, a list, a comparison, values over time, the reasons - you do NOT say: "
-    f"write it after a line that holds only {MARK}, as short plain notes with the real numbers and units, only "
+    "write it after a line that holds only {mark}, as short plain notes with the real numbers and units, only "
     "from a lookup or from what you know for certain. Those notes are never spoken: a screen assistant draws "
     "them as one card (graph, bars, meter, steps, comparison, key value). When there are notes, your last spoken "
-    f"sentence may point at the screen. No {MARK} part for small talk, a done command, or an answer that is "
+    "sentence may point at the screen. No {mark} part for small talk, a done command, or an answer that is "
     "complete in one sentence. The notes are your ONLY way to put text, a number, a list or a graph on the "
     "screen: the tools toon and kaart do not exist in this conversation, and wherever your instructions name "
     "them you write notes instead. Never say something is on the screen unless this answer has notes. "
     "Asked for a graph or comparison: the notes hold every value with its name and unit, one per line. "
     "'Laat zien', 'show', 'in een grafiek' about facts or numbers always means notes; toon_afbeelding is only "
     "for a photo of a thing. An answer to such a request without notes is wrong. "
-    "Asked to show a given text or number ('zet 42 op je scherm'): say 'Done.' and the notes are just that text. "
+    "Asked to show a given text or number ('zet 42 op je scherm'): say '{done}' and the notes are just that text. "
     "How something looks = toon_afbeelding. Say nothing before or between tool calls, in any language; your "
     "first words come after the last tool result. No closing offers such as 'want more details?'.\n"
     "Example. Wouter: 'Waarom heb ik een level shifter nodig tussen 5 volt encoders en een ESP32?' -> "
-    "'Because the ESP32's pins only take 3.3 volts. The details are on my screen.\n"
-    f"{MARK}\nLevel shifter: 5 V encoder to ESP32\n- ESP32 GPIO: 3.3 V logic, 3.6 V absolute maximum\n"
-    "- Encoder output: 5 V, damages the pin over time\n- Fix: level shifter or a 10k / 20k divider per channel'\n"
-    f"Example. Wouter: 'Zet tweeënveertig op je scherm.' -> 'Done.\n{MARK}\n42'"
+    "'{why}\n"
+    "{mark}\n{notes}'\n"
+    "Example. Wouter: 'Zet tweeënveertig op je scherm.' -> '{done}\n{mark}\n42'"
 )
+# The examples in the language he speaks: with English ones in a Dutch conversation he said "Done."
+_EXAMPLES = {
+    "nl": dict(done="Gedaan.", why="Omdat de pinnen van de ESP32 maar 3,3 volt aankunnen. De details staan op mijn scherm.",
+               notes="Level shifter: 5 V encoder naar ESP32\n- ESP32 GPIO: 3,3 V logica, 3,6 V absoluut maximum\n"
+                     "- Encoder-uitgang: 5 V, beschadigt de pin op den duur\n- Oplossing: level shifter of 10k / 20k deler per kanaal"),
+    "en": dict(done="Done.", why="Because the ESP32's pins only take 3.3 volts. The details are on my screen.",
+               notes="Level shifter: 5 V encoder to ESP32\n- ESP32 GPIO: 3.3 V logic, 3.6 V absolute maximum\n"
+                     "- Encoder output: 5 V, damages the pin over time\n- Fix: level shifter or a 10k / 20k divider per channel"),
+}
+_EXAMPLES["nl_en"] = _EXAMPLES["en"]
+
+
+def talk_less(language: str) -> str:
+    return _TALK_LESS.format(mark=MARK, **_EXAMPLES.get(language, _EXAMPLES["nl"]))
+
+
+# Dutch means all of it (Wouter, 9 Oct: "sometimes English, sometimes Dutch with an English accent"):
+# the rules above are English and a Dutch sentence can hold an English word, neither is a reason.
+ALL_DUTCH = ("Je antwoordt ALTIJD in het Nederlands: wat je zegt, je notities voor het scherm en de tekst in tools. "
+             "Ook als de regels hierboven, een tool-resultaat of een woord in de vraag Engels zijn. Engelse vaktermen "
+             "(level shifter, pinout) mogen blijven; getallen schrijf je zoals je ze in het Nederlands zegt.")
 DRAW = (
     "You draw one card on a small robot's screen (480 x 320) from the notes you are given. You do not speak: "
     "answer with exactly one kaart call. Use only facts and numbers that are in the notes, never your own. "
@@ -322,7 +342,7 @@ class Ears:
         return {"type": "session.update", "session": {"type": "transcription", "audio": {"input": {
             "format": {"type": "audio/pcm", "rate": API_RATE},
             "transcription": transcription,
-            "turn_detection": None if live else TURN,
+            "turn_detection": None if live or getattr(self, "push_to_talk", False) else TURN,
         }}}}
 
     async def _connect(self, url: str, setup: dict, name: str):
@@ -395,6 +415,24 @@ class Ears:
             await self._live.send(message)
         except (websockets.ConnectionClosed, AttributeError):
             self._live = None                        # gone: the first session's text is used from here on
+
+    async def send_utterance(self, pcm: bytes, valid=lambda: True) -> None:
+        if self._socket is None:
+            raise ConnectionError("session closed")
+        if not valid():
+            return False
+        await self._socket.send(json.dumps({"type": "input_audio_buffer.clear"}))
+        self._last = 0
+        await self._event("speech_started", "")
+        for offset in range(0, len(pcm), 3200):
+            if not valid():
+                return False
+            await self.send(pcm[offset:offset + 3200])
+        if not valid():
+            return False
+        self._turn += 1
+        await self._socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        await self._event("speech_stopped", "")
 
     async def close(self) -> None:
         self._closing = True
@@ -672,10 +710,11 @@ class Mouth:
     rate = API_RATE
 
     def __init__(self, spec: str, voice: str = "", style: str = "", speed: float = 1.0, local_url: str = "",
-                 base_url: str | None = None, keys: list[str] | None = None):
+                 base_url: str | None = None, keys: list[str] | None = None, language: str = "nl"):
         self.provider, self.model, _ = parse_spec(spec)
         self.voice, self.style, self.speed = voice or VOICE, style, float(speed or 1.0)
         self.seconds, self.chars = 0.0, 0
+        self.language_code = {"nl": "nl-NL", "en": "en-US", "nl_en": "en-US"}.get(language, "")
         self.http = None
         self.counts: dict = {}           # Gemini says what it used; summed here for the meter
         self._key = 0
@@ -724,9 +763,11 @@ class Mouth:
         return voice_keys.key_kind(self.keys[self._key]) if self.provider == "gemini" else "betaald"
 
     def _gemini(self, text: str, put) -> None:
+        speech_config = {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}}
+        if self.language_code:                       # without it he read Dutch with an English accent now and then
+            speech_config["languageCode"] = self.language_code
         body = {"contents": [{"parts": [{"text": f"{self.style} {text}".strip()}]}],
-                "generationConfig": {"responseModalities": ["AUDIO"],
-                                     "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}}}}
+                "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": speech_config}}
         while True:
             response = self.http.post(f"/models/{self.model}:streamGenerateContent?alt=sse",
                                       {"x-goog-api-key": self.keys[self._key]}, body)
@@ -920,7 +961,7 @@ class CascadeAdapter(VoiceAdapter):
                                                                     lambda spec: Brain(spec, local_llm_url))
         style = style or STYLES.get(language, "")
         self.mouths = mouths if mouths is not None else self._build(
-            chain_specs(tts or TTS), "voice.tts", lambda spec: Mouth(spec, voice, style, speed, local_tts_url))
+            chain_specs(tts or TTS), "voice.tts", lambda spec: Mouth(spec, voice, style, speed, local_tts_url, language=language))
         # The screen model is an extra: without a key for it he simply draws his cards himself again.
         self.screens = screens if screens is not None else []
         if screens is None and screen_llm:
@@ -941,6 +982,7 @@ class CascadeAdapter(VoiceAdapter):
         self._spoken: list[str] = []     # what of the running answer has reached the speaker
         self._speaking = False           # "speaking" sent for the running answer
         self._tools_ran = False
+        self._working = 0                # tool rounds running right now
         self._opened = False             # the running turn has its question in `messages`
         self._closed = False
         self._clock: dict[str, float] = {}
@@ -965,6 +1007,9 @@ class CascadeAdapter(VoiceAdapter):
     # ---- lifecycle -------------------------------------------------------------
     async def start_session(self, persona: str, context: str, tools: list[Tool]) -> None:
         self._register_tools(tools)
+        if getattr(self, "push_to_talk", False):
+            self.ears.push_to_talk = True
+            self.ears.fast = False  # release supplies the turn boundary; no speculative transcript
         # English-out is said before the Dutch persona and again after everything (as in the
         # OpenAI adapter: the Dutch examples pull him back to Dutch).
         first = "OUTPUT LANGUAGE: English only. The Dutch examples below show the manner, not the language." \
@@ -974,7 +1019,8 @@ class CascadeAdapter(VoiceAdapter):
         # With the screen model its rule comes after everything else: the persona above still
         # describes toon and kaart, and the last word wins.
         prompt = "\n\n".join(p for p in (first, persona, DISCIPLINE, "" if self._split else SCREEN, SPOKEN, context, runs_on,
-                                         TALK_LESS if self._split else "", LANGUAGES.get(self.language, "")) if p).strip()
+                                         talk_less(self.language) if self._split else "",
+                                         ALL_DUTCH if self.language == "nl" else LANGUAGES.get(self.language, "")) if p).strip()
         self.messages = [{"role": "system", "content": prompt}]
         self._quiet = asyncio.Event()
         self._quiet.set()
@@ -997,6 +1043,11 @@ class CascadeAdapter(VoiceAdapter):
         if not self.is_open:
             raise ConnectionError("session closed")
         await self.ears.send(pcm)
+
+    async def send_utterance(self, pcm: bytes, valid=lambda: True) -> None:
+        if not self.is_open:
+            raise ConnectionError("session closed")
+        return await self.ears.send_utterance(pcm, valid=valid)
 
     async def send_text(self, text: str) -> None:
         """A message from the robot itself (a timer, a button on a card): answered out loud,
@@ -1103,12 +1154,21 @@ class CascadeAdapter(VoiceAdapter):
             if guess == _letters(text):              # the guess was right: the answer under way may be heard
                 await self._emit("heard", text)
                 self._confirmed.set()
+                if not self._speaking:
+                    await self._emit("doing", "turn|THINKING")
                 return
             await self._cancel()                     # it was not: nothing was said or done yet, start over
             self._forget()
         if not self._sentence(text):
             if text and any(char.isalnum() for char in text):
                 await self._emit("dropped", text)
+            return
+        if (self._working and not self._speaking and self._reply is not None and not self._reply.done()
+                and len(text.split()) < 2):
+            # One loose word while a tool is at work and he is silent (9 Oct: "Wanneer", "dingen"
+            # from the room each threw the running job away and started it again, three times).
+            # A sentence still breaks in, and "stop" is heard on the robot itself.
+            await self._emit("dropped", text)
             return
         self._clock.setdefault("text", time.monotonic())
         await self._emit("heard", text)
@@ -1173,16 +1233,19 @@ class CascadeAdapter(VoiceAdapter):
         try:
             await self._respond()
         except asyncio.CancelledError:
+            await self._emit("doing", "turn|")
             raise
         except Unconfirmed:                          # the finished text never came: nothing was said or done
             self._guess = None
             self._forget()
+            await self._emit("doing", "turn|")
         except Exception as exc:
             log.warning("no answer: %s", exc)
             self._forget(keep=1)
             if self._spoken:
                 self.messages.append({"role": "assistant", "content": " ".join(self._spoken)})
             self._speaking = False
+            await self._emit("doing", "turn|")
             await self._emit("error", f"{type(exc).__name__}: {exc}"[:300])
 
     async def _respond(self) -> None:
@@ -1195,8 +1258,10 @@ class CascadeAdapter(VoiceAdapter):
                         if not (self._split and tool.name in ("kaart", "toon"))]
         drawing, notes, queued, rest = None, "", 0, ""
         try:
-            for _ in range(MAX_ROUNDS):
+            for round_ in range(MAX_ROUNDS):
                 split, screen, text, calls = Sentences(first=not self._spoken), Split(), "", []
+                if self._confirmed.is_set():         # not on a guess: that may still be taken back
+                    await self._emit("doing", "turn|" + ("READING THE RESULT" if round_ else "THINKING"))
                 async for kind, value in self._chain(self.brains, lambda brain: brain.stream(self.messages, declarations)):
                     if kind == "text":
                         self._clock.setdefault("llm", time.monotonic())
@@ -1227,16 +1292,22 @@ class CascadeAdapter(VoiceAdapter):
                     drawing = self._drawing = asyncio.create_task(self._draw(self._question, notes))
                 elif not calls and self._split:
                     log.info("answer without notes: no card")
-                message = {"role": "assistant", "content": text or None}
+                # An answer of nothing at all is left out: OpenAI refuses a message without text and
+                # without calls, and every later turn of the conversation with it (9 Oct, HTTP 400).
                 if calls:
-                    message["tool_calls"] = calls
-                self.messages.append(message)
+                    self.messages.append({"role": "assistant", "content": text or None, "tool_calls": calls})
+                elif text.strip():
+                    self.messages.append({"role": "assistant", "content": text})
                 if not calls or voice.done():
                     break
                 await self._go()
                 self._tools_ran = True
                 # Shielded: a tool that is driving or saving finishes, also when he is interrupted.
-                self.messages.extend(await asyncio.shield(asyncio.gather(*(self._tool(call) for call in calls))))
+                self._working += 1
+                try:
+                    self.messages.extend(await asyncio.shield(asyncio.gather(*(self._tool(call) for call in calls))))
+                finally:
+                    self._working -= 1
             pieces.put_nowait(None)
             await voice
         except BaseException:                        # cancelled or failed: no card for an answer that was not given
@@ -1249,6 +1320,7 @@ class CascadeAdapter(VoiceAdapter):
                 await asyncio.gather(voice, return_exceptions=True)
         self._speaking = False
         self._log_timing()
+        await self._emit("doing", "turn|")
         await self._emit("turn_complete")
 
     async def _tool(self, call: dict) -> dict:
@@ -1283,6 +1355,7 @@ class CascadeAdapter(VoiceAdapter):
         started = time.monotonic()
         try:
             await self._go()
+            await self._emit("doing", "card|DRAWING THE CARD")
             async for kind, value in self._chain(self.screens, lambda brain: brain.stream(messages, [card.declaration()], force="kaart")):
                 if kind == "calls":
                     calls = value
@@ -1298,29 +1371,56 @@ class CascadeAdapter(VoiceAdapter):
             else:
                 log.warning("no card: the screen model gave no kaart call")
         except asyncio.CancelledError:
+            await self._emit("doing", "card|")
             raise
         except Exception as exc:
             log.warning("no card: %s", exc)
+        await self._emit("doing", "card|")
 
     async def _speak(self, pieces: asyncio.Queue) -> None:
-        last = False
-        while not last:
-            piece = await pieces.get()
-            if piece is None:
-                return
-            if self._spoken:
-                # After the first piece: everything that is already written goes in one request
-                # (one breath, fewer calls). The first piece went alone, to be heard soonest.
-                while not pieces.empty() and len(piece) < 400:
-                    more = pieces.get_nowait()
-                    if more is None:
-                        last = True
+        """Text pieces -> sound. The next piece is made while this one is heard: asked for only
+        when the one before it had been played, his second sentence came up to a second late
+        (9 Oct: the voice needs 1.0-1.7 s to its first sound, the player held 1.2 s)."""
+        sounds: asyncio.Queue = asyncio.Queue()
+        ahead = asyncio.Semaphore(1)                 # one piece further than the one being heard
+
+        async def make() -> None:
+            last = False
+            try:
+                while not last:
+                    piece = await pieces.get()
+                    if piece is None:
                         break
-                    piece += " " + more
-            started = False
-            async for pcm in self._chain(self.mouths, lambda mouth: mouth.stream(piece)):
-                if not started:
-                    started = True
+                    await ahead.acquire()
+                    if self._spoken:
+                        # After the first piece: everything that is already written goes in one request
+                        # (one breath, fewer calls). The first piece went alone, to be heard soonest.
+                        while not pieces.empty() and len(piece) < 400:
+                            more = pieces.get_nowait()
+                            if more is None:
+                                last = True
+                                break
+                            piece += " " + more
+                    first = True
+                    async for pcm in self._chain(self.mouths, lambda mouth: mouth.stream(piece)):
+                        sounds.put_nowait((piece if first else None, pcm))
+                        first = False
+                sounds.put_nowait(None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:                 # no voice at all: the turn hears of it
+                sounds.put_nowait(exc)
+
+        maker = asyncio.create_task(make())
+        try:
+            while True:
+                item = await sounds.get()
+                if item is None:
+                    return
+                if isinstance(item, Exception):
+                    raise item
+                piece, pcm = item
+                if piece is not None:                # the first sound of a piece
                     if not self._spoken:
                         await self._go()
                     self._clock.setdefault("sound", time.monotonic())
@@ -1329,7 +1429,12 @@ class CascadeAdapter(VoiceAdapter):
                         await self._emit("speaking")
                     self._spoken.append(piece)
                     await self._emit("said", piece + " ")
+                    ahead.release()
                 await self._deliver_audio(pcm)
+        finally:
+            if not maker.done():
+                maker.cancel()
+                await asyncio.gather(maker, return_exceptions=True)
 
     async def _chain(self, parts: list, start):
         """Items from the first part that works. One that fails before it gave anything is put

@@ -151,7 +151,7 @@ def test_a_turn_is_heard_answered_per_sentence_and_remembered():
         assert [m["role"] for m in a.messages] == ["system", "user", "assistant"]
         system = a.messages[0]["content"]
         assert system.startswith("PERSONA") and "CONTEXT" in system and "read aloud" in system
-        assert "Spreek altijd Nederlands" in system and "fake-llm" in system
+        assert "Je antwoordt ALTIJD in het Nederlands" in system and "fake-llm" in system
         await a.close()
     asyncio.run(run())
 
@@ -289,7 +289,10 @@ def test_notes_after_the_mark_are_drawn_not_spoken():
                            mouths=[FakeMouth(ms=100)], screens=[screen], noise_filter=False)
         rec = Recorder(a)
         await a.start_session("p", "c", [card, other])
-        assert "Talk less, show more" in a.messages[0]["content"] and "Screen first" not in a.messages[0]["content"]
+        system = a.messages[0]["content"]
+        assert "Talk less, show more" in system and "Screen first" not in system
+        assert "'Gedaan.'" in system and "De details staan op mijn scherm." in system and "'Done.'" not in system
+        assert system.rstrip().endswith("getallen schrijf je zoals je ze in het Nederlands zegt.")
         await say(a)
         await wait_for(lambda: "turn_complete" in rec.kinds() and cards)
         assert "".join(rec.details("said")) == "De ESP32 kan maar 3,3 volt aan. Details staan op mijn scherm. "
@@ -393,6 +396,20 @@ def test_no_brain_at_all_is_an_error_not_silence():
         await say(a)
         await wait_for(lambda: "error" in rec.kinds())
         assert a.is_open and [m["role"] for m in a.messages] == ["system", "user"]
+        await a.close()
+    asyncio.run(run())
+
+
+def test_an_empty_answer_is_not_kept():
+    async def run():
+        a = make_cascade(script=[{"text": ""}, {"text": "Het is kwart voor twee."}])
+        rec = Recorder(a)
+        await a.start_session("p", "c", [])
+        await say(a)
+        await wait_for(lambda: "turn_complete" in rec.kinds())
+        await say(a)
+        await wait_for(lambda: rec.kinds().count("turn_complete") == 2)
+        assert all(isinstance(m["content"], str) and m["content"] for m in a.messages)
         await a.close()
     asyncio.run(run())
 
@@ -610,6 +627,7 @@ def test_mouth_streams_his_gemini_voice():
         assert path == "/v1/models/gemini-3.8-flash-lite-tts:streamGenerateContent?alt=sse"
         assert body["contents"][0]["parts"][0]["text"] == "Hallo daar."          # no style: this model would read it out
         assert body["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Iapetus"
+        assert body["generationConfig"]["speechConfig"]["languageCode"] == "nl-NL"
         assert mouth.counts["out_audio"] == 5 and mouth._key == 1
         old = Mouth("gemini:gemini-3.1-flash-tts-preview", base_url=api.url, keys=["paid"])
         asyncio.run(collect(old.stream("Hallo.")))
