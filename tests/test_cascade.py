@@ -67,7 +67,7 @@ class FakeBrain:
         self.script, self.model, self.fail, self.delay = list(script or []), model, fail, delay
         self.seen: list[list[dict]] = []
 
-    async def stream(self, messages, tools):
+    async def stream(self, messages, tools, force=""):
         self.seen.append([dict(m) for m in messages])
         if self.fail:
             raise StageError("brain down", 503)
@@ -272,6 +272,56 @@ def test_a_queued_message_is_not_lost_when_wouter_talks():
         await wait_for(lambda: "turn_complete" in rec.kinds())
         assert a.messages[0]["role"] == "system"
         assert [m["content"] for m in a.messages if m["role"] == "user"] == ["Eerste vraag.", "Tweede vraag."]
+        await a.close()
+    asyncio.run(run())
+
+
+def test_notes_after_the_mark_are_drawn_not_spoken():
+    async def run():
+        cards = []
+        card = Tool("kaart", "Card", {"type": "object", "properties": {"soort": {"type": "string"}}},
+                    handler=lambda args: cards.append(args) or {"ok": True})
+        other = Tool("toon", "Show", handler=lambda args: {"ok": True})
+        brain = FakeBrain([{"text": "De ESP32 kan maar 3,3 volt aan. Details staan op mijn scherm.\n[SCH" "ERM]\n- GPIO max 3,6 V\n- Encoder 5 V"},
+                           {"text": "Het is kwart voor twee."}])
+        screen = FakeBrain([{"tool": "kaart", "args": {"soort": "punten"}}], model="fake-screen")
+        a = CascadeAdapter(ears=FakeEars(["Waarom een level shifter?", "Hoe laat is het?"]), brains=[brain],
+                           mouths=[FakeMouth(ms=100)], screens=[screen], noise_filter=False)
+        rec = Recorder(a)
+        await a.start_session("p", "c", [card, other])
+        assert "Talk less, show more" in a.messages[0]["content"] and "Screen first" not in a.messages[0]["content"]
+        await say(a)
+        await wait_for(lambda: "turn_complete" in rec.kinds() and cards)
+        assert "".join(rec.details("said")) == "De ESP32 kan maar 3,3 volt aan. Details staan op mijn scherm. "
+        assert cards == [{"soort": "punten"}]
+        asked = screen.seen[0]
+        assert "Waarom een level shifter?" in asked[1]["content"] and "- GPIO max 3,6 V\n- Encoder 5 V" in asked[1]["content"]
+        assert "Dutch" in asked[0]["content"]
+        assert "[SCHERM]" in a.messages[2]["content"]                  # the conversation keeps the notes
+        assert set(a.usage) == {"fake-llm", "fake-screen"}
+        await say(a)                                                   # no notes: no card, no screen call
+        await wait_for(lambda: rec.kinds().count("turn_complete") == 2)
+        assert len(cards) == 1 and len(screen.seen) == 1
+        await a.close()
+    asyncio.run(run())
+
+
+def test_the_mark_may_come_in_pieces():
+    split = cascade.Split()
+    said = "".join(split.feed(piece) for piece in ("Kort antwoord. [", "SCH", "ERM]\nnotitie", " twee")) + split.flush()
+    assert said == "Kort antwoord. " and split.notes == "\nnotitie twee"
+    plain = cascade.Split()
+    assert plain.feed("Zie [1") + plain.feed("] hier") + plain.flush() == "Zie [1] hier" and plain.notes is None
+    end = cascade.Split()
+    assert end.feed("Klaar [SCH") + end.flush() == "Klaar [SCH"
+
+
+def test_without_a_screen_model_he_draws_himself():
+    async def run():
+        card = Tool("kaart", "Card", handler=lambda args: {"ok": True})
+        a = make_cascade()
+        await a.start_session("p", "c", [card])
+        assert "Screen first" in a.messages[0]["content"] and not a._split
         await a.close()
     asyncio.run(run())
 

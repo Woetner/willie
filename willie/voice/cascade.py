@@ -83,6 +83,39 @@ SPOKEN = (
     "plain sentences, no markdown, lists, headings, emoji, brackets or web addresses. Write numbers, units "
     "and abbreviations the way they are said. Begin with a short first sentence, so the speaking can start at once."
 )
+# Talk less, show more (Wouter, 9 Oct). The brain says the answer in a sentence or two and writes
+# the rest as notes after a [SCHERM] line; a second, cheaper model (voice.screen_llm) turns those
+# notes into one kaart while he is already talking. That is sooner and cheaper than the brain
+# calling kaart itself (a second round over the whole prompt before his first word), and what
+# is not said is not paid as speech - the largest part of the bill.
+MARK = "[SCHERM]"
+SCREEN_LLM = "openai:gpt-5-mini@minimal, gemini:gemini-3.5-flash-lite@minimal"
+TALK_LESS = (
+    "Talk less, show more. You have a screen; Wouter reads it while you talk. Say at most two short sentences, "
+    "about 25 words in all: the answer itself. A command gets one or two words ('Done.'). Everything else that "
+    "helps him - the numbers, the steps, a list, a comparison, values over time, the reasons - you do NOT say: "
+    f"write it after a line that holds only {MARK}, as short plain notes with the real numbers and units, only "
+    "from a lookup or from what you know for certain. Those notes are never spoken: a screen assistant draws "
+    "them as one card (graph, bars, meter, steps, comparison, key value). When there are notes, your last spoken "
+    f"sentence may point at the screen. No {MARK} part for small talk, a done command, or an answer that is "
+    "complete in one sentence. The notes are how a card gets on the screen: the tool kaart does not exist in "
+    "this conversation, and wherever your instructions name it you write notes instead. toon is only for when "
+    "Wouter asks, in those words, to put a given text or number on the screen; never for an explanation. "
+    "How something looks = toon_afbeelding. Say nothing before or between tool calls, in any language; your "
+    "first words come after the last tool result. No closing offers such as 'want more details?'.\n"
+    "Example. Wouter: 'Waarom heb ik een level shifter nodig tussen 5 volt encoders en een ESP32?' -> "
+    "'Because the ESP32's pins only take 3.3 volts. The details are on my screen.\n"
+    f"{MARK}\nLevel shifter: 5 V encoder to ESP32\n- ESP32 GPIO: 3.3 V logic, 3.6 V absolute maximum\n"
+    "- Encoder output: 5 V, damages the pin over time\n- Fix: level shifter or a 10k / 20k divider per channel'"
+)
+DRAW = (
+    "You draw one card on a small robot's screen (480 x 320) from the notes you are given. You do not speak: "
+    "answer with exactly one kaart call. Use only facts and numbers that are in the notes, never your own. "
+    "Pick the most visual kind: values over time = grafiek; several amounts side by side = staaf; a reading on "
+    "a scale = meter; one key value = getal, large, with the supporting lines under it; two options = vergelijk; "
+    "a how-to = stappen; otherwise punten. Copy, do not write: no value you worked out yourself, no added advice, "
+    "no sentences. At most 5 lines of at most 40 characters each, and a title of at most 30."
+)
 STYLES = {
     "nl": "Spreek Nederlands zoals een Nederlander. Vlot en zakelijk, in een stevig tempo, droog en rustig, zonder opgewekte ondertoon.",
     "en": "Brisk, dry and matter-of-fact, calm and precise, like a capable butler. No cheerful announcer tone.",
@@ -490,18 +523,20 @@ class Brain:
     def warm(self) -> None:
         self.http.warm()
 
-    def _body(self, messages: list[dict], tools: list[dict]) -> dict:
+    def _body(self, messages: list[dict], tools: list[dict], force: str = "") -> dict:
         body = {"model": self.model, "messages": messages, "stream": True, "stream_options": {"include_usage": True}}
         if tools:
             body["tools"] = [{"type": "function", "function": tool} for tool in tools]
+        if force:                                    # the answer must be this tool call (the screen model)
+            body["tool_choice"] = {"type": "function", "function": {"name": force}}
         if self.effort:
             body["reasoning_effort"] = self.effort
         return body
 
-    def _request(self, messages: list[dict], tools: list[dict]) -> http.client.HTTPResponse:
+    def _request(self, messages: list[dict], tools: list[dict], force: str = "") -> http.client.HTTPResponse:
         while True:
             headers = {"Authorization": f"Bearer {self.keys[self._key]}"} if self.keys else {}
-            response = self.http.post("/chat/completions", headers, self._body(messages, tools))
+            response = self.http.post("/chat/completions", headers, self._body(messages, tools, force))
             if response.status == 200:
                 return response
             text = _error_text(response)
@@ -516,8 +551,8 @@ class Brain:
                 continue
             raise StageError(f"{self.model}: HTTP {response.status}: {text}", response.status)
 
-    def _work(self, messages: list[dict], tools: list[dict], put) -> None:
-        response = self._request(messages, tools)
+    def _work(self, messages: list[dict], tools: list[dict], put, force: str = "") -> None:
+        response = self._request(messages, tools, force)
         calls: list[dict] = []
         used = None
         for raw in response:
@@ -545,8 +580,8 @@ class Brain:
         if used:
             put(("usage", chat_usage(used)))
 
-    def stream(self, messages: list[dict], tools: list[dict]):
-        return in_thread(lambda put: self._work(messages, tools, put), self.http.drop)
+    def stream(self, messages: list[dict], tools: list[dict], force: str = ""):
+        return in_thread(lambda put: self._work(messages, tools, put, force), self.http.drop)
 
     def close(self) -> None:
         self.http.drop()
@@ -678,6 +713,34 @@ def clean(text: str) -> str:
     return " ".join(_MARKUP.sub(lambda found: found.group(1) or "", text).split())
 
 
+class Split:
+    """The model's text as it comes -> the part that is spoken. What follows the [SCHERM] line is
+    kept in `notes` for the screen (None = there was no such line)."""
+
+    def __init__(self):
+        self.notes: str | None = None
+        self._held = ""              # the end of the text so far, when it could be the start of the mark
+
+    def feed(self, text: str) -> str:
+        if self.notes is not None:
+            self.notes += text
+            return ""
+        text, self._held = self._held + text, ""
+        at = text.find(MARK)
+        if at >= 0:
+            self.notes = text[at + len(MARK):]
+            return text[:at]
+        for size in range(min(len(MARK) - 1, len(text)), 0, -1):
+            if MARK.startswith(text[-size:]):
+                self._held = text[-size:]
+                return text[:-size]
+        return text
+
+    def flush(self) -> str:
+        held, self._held = self._held, ""
+        return held if self.notes is None else ""
+
+
 class Sentences:
     def __init__(self, first: bool = True):
         self.buffer = ""
@@ -721,9 +784,9 @@ class CascadeAdapter(VoiceAdapter):
 
     def __init__(self, language: str = "nl", stt_model: str = "", llm: str = "", tts: str = "", voice: str = "",
                  style: str = "", speed: float = 1.0, hint: str = "", local_llm_url: str = "", local_tts_url: str = "",
-                 noise_filter: bool = True, fast: bool = True, source: str = "robot", search: bool = False,
-                 resume: bool = False, resume_handle: str = "", ears=None, brains: list | None = None,
-                 mouths: list | None = None):
+                 noise_filter: bool = True, fast: bool = True, screen_llm: str = "", source: str = "robot",
+                 search: bool = False, resume: bool = False, resume_handle: str = "", ears=None,
+                 brains: list | None = None, mouths: list | None = None, screens: list | None = None):
         """`ears`, `brains` and `mouths` replace the real parts (the tests pass fakes). `search`,
         `resume` and `resume_handle` are taken so the runner builds every adapter the same way:
         he searches through zoek_op, and a garage conversation starts fresh after a reconnect."""
@@ -736,6 +799,15 @@ class CascadeAdapter(VoiceAdapter):
         style = style or STYLES.get(language, "")
         self.mouths = mouths if mouths is not None else self._build(
             chain_specs(tts or TTS), "voice.tts", lambda spec: Mouth(spec, voice, style, speed, local_tts_url))
+        # The screen model is an extra: without a key for it he simply draws his cards himself again.
+        self.screens = screens if screens is not None else []
+        if screens is None and screen_llm:
+            try:
+                self.screens = self._build(chain_specs(screen_llm), "voice.screen_llm", lambda spec: Brain(spec, local_llm_url))
+            except RuntimeError:
+                pass
+        self._split = False              # this session: notes after [SCHERM], drawn by the screen model
+        self._drawing: asyncio.Task | None = None
         self.model = getattr(self.brains[0], "model", "cascade")
         self.key_kind = "betaald"        # the ears and the mouth are paid, whatever key the brain uses
         self.messages: list[dict] = []
@@ -776,13 +848,15 @@ class CascadeAdapter(VoiceAdapter):
         first = "OUTPUT LANGUAGE: English only. The Dutch examples below show the manner, not the language." \
             if self.language == "nl_en" else ""
         runs_on = f"Je draait op het model {self.model} (je hoort met {getattr(self.ears, 'model', '?')})."
-        prompt = "\n\n".join(p for p in (first, persona, DISCIPLINE, SCREEN, SPOKEN, context, runs_on,
+        self._split = bool(self.screens) and "kaart" in self.tools
+        prompt = "\n\n".join(p for p in (first, persona, DISCIPLINE, TALK_LESS if self._split else SCREEN, SPOKEN, context, runs_on,
                                          LANGUAGES.get(self.language, "")) if p).strip()
         self.messages = [{"role": "system", "content": prompt}]
         self._quiet = asyncio.Event()
         self._quiet.set()
         # The handshakes of the brain and the mouth run while the ears connect.
-        warming = [asyncio.to_thread(part.warm) for part in (self.brains[0], self.mouths[0]) if hasattr(part, "warm")]
+        warming = [asyncio.to_thread(part.warm) for part in (self.brains[0], self.mouths[0], *self.screens[:1])
+                   if hasattr(part, "warm")]
         opened = await asyncio.gather(self.ears.open(self._on_ears), *warming, return_exceptions=True)
         if isinstance(opened[0], BaseException):
             raise RuntimeError(str(opened[0])) from opened[0]
@@ -821,9 +895,12 @@ class CascadeAdapter(VoiceAdapter):
             return
         self._closed = True
         await self._cancel()
+        if self._drawing is not None and not self._drawing.done():
+            self._drawing.cancel()
+            await asyncio.gather(self._drawing, return_exceptions=True)
         self.is_open = False
         await self.ears.close()
-        for part in (*self.brains, *self.mouths):
+        for part in (*self.brains, *self.mouths, *self.screens):
             if hasattr(part, "close"):
                 part.close()
         self._finish()
@@ -983,15 +1060,17 @@ class CascadeAdapter(VoiceAdapter):
     async def _respond(self) -> None:
         pieces: asyncio.Queue = asyncio.Queue()
         voice = asyncio.create_task(self._speak(pieces))
-        declarations = [tool.declaration() for tool in self.tools.values()]
+        # With a screen model the brain does not get kaart: it writes notes, and the prompt is 3 kB smaller.
+        declarations = [tool.declaration() for tool in self.tools.values() if not (self._split and tool.name == "kaart")]
+        drawing = None
         try:
             for _ in range(MAX_ROUNDS):
-                split, text, calls = Sentences(first=not self._spoken), "", []
+                split, screen, text, calls = Sentences(first=not self._spoken), Split(), "", []
                 async for kind, value in self._chain(self.brains, lambda brain: brain.stream(self.messages, declarations)):
                     if kind == "text":
                         self._clock.setdefault("llm", time.monotonic())
                         text += value
-                        for piece in split.feed(value):
+                        for piece in split.feed(screen.feed(value) if self._split else value):
                             pieces.put_nowait(piece)
                     elif kind == "calls":
                         calls = value
@@ -999,8 +1078,10 @@ class CascadeAdapter(VoiceAdapter):
                         brain = self.brains[0]
                         usage.add(self.usage.setdefault(brain.model, {}), value)
                         self._kinds[brain.model] = getattr(brain, "key_kind", "betaald")
-                for piece in split.flush():
+                for piece in [*split.feed(screen.flush()), *split.flush()]:
                     pieces.put_nowait(piece)
+                if not calls and (screen.notes or "").strip():
+                    drawing = self._drawing = asyncio.create_task(self._draw(self._question, screen.notes.strip()))
                 message = {"role": "assistant", "content": text or None}
                 if calls:
                     message["tool_calls"] = calls
@@ -1013,6 +1094,10 @@ class CascadeAdapter(VoiceAdapter):
                 self.messages.extend(await asyncio.shield(asyncio.gather(*(self._tool(call) for call in calls))))
             pieces.put_nowait(None)
             await voice
+        except BaseException:                        # cancelled or failed: no card for an answer that was not given
+            if drawing is not None:
+                drawing.cancel()
+            raise
         finally:
             if not voice.done():
                 voice.cancel()
@@ -1033,6 +1118,33 @@ class CascadeAdapter(VoiceAdapter):
                 else {"result": result, "language": ENGLISH_RESULT}
         content = json.dumps(result, ensure_ascii=False, default=str)
         return {"role": "tool", "tool_call_id": call.get("id"), "content": content[:TOOL_CHARS]}
+
+    async def _draw(self, question: str, notes: str) -> None:
+        """The notes of one answer -> one kaart on his face, by the screen model. Never raises:
+        without a card he has still said the answer."""
+        card = self.tools["kaart"]
+        language = "English" if self.language in ("en", "nl_en") else "Dutch"
+        messages = [{"role": "system", "content": f"{DRAW} All text on the card is {language}."},
+                    {"role": "user", "content": f"Question: {question}\n\nNotes:\n{notes}"}]
+        calls: list[dict] = []
+        try:
+            await self._go()
+            async for kind, value in self._chain(self.screens, lambda brain: brain.stream(messages, [card.declaration()], force="kaart")):
+                if kind == "calls":
+                    calls = value
+                elif kind == "usage":
+                    brain = self.screens[0]
+                    usage.add(self.usage.setdefault(brain.model, {}), value)
+                    self._kinds[brain.model] = getattr(brain, "key_kind", "betaald")
+            if calls:
+                args = json.loads((calls[0].get("function") or {}).get("arguments") or "{}")
+                await self._run_tool("kaart", args if isinstance(args, dict) else {})
+            else:
+                log.warning("no card: the screen model gave no kaart call")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("no card: %s", exc)
 
     async def _speak(self, pieces: asyncio.Queue) -> None:
         last = False
@@ -1108,6 +1220,7 @@ def configured(source: str = "robot", **overrides) -> CascadeAdapter:
         tts=str(setting("voice.tts", "") or ""), voice=str(setting("voice.openai_voice", "") or ""),
         style=str(setting("voice.tts_style", "") or ""), speed=setting("voice.speed", 1.0),
         fast=bool(setting("voice.stt_fast", True)), noise_filter=bool(setting("voice.noise_filter", True)),
+        screen_llm=str(setting("voice.screen_llm", SCREEN_LLM) or ""),
         local_llm_url=str(setting("voice.local_llm_url", "") or ""),
         local_tts_url=str(setting("voice.local_tts_url", "") or ""), source=source)
     return CascadeAdapter(**{**options, **overrides})
