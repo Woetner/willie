@@ -254,6 +254,23 @@ DECLARATIONS = [
             "required": ["niveau"],
         },
     },
+    {
+        "name": "demp_microfoon",
+        "description": (
+            "Demp je eigen microfoon helemaal (D17): daarna luister je niet meer, ook niet naar "
+            "het wekwoord, totdat de app of een tik op je scherm je weer aanzet. Gebruik dit "
+            "zodra Wouter 'mute microfoon', 'zet je microfoon uit' of iets dat daar duidelijk op "
+            "lijkt zegt. Vraag eerst hardop of hij het echt wil en vertel dat alleen de app of "
+            "het scherm je daarna weer aanzet; roep dit pas aan met bevestigd=true na zijn ja."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "bevestigd": {"type": "boolean", "description": "True alleen na Wouters expliciete ja."},
+            },
+            "required": ["bevestigd"],
+        },
+    },
 ]
 
 
@@ -617,6 +634,29 @@ def zet_volume(niveau: float) -> dict:
     return {"ok": True, "volume": niveau}
 
 
+# Called right after demp_microfoon sets privacy.mute (set by tools/willie_voice.py): ends the
+# running session right away and updates the face, the same way the phone app's sleep switch
+# does (remote.py's _mode). One-way like zet_uit("uit"): only the app or a screen tap unmutes.
+MUTE_HOOK = None
+
+
+def demp_microfoon(bevestigd: bool = False) -> dict:
+    if not bevestigd:
+        return {"eerst_vragen": "Vraag Wouter of hij de microfoon echt wil dempen, en roep "
+                                 "demp_microfoon opnieuw aan met bevestigd=true nadat hij ja zegt."}
+    from willie.audio import speech
+    from willie.config import Config
+
+    Config().update({"privacy": {"mute": True}})       # saved: survives a restart (D17)
+    speech.silence(True)
+    if MUTE_HOOK:
+        try:
+            MUTE_HOOK()
+        except Exception:
+            pass
+    return {"ok": True, "let_op": "Microfoon gedempt. Alleen de app of een tik op het scherm zet me weer aan."}
+
+
 from willie import skills  # noqa: E402  (H1: home systems, each one switchable)
 
 HANDLERS = {
@@ -633,6 +673,7 @@ HANDLERS = {
     "status": status,
     "zet_volume": zet_volume,
     "zet_uit": zet_uit,
+    "demp_microfoon": demp_microfoon,
     "verbeter_jezelf": verbeter_jezelf,
     "verbeteringen_status": verbeteringen_status,
 }

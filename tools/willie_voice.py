@@ -102,6 +102,17 @@ def main() -> int:
     if face:
         face.on_pet = lambda: control.event("pet")
     speech.silence(muted())              # started asleep: stay quiet until woken
+
+    def mute_now() -> None:
+        # demp_microfoon (voice): same as the phone app's sleep switch - end the running
+        # session right away instead of waiting for the next wake-word loop iteration.
+        sleep_now.set()
+        wake_stop.set()
+        if face:
+            face.indicators(muted=True, mic=False)
+            face.set_state("sleep")
+
+    willie_tools.MUTE_HOOK = mute_now
     if remote:
         willie_tools.FRAME_SOURCE = remote.latest_frame
         willie_tools.POWER_HOOK = remote.powering
