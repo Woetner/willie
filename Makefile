@@ -1,6 +1,7 @@
 # WILL-E — run these on the Mac, inside the willie/ folder.
 # Override on the command line if needed:  make deploy PI=woetner@willie.local
 PI      ?= willie.local
+SSH     ?= ssh
 PI_DIR  ?= willie
 # ESP32 board for the firmware (D18): the 30-pin ESP32-WROOM DevKit (esp32dev).
 MCU     ?= esp32dev
@@ -12,7 +13,7 @@ RSYNC   := rsync -az --delete \
              --exclude '*.log' --exclude .DS_Store --exclude firmware/.pio/ --exclude .local/
 
 .PHONY: help sync setup diet deps service deploy restart stop logs status ssh ram link-test ask-camera face face-install voice \
-        pull-config run-local fw flash flash-link monitor bench-mcu bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test bench-aec bench-doa mic-tune mic-tune-undo voice-enroll garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs
+        pull-config run-local fw flash flash-link monitor bench-mcu floor-cal nav-cal tof-watch roam floor-rec-pull floor-rec-clear bench-camera bench-screen bench-audio-out voice-pi live-talk voices voice-samples wake-record wake-fetch voice-logs wake-test bench-aec bench-doa mic-tune mic-tune-undo cascade-test voice-adapter voice-enroll wake-record-mac wake-label wake-eval wake-mine wake-train wake-install voice-record voice-fetch voice-bench-setup voice-label voice-bench garage improve improve-watch improve-install spotify-setup spotify-login spotify-logs radio-setup
 
 help:
 	@echo "Pi"
@@ -20,6 +21,9 @@ help:
 	@echo "  make diet         OS diet: Bluetooth/MQTT/pigpio off, journald in RAM, service limits (A8)"
 	@echo "  make deploy       sync code + restart WILL-E (A5)"
 	@echo "  make ram          RAM table from the Pi (A8, D21)"
+	@echo "  make presence-deploy    upload silent presence code (preserves live settings)"
+	@echo "  make presence-bluetooth-setup  prepare BLE without changing the MCU's PL011 UART; reboot required"
+	@echo "  make presence-activate  activate prepared BLE config with a guarded idle reboot"
 	@echo "  make ask-camera   take one photo and ask Gemini about it (bench prototype)"
 	@echo "  make face         say 'Hey Willie' and talk; camera is automatic (bench prototype)"
 	@echo "  make face-install install the short 'willie' face-console command on the Pi"
@@ -37,10 +41,19 @@ help:
 	@echo "  make mic-tune     guided mic tuning: noise, gain, sound-direction fit, 10-try check (writes settings after asking)"
 	@echo "  make mic-tune-undo  restore the settings from before the last mic-tune"
 	@echo "  make live-talk    spoken session until Ctrl-C, no wake word (S=60 for a timed one)"
+	@echo "  make voice-adapter A=cascade   who he talks with: cascade, gemini_live or openai_realtime (restarts the voice)"
+	@echo "  make cascade-test  the G1 questions on the cascade adapter: reply time, tools, answers (Q='tijd rekenen' for a few)"
 	@echo "  make voice-samples make the candidate voice samples on the Pi (V='Orus Schedar' for only those)"
 	@echo "  make voices       play the voice samples one after another on the Mac"
 	@echo "  make wake-record  record 'Hey Willie' + everyday sound through the robot's mic (D2 round 2)"
 	@echo "  make wake-fetch   copy those recordings to the Mac training workspace"
+	@echo "  make wake-record Q=1 [NEG=10] [TEST=1]  quick 3-min round (T2); TEST=1 = for the never-trained test set"
+	@echo "  make wake-record-mac  extra 'Hey Willie' clips at the MacBook mic (low weight)"
+	@echo "  make wake-train   features, train, mine hard negatives, train again, score (Mac, 1-3 h)"
+	@echo "  make wake-eval    score the wake model: heard %% and false wakes/hour per cutoff"
+	@echo "  make wake-label   listen to his kept wakes and near misses: you or not?"
+	@echo "  make voice-record guided test clips through the robot mic (T0b); then voice-fetch, voice-bench"
+	@echo "  make voice-bench  score speech detector and speech-to-text on those clips (first: voice-bench-setup)"
 	@echo "Garage mode (K1)"
 	@echo "  make voice-enroll  teach the home server your voice (NEW=1 starts over); do it in the garage"
 	@echo "  make garage ON=1   garage mode on (ON=0 off) - or say 'garagemodus aan'"
@@ -60,6 +73,11 @@ help:
 	@echo "  make flash-link   build + flash over the Pi link, no USB"
 	@echo "  make monitor      USB serial monitor (debug output)"
 	@echo "  make bench-mcu T=servo|sensors|io|motors|spin|watch   B9-B12 tests over the link"
+	@echo "  make roam         F6 test: drive around for 10 min without a pause (MIN=3 for shorter), around obstacles"
+	@echo "  make tof-watch    show the front ToF readings live for 30 s (hold a hand in front of each)"
+	@echo "  make nav-cal      calibrate the wall heading fix: stand him square to a wall first (M4); D=reset forgets"
+	@echo "  make floor-cal D=500   calibrate the camera floor scan: box D mm in front of him (F7); D=reset forgets"
+	@echo "  make floor-rec-pull    fetch the floor-scan recording (dashboard: floorscan.record) to .local/floorrec"
 	@echo "  make face-demo    on the Pi: 60 s face-only demo + RAM/render measurements"
 	@echo "Mac"
 	@echo "  make face-preview animated face studio -> http://127.0.0.1:8765"
@@ -87,6 +105,37 @@ service: sync
 deploy: sync
 	ssh $(PI) 'sudo systemctl restart willie willie-voice; sudo systemctl stop willie-dashboard || true'
 	@echo "deployed -> http://$(PI):8080 (dashboard starts on the first visit)"
+
+# Opt-in software update with a code snapshot. Keep the Pi's calibrated settings.
+.PHONY: map3d-deploy
+map3d-deploy:
+	ssh $(PI) 'umask 077; mkdir -p "$$HOME/map3d-backups" && tar --exclude=.git --exclude=.env --exclude="*.env" --exclude=.venv --exclude=.local --exclude=.pio --exclude=__pycache__ --exclude=./config/willie.yaml -czf "$$HOME/map3d-backups/willie-$$(date -u +%Y%m%dT%H%M%SZ).tgz" -C $(PI_DIR) .'
+	$(RSYNC) --exclude config/willie.yaml ./ ../WILL-E.md $(PI):$(PI_DIR)/
+	ssh $(PI) 'cd $(PI_DIR) && .venv/bin/python -m compileall -q willie && sudo systemctl restart willie willie-voice && sudo systemctl try-restart willie-dashboard'
+
+.PHONY: presence-deploy presence-bluetooth-setup presence-activate presence-check
+presence-deploy:
+	$(SSH) $(PI) 'umask 077; mkdir -p "$$HOME/presence-backups" && tar --exclude=.git --exclude=.env --exclude="*.env" --exclude=.venv --exclude=.local --exclude=.pio --exclude=__pycache__ -czf "$$HOME/presence-backups/willie-$$(date -u +%Y%m%dT%H%M%SZ).tgz" -C $(PI_DIR) .'
+	rsync -az -e "$(SSH)" willie/presence.py willie/remote.py $(PI):$(PI_DIR)/willie/
+	rsync -az -e "$(SSH)" willie/skills/aanwezigheid.py $(PI):$(PI_DIR)/willie/skills/
+	rsync -az -e "$(SSH)" willie/voice/gemini_live.py $(PI):$(PI_DIR)/willie/voice/
+	rsync -az -e "$(SSH)" config/schema.yaml $(PI):$(PI_DIR)/config/
+	rsync -az -e "$(SSH)" requirements.txt $(PI):$(PI_DIR)/
+	rsync -az -e "$(SSH)" tools/presence_bluetooth.py tools/os_diet.sh tools/service_user.sh $(PI):$(PI_DIR)/tools/
+	$(SSH) $(PI) 'cd $(PI_DIR) && .venv/bin/pip install -q "bleak>=1.0" && .venv/bin/python -m compileall -q willie && sudo systemctl restart willie-voice && sudo systemctl stop willie-dashboard'
+	@echo "Presence code deployed; existing live settings kept. First BLE setup needs presence-bluetooth-setup and presence-activate."
+
+presence-bluetooth-setup:
+	rsync -az -e "$(SSH)" tools/presence_bluetooth.py $(PI):$(PI_DIR)/tools/
+	$(SSH) -t $(PI) 'cd $(PI_DIR) && sudo apt-get -y install bluez && sudo usermod -aG bluetooth willie && sudo .venv/bin/python tools/presence_bluetooth.py --apply && sudo systemctl enable bluetooth && if systemctl cat hciuart.service >/dev/null 2>&1; then sudo systemctl enable hciuart; fi'
+	@echo "Boot config prepared. Run make presence-activate while idle; then presence-check, link-test and ram."
+
+presence-check:
+	$(SSH) $(PI) 'test "$$(readlink -f /dev/serial0)" = /dev/ttyAMA0 && systemctl is-active willie willie-voice bluetooth && bluetoothctl list | grep -q "^Controller " && bluetoothctl show && cd $(PI_DIR) && .venv/bin/python -c "from willie.config import Config; c=Config(); print({k:c.get(k) for k in (\"presence.enabled\", \"presence.bluetooth\", \"presence.camera\")})"'
+
+presence-activate:
+	rsync -az -e "$(SSH)" tools/presence_bluetooth.py $(PI):$(PI_DIR)/tools/
+	$(SSH) $(PI) 'cd $(PI_DIR) && sudo .venv/bin/python tools/presence_bluetooth.py --activate'
 
 restart:
 	ssh $(PI) 'sudo systemctl restart willie'
@@ -152,14 +201,24 @@ spotify-login: sync
 spotify-logs:
 	ssh -t $(PI) 'journalctl -u willie-spotify -f -n 30 -o cat'
 
-voice-logs:
-	ssh -t $(PI) 'journalctl -u willie-voice -f -n 30 -o cat'
-
-wake-test: sync
 # ---------------------------------------------------------------- Radio (skills/radio.py)
 radio-setup: sync
 	ssh -t $(PI) 'sudo bash $(PI_DIR)/tools/install_radio.sh'
 
+voice-logs:
+	ssh -t $(PI) 'journalctl -u willie-voice -f -n 30 -o cat'
+
+# Adapter C (willie/voice/cascade.py): the G1 questions through speech-to-text + text model + speech.
+# Q="tijd rekenen" = only those; M=openai:gpt-4.1-mini = another brain for this run. Costs a few cents.
+cascade-test: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/g1/run.py --cascade $(if $(M),--model $(M)) $(Q)'
+
+# Which adapter he talks with: make voice-adapter A=cascade (or gemini_live, openai_realtime).
+# Writes the Pi's live settings like the dashboard does, then restarts the voice service.
+voice-adapter:
+	ssh $(PI) 'cd $(PI_DIR) && .venv/bin/python -c "from willie.config import Config; print(\"voice.adapter =\", Config().update(dict(voice=dict(adapter=\"$(A)\")))[\"voice\"][\"adapter\"])" && sudo systemctl restart willie willie-voice'
+
+wake-test: sync
 	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/wake.py $(or $(S),120)'
 
 bench-aec: sync
@@ -185,13 +244,66 @@ garage:
 
 # Wake word round 2 (D2): record Wouter through the robot's mic, fetch for training on the Mac.
 wake-record: sync
-	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/wakeword/record.py'
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && Q=$(Q) NEG=$(NEG) TEST=$(TEST) .venv/bin/python tools/wakeword/record.py'
 
+# Q=1 = a quick 3-minute round, NEG=10 = then 10 min of room sound, TEST=1 = for the test set (T2).
 wake-fetch:
-	mkdir -p .local/wakeword/samples/wouter .local/wakeword/samples/wouter_neg_long
+	mkdir -p .local/wakeword/samples/wouter .local/wakeword/samples/wouter_neg_long .local/wakeword/samples/test_pos .local/wakeword/samples/test_neg_long
 	rsync -a $(PI):$(PI_DIR)/.local/wakeword_rec/positive/ .local/wakeword/samples/wouter/
 	rsync -a $(PI):$(PI_DIR)/.local/wakeword_rec/negative/ .local/wakeword/samples/wouter_neg_long/
-	@echo "$$(ls .local/wakeword/samples/wouter | wc -l) positives, $$(ls .local/wakeword/samples/wouter_neg_long | wc -l) long negatives"
+	-rsync -a $(PI):$(PI_DIR)/.local/wakeword_rec/test/positive/ .local/wakeword/samples/test_pos/
+	-rsync -a $(PI):$(PI_DIR)/.local/wakeword_rec/test/negative/ .local/wakeword/samples/test_neg_long/
+	@echo "$$(ls .local/wakeword/samples/wouter | wc -l) positives, $$(ls .local/wakeword/samples/wouter_neg_long | wc -l) long negatives; test set: $$(ls .local/wakeword/samples/test_pos | wc -l) positives, $$(ls .local/wakeword/samples/test_neg_long | wc -l) long negatives"
+
+# Wake word v2 (T2), all on the Mac. WAKE_PY = the training venv (tools/wakeword/README.md).
+WAKE_PY = .local/wakeword/.venv/bin/python
+wake-record-mac:
+	.venv/bin/python tools/wakeword/record_mac.py $(N)
+wake-label:
+	.venv/bin/python tools/wakeword/evaluate.py --label
+wake-eval:
+	.venv/bin/python tools/wakeword/evaluate.py $(A)
+wake-mine:
+	.venv/bin/python tools/wakeword/evaluate.py --mine
+# Features -> train -> mine what still comes close -> train on that too -> score.
+# The result is a candidate (.local/wakeword/candidate); wake-install makes it the robot's model.
+ROUND := $(shell date +%m%d-%H%M)
+wake-train:
+	$(WAKE_PY) tools/wakeword/features.py
+	$(WAKE_PY) tools/wakeword/train.py "$(STEPS)" $(ROUND)a
+	.venv/bin/python tools/wakeword/evaluate.py --mine
+	$(WAKE_PY) tools/wakeword/features.py
+	$(WAKE_PY) tools/wakeword/train.py "$(STEPS)" $(ROUND)b
+	.venv/bin/python tools/wakeword/evaluate.py --robot
+	.venv/bin/python tools/wakeword/evaluate.py
+wake-install:
+	.venv/bin/python tools/wakeword/evaluate.py --install
+
+# T0b: labelled test clips through the robot's mic, the clips he kept himself, and the bench on the Mac.
+VOICE_PY = .venv/bin/python
+voice-record: sync
+	ssh -t $(PI) '$(MIC) cd $(PI_DIR) && .venv/bin/python tools/bench/voice_record.py $(N)'
+voice-fetch:
+	mkdir -p .local/voice/clips
+	rsync -a $(PI):.local/share/willie/clips/ .local/voice/clips/
+	@for kind in labelled utterance wake near; do echo "$$kind: $$(ls .local/voice/clips/$$kind 2>/dev/null | grep -c wav)"; done
+voice-bench-setup:
+	mkdir -p .local/voice/models/vosk
+	$(VOICE_PY) -m pip install -q webrtcvad-wheels faster-whisper vosk $(if $(PARAKEET),sherpa-onnx)
+	test -d .local/voice/models/vosk/vosk-model-small-nl-0.22 || (cd .local/voice/models/vosk && curl -sLO https://alphacephei.com/vosk/models/vosk-model-small-nl-0.22.zip && unzip -q vosk-model-small-nl-0.22.zip && rm vosk-model-small-nl-0.22.zip)
+	$(if $(PARAKEET),test -f .local/voice/models/parakeet/tokens.txt || (mkdir -p .local/voice/models/parakeet && cd .local/voice/models/parakeet && curl -L https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2 | tar -xj --strip-components 1))
+voice-label:
+	$(VOICE_PY) tools/bench/voice_bench.py --label
+voice-bench:
+	$(VOICE_PY) tools/bench/voice_bench.py $(A)
+
+# Phase T: the wake clips the Talk tab collected on the home server (real wakes + marked false wakes).
+wake-fetch-talk:
+	mkdir -p .local/wakeword/samples/talk_pos .local/wakeword/samples/talk_neg
+	rsync -a --delete homeserver:homeserver-data/talk/train/positive/ .local/wakeword/samples/talk_pos/
+	rsync -a --delete homeserver:homeserver-data/talk/train/negative/ .local/wakeword/samples/talk_neg/
+	rm -rf .local/wakeword/features/talk_pos .local/wakeword/features/talk_neg
+	@echo "$$(ls .local/wakeword/samples/talk_pos | wc -l) real wakes, $$(ls .local/wakeword/samples/talk_neg | wc -l) false wakes"
 
 # Voice audition (D7): samples are made on the Pi (API key) and played on the Mac.
 voice-samples: sync
@@ -214,6 +326,31 @@ fw:
 T ?= watch
 bench-mcu: sync
 	ssh -t $(PI) 'sudo systemctl stop willie; cd $(PI_DIR) && .venv/bin/python tools/bench/mcu.py $(T); sudo systemctl start willie'
+
+# F7: a box D mm in front of his body -> pitch trim (1 distance), camera height (2), lens-to-front (3+)
+D ?=
+tof-watch: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/tof_watch.py'
+
+# F6: drive around without a pause for MIN minutes, around obstacles; ends on `stop`
+MIN ?= 10
+roam: sync
+	ssh $(PI) 'cd $(PI_DIR) && .venv/bin/python -u tools/roam.py $(MIN)'
+
+nav-cal: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/nav_cal.py $(D)'
+
+floor-cal: sync
+	ssh -t $(PI) 'cd $(PI_DIR) && .venv/bin/python tools/floor_cal.py $(D)'
+
+# F7 recording (floorscan.record): fetch the pictures + logs to the Mac, or empty the Pi's RAM folder
+floor-rec-pull:
+	mkdir -p .local/floorrec
+	rsync -az $(PI):/dev/shm/willie-rec/ .local/floorrec/
+	@echo "pictures: $$(ls .local/floorrec/*.jpg 2>/dev/null | wc -l)  ->  .local/floorrec/"
+
+floor-rec-clear:
+	ssh $(PI) 'rm -rf /dev/shm/willie-rec'
 
 flash:
 	cd firmware && pio run -e $(MCU) -t upload
@@ -267,3 +404,11 @@ face-demo:
 
 face-test:
 	.venv/bin/python -m pytest tests/test_face.py tests/test_voice_adapter.py -q
+
+
+# Serial monitor that lets WILL-E read along (tools/serial_buddy.py). make serial NAME=luchtmeter BAUD=115200
+NAME ?= esp
+BAUD ?= 115200
+.PHONY: serial
+serial:
+	.venv/bin/python tools/serial_buddy.py --name $(NAME) --baud $(BAUD)

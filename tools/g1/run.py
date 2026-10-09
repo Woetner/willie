@@ -90,20 +90,33 @@ def trim(pcm: bytes, threshold: int = 500) -> bytes:
     return samples[loud[0]:loud[-1] + 160].tobytes()
 
 
-async def ask(q: dict, pcm: bytes, key: str, silence_ms: int | None, end_high=False, model="") -> dict:
-    adapter = gemini_live.GeminiLiveAdapter(key, model=model, language=gemini_live.configured_language(),
-                                            search=gemini_live.configured_search())
-    setup = adapter._setup_message
+async def ask(q: dict, pcm: bytes, key: str, silence_ms: int | None, end_high=False, model="", openai=False,
+              cascade=False) -> dict:
+    if cascade:                      # adapter C: the same sheet on speech-to-text + text model + text-to-speech
+        from willie.voice import cascade as cascade_module
+        adapter = cascade_module.configured(**({"llm": model} if model else {}))
+        openai = True                # no Gemini setup message to patch
+    elif openai:                       # D5: the same sheet on OpenAI Realtime (key from OPENAI_API_KEY)
+        from willie.voice.openai_realtime import OpenAIRealtimeAdapter
+        adapter = OpenAIRealtimeAdapter(model=model, language=gemini_live.configured_language(),
+                                        voice=gemini_live.setting("voice.openai_voice", ""))
+    else:
+        adapter = gemini_live.GeminiLiveAdapter(key, model=model, language=gemini_live.configured_language(),
+                                                search=gemini_live.configured_search())
+    setup = getattr(adapter, "_setup_message", None)
 
     def patched(model, prompt):
         message = setup(model, prompt)
+        if openai:
+            return message
         vad = message["setup"]["realtimeInputConfig"]["automaticActivityDetection"]
         if silence_ms is not None:
             vad["silenceDurationMs"] = silence_ms
         if end_high:
             vad["endOfSpeechSensitivity"] = "END_SENSITIVITY_HIGH"
         return message
-    adapter._setup_message = patched
+    if setup is not None:
+        adapter._setup_message = patched
     calls, said, heard = [], [], []
     first_audio, done = asyncio.Event(), asyncio.Event()
     t = {"audio": None}
@@ -118,6 +131,9 @@ async def ask(q: dict, pcm: bytes, key: str, silence_ms: int | None, end_high=Fa
     tools = [Tool(x.name, x.description, x.parameters, handler=stub(x.name)) for x in real]
     tools.append(Tool(gemini_live.NOT_FOR_ME.name, gemini_live.NOT_FOR_ME.description,
                       gemini_live.NOT_FOR_ME.parameters, handler=stub(gemini_live.NOT_FOR_ME.name)))
+    if cascade and gemini_live.configured_lean():        # as in a real conversation: the small prompt (L2)
+        from willie.voice import lean
+        tools = lean.lean(tools, lean.CORE + (gemini_live.NOT_FOR_ME.name,))
 
     def on_audio(chunk):
         if t["audio"] is None:
@@ -199,19 +215,25 @@ async def main():
     parser.add_argument("--silence", type=int, help="silenceDurationMs for this run (default: the adapter's)")
     parser.add_argument("--end-high", action="store_true", help="endOfSpeechSensitivity HIGH instead of LOW")
     parser.add_argument("--model", default="", help="one Live model instead of the adapter's list")
+    parser.add_argument("--openai", action="store_true", help="run the sheet on OpenAI Realtime (D5) instead of Gemini Live")
+    parser.add_argument("--cascade", action="store_true",
+                        help="run the sheet on the cascade adapter (--model = one voice.llm entry, e.g. openai:gpt-4.1-mini)")
     args = parser.parse_args()
     load_env()
     import os
-    key = os.environ.get("GEMINI_API_KEY")
+    from willie.voice import talk_key
+    key = talk_key()                 # the free key when there is one: the weekly sheet must cost nothing (T10)
     if not key:
         sys.exit("GEMINI_API_KEY missing")
+    if (args.openai or args.cascade) and not os.environ.get("OPENAI_API_KEY"):
+        sys.exit("OPENAI_API_KEY missing")
     questions = yaml.safe_load((Path(__file__).parent / "questions.yaml").read_text())
     if args.ids:
         questions = [q for q in questions if q["id"] in args.ids]
     results = []
     for q in questions:
         try:
-            r = await ask(q, question_audio(q, key), key, args.silence, args.end_high, args.model)
+            r = await ask(q, question_audio(q, key), key, args.silence, args.end_high, args.model, args.openai, args.cascade)
         except Exception as exc:
             r = {"id": q["id"], "question": q["text"], "latency_s": None, "tools": [], "tool_expected": q.get("tool"),
                  "tool_ok": False, "words_ok": None, "answer": f"FOUT {type(exc).__name__}: {exc}", "model": "?"}

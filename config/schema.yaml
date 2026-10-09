@@ -6,7 +6,16 @@
 
 drive:
   _label: Drive
+  gyro_fusion: {type: bool, default: false, help: "Use calibrated MPU6050 yaw in odometry (firmware 0.5.2+). Off restores wheel-only heading. Verify axis, sign and bias before enabling"}
+  gyro_axis: {type: int, default: 2, min: 0, max: 2, help: "Yaw axis of the mounted IMU: 0 x, 1 y, 2 z"}
+  gyro_sign: {type: int, default: 1, min: -1, max: 1, help: "Yaw sign: use +1 or -1, verified against a positive body turn"}
+  gyro_weight: {type: float, default: 0.9, min: 0, max: 1, help: "Gyro weight in the heading increment; invalid or stale IMU falls back to wheels"}
+  gyro_deadband_dps: {type: float, default: 0.7, min: 0, max: 5, help: "Quiet gyro bias threshold while wheels stand still"}
+
   max_speed:      {type: float, default: 0.25, min: 0.05, max: 0.6, unit: m/s, help: Top driving speed}
+  sequence_steps: {type: int, default: 8, min: 1, max: 8, help: Maximum steps in one spoken movement sequence}
+  sequence_m:     {type: float, default: 4.0, min: 0.2, max: 4.0, unit: m, help: Maximum total movement in a sequence including its return}
+  sequence_s:     {type: int, default: 90, min: 5, max: 90, unit: s, help: Stop the whole sequence after this deadline, including time spent paused}
   accel:          {type: float, default: 0.5, min: 0.1, max: 2.0, unit: m/s², help: Acceleration limit}
   pwm_cap:        {type: int, default: 60, min: 10, max: 60, unit: "%", help: Hard motor PWM cap. The FIT0450 is rated 6 V and allows 7.5 V; 60 % of a full 12.6 V pack is 7.5 V. Never above 60.}
   pid_on:         {type: bool, default: false, help: "Wheel speed loop in the firmware (F2). Turn on after B12 confirmed the encoder directions; it switches itself off on a sign fault"}
@@ -30,6 +39,8 @@ safety:
   cliff_ms:            {type: int, default: 250, min: 0, max: 2000, unit: ms, help: "A cliff only counts when the down-looking ToF sees no floor for this long. Higher = fewer false locks from short dropouts, but the robot travels further before it stops at a real edge (at 0.25 m/s: 250 ms = 6 cm)"}
   cliff_invalid:       {type: bool, default: false, help: "Off: a down-looking ToF that cannot range (invalid, e.g. the floor is too close while he pitches) is ignored; only a valid far reading is a cliff. On: invalid counts as no floor too. Turn on for a table or the workbench, where a dark floor below the edge can also read invalid"}
   cliff_stop:          {type: bool, default: true, help: "The two down-looking ToF stop the wheels when they see no floor. Turn off only on the bench with the wheels in the air"}
+  tof_reset_min:       {type: int, default: 10, min: 0, max: 720, unit: min, help: "Restart the distance sensors this often, only while he stands still (they read nothing for about 0.2 s). 0 = never. Also a button in the app: ⋯ › Reset distance sensors"}
+  avoid:               {type: bool, default: true, help: "Drive around an obstacle instead of stopping in front of it (F6): back off, turn to the more open side, pass it, back on course. Used by wandering, the voice command to drive and search mode. Off = he stops and says so"}
   tof_brake:           {type: bool, default: true, help: "The front ToF slow the robot down and stop it before an obstacle. Turn off only to test"}
 
 power:
@@ -39,10 +50,10 @@ power:
 
 head:
   _label: Head (pan / tilt)
-  pan_min_deg:   {type: int, default: -90, min: -90, max: 0, unit: °}
-  pan_max_deg:   {type: int, default: 90, min: 0, max: 90, unit: °}
-  tilt_min_deg:  {type: int, default: -30, min: -45, max: 0, unit: °}
-  tilt_max_deg:  {type: int, default: 45, min: 0, max: 60, unit: °}
+  pan_min_deg:   {type: int, default: -90, min: -90, max: 0, unit: °, help: "Furthest the head may turn to the right (negative = right). A software limit so the camera cable is never stretched"}
+  pan_max_deg:   {type: int, default: 90, min: 0, max: 90, unit: °, help: "Furthest the head may turn to the left. A software limit so the camera cable is never stretched"}
+  tilt_min_deg:  {type: int, default: -30, min: -45, max: 0, unit: °, help: "Lowest tilt of the camera (negative = looking up in the head, see F7 for the sign). Stops the pod hitting the lid"}
+  tilt_max_deg:  {type: int, default: 45, min: 0, max: 60, unit: °, help: "Highest tilt of the camera. Stops the pod hitting the lid"}
   pan_trim_us:   {type: int, default: 0, min: -300, max: 300, unit: µs, help: Servo centre trim}
   tilt_trim_us:  {type: int, default: 0, min: -300, max: 300, unit: µs, help: Servo centre trim}
   speed_dps:     {type: int, default: 120, min: 10, max: 400, unit: °/s, help: Head move speed}
@@ -50,14 +61,21 @@ head:
 
 face:
   _label: Face
-  eye_style:   {type: choice, default: round, options: [round, visor, pixel], help: Eye shape}
+  theme: {type: choice, default: night, options: [auto, daylight, night], help: "Auto uses the daylight schedule in Europe/Amsterdam; daylight/night override it. No light sensor is used"}
+  daylight_start: {type: time, default: "07:30", help: "Daylight theme starts at this local time (inclusive) when theme is auto"}
+  daylight_end: {type: time, default: "20:00", help: "Daylight theme ends at this local time (exclusive) when theme is auto"}
+  eye_style:   {type: choice, default: companion, options: [companion, hud, round, visor, pixel], help: "Companion = refined amber eyes; hud = lens rings; round, visor, pixel = earlier styles"}
+  calm:        {type: bool, default: false, help: "In a conversation show three states only: listening, thinking, talking (T11). Hearing, 'got it' and 'your turn' all stay listening, and a state lasts at least 0.4 s, so room noise no longer makes the face flicker"}
   eye_color:   {type: str, default: "#39d0ff", help: Eye colour (hex)}
   bg_color:    {type: str, default: "#000000", help: Background colour (hex)}
-  brightness:  {type: int, default: 80, min: 5, max: 100, unit: "%"}
-  fps:         {type: int, default: 15, min: 5, max: 30, unit: fps, help: Face render rate (panel throughput must be measured)}
+  brightness:  {type: int, default: 80, min: 5, max: 100, unit: "%", help: "Screen brightness of the face in percent. Lower saves a little power; the backlight itself cannot be dimmed"}
+  flashlight_s: {type: int, default: 300, min: 10, max: 3600, unit: s, help: "The flashlight (full white screen) switches itself off after this long; a tap on the screen also ends it"}
+  fps:         {type: int, default: 20, min: 5, max: 30, unit: fps, help: Face render rate (panel throughput must be measured)}
+  captions:    {type: bool, default: true, help: "While he talks, the words he is saying on the label line (T6)"}
   blink_rate:  {type: float, default: 4.0, min: 0.5, max: 20, unit: /min, help: Average blinks per minute}
   dance_every_s: {type: int, default: 60, min: 0, max: 900, unit: s, help: "While Spotify plays on his speaker: average time between dances (0 = never dance)"}
   dance_s:     {type: float, default: 8, min: 2, max: 60, unit: s, help: How long one dance lasts}
+  calibrate:   {type: bool, default: false, help: "Switch on to start the touch calibration: tap the four crosses on his screen. It switches itself off and saves the touch_* values below"}
   touch_x_min: {type: int, default: 900, min: 0, max: 4095, help: "Touch calibration (K1 pinout zoom/drag): raw ADC at the left edge"}
   touch_x_max: {type: int, default: 3200, min: 0, max: 4095, help: Raw ADC at the right edge}
   touch_y_min: {type: int, default: 580, min: 0, max: 4095, help: Raw ADC at the top edge}
@@ -65,6 +83,15 @@ face:
   touch_swap_xy: {type: bool, default: false, help: "Swap the touch axes (dragging left moves the drawing up/down)"}
   touch_flip_x: {type: bool, default: false, help: Dragging left/right moves the drawing the wrong way}
   touch_flip_y: {type: bool, default: false, help: Dragging up/down moves the drawing the wrong way}
+  ui: {type: bool, default: true, help: Show the robot touchscreen menus and status bar}
+  language: {type: choice, default: nl, options: [nl, en], help: Touchscreen language}
+  reduced_motion: {type: bool, default: false, help: Reduce decorative face animation}
+  menu_timeout_s: {type: int, default: 30, min: 10, max: 300, unit: s, help: Return to face after menu inactivity}
+  touch_slop_px: {type: int, default: 18, min: 8, max: 40, unit: px, help: Ignore small resistive-touch jitter}
+  touch_filter_samples: {type: int, default: 3, min: 1, max: 3, help: Median samples for resistive touch; 3 rejects brief position spikes}
+  touch_settle_ms: {type: int, default: 40, min: 10, max: 100, unit: ms, help: Maximum wait for stable samples when a still finger produces no further input changes}
+  touch_pressure_ratio: {type: float, default: 0.85, min: 0, max: 1, help: Ignore unstable lift-off coordinates below this fraction of peak contact pressure}
+  swipe_px: {type: int, default: 65, min: 45, max: 150, unit: px, help: Minimum travel for a swipe}
 
 mood:
   _label: Mood
@@ -85,20 +112,54 @@ behavior:
   quiet_start:     {type: time, default: "23:00", help: Quiet hours start}
   quiet_end:       {type: time, default: "07:30", help: Quiet hours end}
   patrol_list:     {type: str, default: "printer, garage door, kitchen", help: Comma-separated place names}
-  follow_distance: {type: int, default: 600, min: 300, max: 1500, unit: mm}
-
+  follow_distance: {type: int, default: 600, min: 300, max: 1500, unit: mm, help: "How far behind you he stays when following you (G5, not built yet)"}
+nav:
+  _label: Position on the map (M4)
+  map3d: {type: bool, default: false, help: "Experimental local-server 3D landmarks during adventure and look-around. Requires calibrated fixed-focus camera; off restores existing behavior"}
+  map3d_apply: {type: bool, default: false, help: "Allow validated 3D landmark fixes while stationary. Off records a separate map without changing navigation"}
+  map3d_lens_position: {type: float, default: 0.0, min: 0, max: 32, help: "Fixed focus used for camera calibration and 3D mapping (dioptres)"}
+  wall_fix:          {type: bool, default: true, help: "Correct his heading from straight walls: when both front ToF see the same wall of a room on the map, the difference between them is his angle to it. Needs his position (the dock, or placed in the app)"}
+  tof_baseline_mm:   {type: int, default: 90, min: 30, max: 200, unit: mm, help: "Distance between the centres of the left and the right front ToF sensor (measured 4 Oct: 90; 1 mm wrong = about 1 % wrong angle)"}
+  tof_lr_offset_mm:  {type: float, default: 0.0, min: -60, max: 60, unit: mm, help: "Left minus right reading when he stands exactly square to a wall. The two sensors never read the same; set by make nav-cal. 1.5 mm = 1 degree"}
+  tof_front_mm:      {type: int, default: 84, min: 0, max: 250, unit: mm, help: "How far the front ToF sensors sit ahead of the wheel axle (measured 4 Oct: 84)"}
+  wall_max_mm:       {type: int, default: 900, min: 200, max: 1200, unit: mm, help: "Walls further away than this are not used (the VL53L0X gets noisy)"}
+  wall_range_tol_mm: {type: int, default: 350, min: 50, max: 1000, unit: mm, help: "Both readings must be this close to what the map predicts, else it is something else (an open door, a chair, a person). Wide while the floor plan is a sketch; tighten once the walls are learned (M6)"}
+  obey_map:          {type: bool, default: true, help: "When he drives by himself and knows where he is, he stops short of what the map forbids: no-go zones, low furniture, virtual walls, an edge or a spot where he got stuck before. A person driving him (Camera tab) is never held back"}
+  learn:             {type: bool, default: true, help: "Learn what the ToF sees into the map (M6): things that stand somewhere, edges, places he gets stuck. Only while he is sure of his position"}
+  axis_fix:          {type: bool, default: true, help: "Correct his heading from any flat surface that is nearly square to the house (walls and most furniture run along the map's x or y), also where the sketch has the wall in the wrong place. Heading only, never position (M8)"}
+  wall_pos_fix:      {type: bool, default: true, help: "Also correct his position from a wall: the same reading says how far the wall is (M5). Only the direction towards that wall is corrected"}
+  wall_pos_tol_cm:   {type: int, default: 20, min: 3, max: 80, unit: cm, help: "The wall may be at most this much nearer or further than the map says; a bigger difference is a cabinet or a wrong sketch, not a wrong position, and is left alone"}
+  door_snap_cm:      {type: int, default: 60, min: 10, max: 150, unit: cm, help: "When his track changes room this close beside a door, he is slid sideways into the opening (he cannot drive through a wall). Further from any door = he is lost"}
+  ask_when_lost:     {type: bool, default: true, help: "After he was picked up and set down he says once that he does not know where he is (not while asleep or in a conversation, at most every 10 minutes)"}
+  wall_max_fix_deg:  {type: float, default: 15.0, min: 2, max: 30, unit: °, help: "A wall that says his heading is off by more than this is not believed"}
+  wall_gain:         {type: float, default: 0.5, min: 0.1, max: 1.0, help: "Share of the measured heading error that one fix removes (lower = smoother, slower)"}
+trips:
+  _label: Trip log
+  enabled:         {type: bool, default: true, help: "Record every drive and send it to the home server for the Map tab (M3). Kept in RAM only, never on the SD card"}
+  end_after_s:     {type: int, default: 20, min: 5, max: 600, unit: s, help: A trip ends after this long without the wheels moving}
 voice:
   _label: Voice
-  adapter:         {type: choice, default: gemini_live, options: [gemini_live, openai_realtime], restart: true, help: Chosen at Gate G1}
+  adapter:         {type: choice, default: gemini_live, options: [gemini_live, openai_realtime, cascade], restart: true, help: "Who he talks with. gemini_live and openai_realtime = one speech-to-speech model. cascade = three parts (speech-to-text, a text model, text-to-speech): cheaper, any model as the brain; see stt_model, llm and tts below"}
   model:           {type: str, default: "", restart: true, help: Model id (empty = adapter default)}
+  openai_voice:    {type: choice, default: cedar, options: [cedar, marin, ash, ballad, echo, verse, alloy, sage, coral, shimmer], help: "His voice when the adapter is openai_realtime or cascade (Gemini keeps Iapetus)"}
+  stt_model:       {type: str, default: gpt-4o-mini-transcribe, help: "cascade: the speech-to-text model (OpenAI, streaming). gpt-4o-transcribe hears a little better and costs twice as much"}
+  stt_fast:        {type: bool, default: true, restart: true, help: "cascade: start the answer on what a second, live speech-to-text session (gpt-live-transcribe) wrote while you talked; nothing is said or done until the finished text agrees. About 0.6 s sooner, for $0.017 per minute that you are talking (it only hears the sentences). Off = one session, slower"}
+  stt_hint:        {type: str, default: "", help: "cascade: names and words the speech-to-text should know, comma-separated (WILL-E, pinout, Kever, Tomos). Empty by default and not yet tried: on silence a speech-to-text model can write such words by itself"}
+  llm:             {type: str, default: "openai:gpt-5.4-mini@none, gemini:gemini-3.5-flash@minimal", help: "cascade: the brain, as provider:model@thinking, comma-separated - the first that works answers. Providers: openai, gemini, groq, deepseek, cerebras, openrouter (each needs its key in .env) and local (local_llm_url). Faster and simpler: openai:gpt-4.1-mini"}
+  tts:             {type: str, default: "openai:gpt-4o-mini-tts, gemini", help: "cascade: the voice, comma-separated, the first that works speaks. openai:model, local:model (local_tts_url) or gemini (his old Iapetus voice, 1-3 s slower per sentence)"}
+  tts_style:       {type: str, default: "", help: "cascade: how he should sound, in words (empty = brisk and dry, in the conversation language). Example: 'Calm British butler, dry humour, quick pace'"}
+  local_llm_url:   {type: str, default: "", help: "cascade: an OpenAI-compatible model server in the house for llm 'local:model', e.g. http://192.168.2.151:11434/v1 (Ollama)"}
+  local_tts_url:   {type: str, default: "", help: "cascade: an OpenAI-compatible speech server in the house for tts 'local:model', e.g. http://192.168.2.151:8880/v1 (Kokoro-FastAPI: English voices only, free)"}
   volume:          {type: float, default: 0.35, min: 0.02, max: 0.8, help: "Speaker volume for voice and chimes (0.15 = quiet desk, 0.35 = room, 0.8 = max)"}
   speed:           {type: float, default: 1.0, min: 0.7, max: 1.5, help: Speaking speed}
   robot_filter:    {type: float, default: 0.3, min: 0, max: 1, help: Amount of robot voice filter}
   wake_sensitivity: {type: float, default: 0.35, min: 0.1, max: 0.8, help: "How easily 'Hey Willie' wakes him (cutoff = 1 - this). Higher = hears it softer and further away, but more false wakes. 0.35 = cutoff 0.65 (0.5 woke too easily, Wouter 25 Sep)"}
   wake_gain:       {type: float, default: 8.0, min: 1, max: 32, help: "Digital mic gain for wake word + recorder (INMP441 is quiet; left channel only)"}
+  highpass:        {type: bool, default: false, restart: true, help: "Remove the mic's slow drift below 60 Hz before the gain (wake word, recorder, conversation). 98 % of the mic signal in a quiet room is that drift; with the gain it clips voices and looks like sound. Off until the wake word is tested with it (make wake-test before and after)"}
   doa_spacing:     {type: float, default: 0.078, min: 0.03, max: 0.2, unit: m, help: "Effective mic spacing for sound direction (fitted by make mic-tune)"}
   doa_offset:      {type: float, default: 0.0, min: -10, max: 10, unit: samples, help: "Left/right lag a voice straight ahead already shows, at 48 kHz (fitted by make mic-tune)"}
   doa_flip:        {type: bool, default: false, help: "Mirror the sound-direction sign (fitted by make mic-tune)"}
+  face_speaker:    {type: bool, default: true, help: "After 'Hey Willie' he turns his body towards where your voice came from (two mics, front half only; G4)"}
   clean:           {type: bool, default: true, help: "Live conversation mic: noise suppression + automatic gain (speexdsp). Off = the fixed wake gain, which clips a close voice"}
   denoise_db:      {type: int, default: -15, min: -40, max: 0, unit: dB, help: "How hard steady noise (fan, fridge, printer) is pushed down. More negative = quieter room, but voices get a watery edge"}
   aec:             {type: bool, default: true, help: "Echo cancellation: removes his own voice from the mic, so you can talk over him (barge-in)"}
@@ -106,7 +167,18 @@ voice:
   pickup_delay_s:  {type: float, default: 1.5, min: 0.2, max: 3.0, unit: s, help: "After his last word comes out of the speaker, the mic waits this long before it listens again (keeps his echo and the room's tail out). Longer = no self-answers, but a very quick reply gets its first word cut"}
   barge_in:        {type: float, default: 50, min: 1.5, max: 50, help: "With echo cancellation: how many times louder than his own leftover echo your voice must be to interrupt him. 50 = off (default since 25 Sep: with the mic this close to the speaker his leftover echo is as loud as your voice, so he cut himself off). Try 4-8 at low volume"}
   search:          {type: bool, default: false, help: "Google Search in conversations. Needs a paid Gemini key for the 3.x models (free tier: quota 0)"}
-  language:        {type: choice, default: nl, options: [nl, en, auto], help: "Conversation language (nl = Dutch unless you speak English)"}
+  language:        {type: choice, default: nl, options: [nl, en, nl_en, auto], help: "Conversation language (nl = Dutch unless you speak English; nl_en = you speak Dutch, he answers in English - openai_realtime and cascade)"}
+  local_first:     {type: bool, default: true, help: "Short commands (stop, time, volume, music, battery, thanks) are understood on the home server and answered without Gemini (T7). Costs ~0.5-1 s on short questions that do go to Gemini; off = everything straight to Gemini"}
+  local_max_s:     {type: float, default: 1.6, min: 0.8, max: 4.0, unit: s, help: "Only utterances with at most this much speech are held for the local check; longer ones stream live to Gemini with no delay. Higher = more commands caught, but slower answers to short questions"}
+  noise_filter:    {type: bool, default: true, help: "Not used since 6 Oct: the home server now only writes out his own command sentences, so 'nothing' means 'not a command' and goes to Gemini. Was: stray sounds dropped before Gemini hears them"}
+  search_model:    {type: str, default: gemini-3.5-flash-lite, help: "Model behind zoek_op: a quick web search on the paid key. 3.5-flash-lite about 3 s; 3.8-flash gives fuller answers but took 6 s to over 15 s (6 Oct). After 8 s without an answer the light one is tried, and only then the free detour (up to 30 s)"}
+  think_model:     {type: str, default: gemini-3.8-flash, help: "Model behind denk_na: hard questions with Google Search (paid key). A pro model answers better and costs about ten times more"}
+  vad:             {type: choice, default: level, options: [level, webrtc], restart: true, help: "What counts as you talking in a conversation (T11). level = anything loud (old); webrtc = a voice detector that ignores clicks, bass and hum. Switch after make voice-bench shows it is better on your own clips"}
+  keep_clips:      {type: int, default: 0, min: 0, max: 2000, help: "Keep the newest N sound clips per kind on the robot for the benches and wake-word training (T0b, T2): detected wakes, near misses, and every stretch of sound taken for speech. 0 = keep nothing. They stay in the house; make voice-fetch copies them to the Mac"}
+  wake_check:      {type: bool, default: false, help: "Second look at every wake (T2): the home server writes out the 1.5 s wake clip, and words without his name in them close the conversation quietly. Server away or no words = the wake stands. On only after make voice-bench shows the speech-to-text hears 'Willie'"}
+  stop_word:       {type: bool, default: true, help: "While he talks, 'Hey Willie' or 'Willie' stops him (T4). A tap on his screen always does"}
+  followup_command_s:  {type: float, default: 8, min: 3, max: 60, unit: s, help: "Follow-up window after he only confirmed a command ('Gedaan.'): shorter, so the TV is not answered (T3)"}
+  followup_question_s: {type: float, default: 30, min: 3, max: 120, unit: s, help: "Follow-up window after he asked you something: longer (T3)"}
   followup_s:      {type: float, default: 20, min: 3, max: 60, unit: s, help: "After the last words he keeps listening this long without 'Hey Willie', then sleeps"}
   standby_s:       {type: float, default: 60, min: 0, max: 600, unit: s, help: "When he decides talk is not for him he stays connected but silent this long; 'Hey Willie' then answers instantly"}
   lean_tools:      {type: bool, default: true, help: "Small prompt (L2): only the core tools in full, the rest behind one 'doe' tool with a short list. Off = all tool schemas in every turn (about 3x the prompt tokens)"}
@@ -126,8 +198,11 @@ garage:
 
 search:
   _label: Search mode (K3)
-  max_min:         {type: int, default: 20, min: 1, max: 60, unit: min, help: "Give up after this long (he also stops when the battery gets low)"}
-  max_stops:       {type: int, default: 60, min: 3, max: 300, help: "Stops (5-direction head scans, then a 1 m leg) before he gives up"}
+  eufy_every:      {type: int, default: 10, min: 1, max: 100, help: "Ask the outdoor cameras after this many stops (the search itself runs until found, cancelled or battery low)"}
+
+mission:
+  _label: Missions (search, adventure)
+  battery_stop_v:  {type: float, default: 10.2, min: 9.9, max: 11.5, unit: V, help: "A mission stops below this pack voltage (the 10.5 V warning is above it)"}
 
 adventure:
   _label: Adventure mode (K4)
@@ -138,27 +213,81 @@ sentry:
   _label: Sentry mode (K5)
   look_s:          {type: int, default: 20, min: 5, max: 600, unit: s, help: "Daytime: one photo to the home server this often to spot changes and people"}
 
+presence:
+  _label: Silent presence
+  enabled:        {type: bool, default: true, help: "Silent phone/Bluetooth/camera awareness. No unsolicited greetings or motion; mute and sleep pause local sensing"}
+  bluetooth:      {type: bool, default: true, help: "Scan Bluetooth advertisements on the Pi. Enroll your iPhone identity key in the home-server Security tab; a Wi-Fi MAC is not a Bluetooth identity"}
+  camera:         {type: bool, default: true, help: "Occasional local-only person checks using existing face profiles. Paused when muted, asleep, driving or talking; photos and unknown face prints are not saved"}
+  camera_s:       {type: int, default: 30, min: 10, max: 60, unit: s, help: "Minimum interval between silent camera checks. Two different frames confirm a known name; observations expire after 75 seconds"}
+  ble_enter_dbm:  {type: int, default: -70, min: -100, max: -20, unit: dBm, help: "BLE strength for probably nearby after two fresh samples. A device through a wall may also meet this; never metres"}
+  ble_exit_dbm:   {type: int, default: -78, min: -100, max: -20, unit: dBm, help: "Keep a nearby device until its smoothed signal drops below this (normally lower than enter threshold)"}
+
 memory:
   _label: Memory
   context_chars:   {type: int, default: 4000, min: 2000, max: 200000, help: "How much long-term memory (facts + recent conversations) goes into every conversation. More = knows more without searching, but a slower start and more tokens per turn. Older things stay findable with herinner"}
 
+music:
+  _label: Music (Spotify and radio)
+  source:          {type: choice, options: [spotify, radio], default: spotify, help: "Which music source answers play/pause/skip/volume. Changing it here (or in the app) while something plays switches over at once; saying 'zet de radio aan' or 'terug naar Spotify' changes it too"}
+  station:         {type: str, default: "", help: "The radio station that played last (set by himself; 'zet de radio aan' resumes it)"}
+  radio_volume:    {type: int, default: 50, min: 0, max: 100, unit: "%", help: "Radio volume (mpv software volume, 100 = the stream's own level)"}
+  bass:            {type: int, default: 0, min: -10, max: 8, unit: dB, help: "Radio bass (mpv equalizer). His small speaker distorts above about +6"}
+  treble:          {type: int, default: 0, min: -10, max: 8, unit: dB, help: "Radio treble (mpv equalizer)"}
+  stations:        {type: str, default: "Radio 10=http://playerservices.streamtheworld.com/api/livestream-redirect/RADIO10.mp3; Qmusic=https://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_live_96.mp3; Qmusic Non-stop=https://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_nonstop_96.mp3; NPO Sterren NL=https://icecast.omroep.nl/radio2-sterrennl-mp3", help: "Radio stations: 'Name=stream URL; Name=stream URL'. Any MP3/AAC internet stream works; he answers to the name"}
+
 skills:
   _label: Skills
   brandstof_url:   {type: str, default: "http://192.168.2.151:8000", help: "Brandstof health monitor on the home server (food, activity, sleep, training, air)"}
+  muziek_seconds:  {type: int, default: 10, min: 4, max: 20, unit: s, help: "How many seconds of the room he records for 'what song is this' (Shazam runs on the home server); 6 is enough for most songs, 10 copes with talking over it"}
   disabled:        {type: str, default: "", help: "Skills switched off, comma-separated (use the Skills tab)"}
 
 camera:
   _label: Camera
+  look_model:      {type: str, default: gemini-3.8-flash, help: "Model that judges his photos (kijk). gemini-3.8-flash sees more and frames better than gemini-3.5-flash-lite, for about 1 s and $0.001 more per look; empty = the small one"}
   rotation:        {type: choice, default: "90", options: ["0", "90", "180", "270"], help: "Turn every picture clockwise by this many degrees (live view, dashboard, photos the AI looks at). The Camera Module 3 sits sideways in the pod, so 90 makes it upright. rpicam cannot do 90 itself, so the Pi turns each JPEG with Pillow"}
   wide_fov:        {type: bool, default: true, help: "Use the whole sensor (2304x1296 mode) instead of the cropped 1536x864 mode that libcamera picks for small pictures: a 1.5x wider view at the same sharpness. Off = the old narrower view"}
 
+floorscan:
+  _label: Camera floor scan (F7)
+  enabled:          {type: bool, default: true, help: "While he drives, the camera also looks for obstacles on the floor ahead (things the ToF beams miss: cables, shoes, thin legs). Off = ToF only"}
+  method:           {type: choice, default: server, options: [server, local], restart: true, help: "Who judges the picture. server = the home server's floor model (best: no false stops on seams, shadows and reflections; without the server there is no scan and he drives on ToF and bumper, slowly by himself). local = the colour and edge rules on the Pi (works without the server, jumpy on a glossy plank floor)"}
+  server_timeout_ms: {type: int, default: 800, min: 200, max: 3000, unit: ms, restart: true, help: "Wait this long for the server's answer per picture. Three misses in a row = server down, try again 5 s later"}
+  down_deg:         {type: int, default: 45, min: 10, max: 45, unit: °, help: "Head tilt (servo degrees) that points the camera down while he drives, so it sees the floor ahead. The real angle is this plus pitch_trim_deg"}
+  tilt_down_negative: {type: bool, default: false, help: "Off: a positive head tilt points the camera down (measured 2 Oct, 23:05: look 0 30 = floor). Turn on if look 0 30 points it up"}
+  manual_tilt:      {type: bool, default: true, help: "When you drive him and the camera cannot see the floor ahead, point it down (down_deg) so the scan works. Not within manual_look_s after you moved the head yourself"}
+  manual_look_s:    {type: float, default: 5, min: 0, max: 60, unit: s, help: "After you move the head, the scan leaves it alone this long"}
+  min_pitch_deg:    {type: int, default: 12, min: 0, max: 45, unit: °, help: "The camera must look down at least this much to check his path; less = the scan does not count (looking at the room)"}
+  max_pan_deg:      {type: int, default: 25, min: 0, max: 90, unit: °, help: "The camera must look at most this far to the side to check his path"}
+  pitch_trim_deg:   {type: float, default: 0.0, min: -35, max: 35, unit: °, help: "Correction when the camera's real angle differs from the servo angle. Set by make floor-cal (a box at a known distance). On 3 Oct the head at tilt 0 pointed about 20° up, so this is about -20"}
+  cam_height_mm:    {type: int, default: 260, min: 100, max: 400, unit: mm, help: "Camera lens above the floor (measure)"}
+  cam_behind_front_mm: {type: int, default: 60, min: -100, max: 250, unit: mm, help: "How far the lens sits behind the front of the body (where the ToF are)"}
+  fov_deg:          {type: float, default: 66.0, min: 30, max: 120, unit: °, help: "Field of view along the long side of the sensor: 66 for the standard Camera Module 3, 102 for the wide one"}
+  corridor_mm:      {type: int, default: 240, min: 120, max: 500, unit: mm, help: "Width of the path that is checked (body with wheels + margin)"}
+  min_columns:      {type: int, default: 3, min: 1, max: 20, help: "This many neighbouring picture columns must see one edge before it counts (the picture is 108 columns wide). Higher = fewer false stops on floor seams and noise, but thin things far away are seen later"}
+  stop_mm:          {type: int, default: 150, min: 50, max: 500, unit: mm, help: "Stop when the camera sees something in his path closer than this; slow down from twice this. The camera cannot see the floor closer than about 10 cm from his front, so he never stops later than 5 cm before that (about 150 mm), whatever is set here"}
+  max_range_mm:     {type: int, default: 1000, min: 300, max: 2000, unit: mm, help: "Ignore what is further away (flat-floor distances get rough far off)"}
+  blind_speed:      {type: float, default: 0.08, min: 0.03, max: 0.3, unit: m/s, help: "Top speed when he drives by himself and the scan is not live (starting, dark, camera busy or off). Manual driving is not capped"}
+  idle_s:           {type: float, default: 30, min: 1, max: 300, unit: s, help: "Keep the scan running this long after the last drive command. Starting it takes ~5 s on the Pi 3 A+ (he drives at blind_speed meanwhile), so it stays on between wander legs. A photo or a live view takes the camera from it at any time"}
+  stale_ms:         {type: int, default: 700, min: 150, max: 2000, unit: ms, help: "A scan older than this does not count (a picture through the server is about 0.2-0.3 s old when its answer arrives)"}
+  fps:              {type: int, default: 8, min: 2, max: 15, unit: fps, restart: true, help: "Frames per second of its own capture"}
+  match_pct:        {type: float, default: 1.0, min: 0.1, max: 10, unit: "%", restart: true, help: "How common a colour must be in the floor patch in front of him to count as floor. Higher = more careful (more false obstacles)"}
+  edge_step:        {type: int, default: 6, min: 1, max: 30, restart: true, help: "Brightness change (0-255) from one row to the next that still counts as the same floor. Light from a lamp changes the floor slowly; an obstacle starts at an edge. Lower = more careful"}
+  tone_pct:         {type: int, default: 45, min: 0, max: 100, unit: "%", restart: true, help: "Colour tone rule (Wouter, 4 Oct): a pixel with the floor's colour tone is floor, however light or dark, so shadows, sun patches and knots do not stop him. This is how far the tone may differ. Higher = fewer false stops but things with nearly the floor's colour are missed; 0 = rule off"}
+  thin_px:          {type: int, default: 1, min: 0, max: 3, restart: true, help: "Anything thinner than 2 x this + 1 pixels in the picture is ignored (seams between planks, in any direction). 0 = off"}
+  min_rows:         {type: int, default: 6, min: 2, max: 30, restart: true, help: "How tall something must be in the picture (rows of 192) to be an obstacle and not a mark on the floor. 6 = about 1 cm tall at 30 cm, 4 cm at 1 m. Lower sees flat things like cables, but then plank seams and knots also stop him"}
+  mask_bottom_pct:  {type: int, default: 0, min: 0, max: 40, unit: "%", restart: true, help: "Bottom part of the picture to skip, where his own body shows"}
+  record:           {type: bool, default: false, help: "Recording for testing: while he drives, save one camera picture per second plus what the scan and the safety gate decided, in RAM on the Pi (/dev/shm/willie-rec, at most 15 minutes, gone after a reboot). Fetch with make floor-rec-pull on the Mac. Turn off when done"}
+  debug:            {type: bool, default: false, restart: true, help: "Write the scan picture (red = not floor, yellow = obstacle foot) to /dev/shm/willie-floorscan.jpg twice a second"}
+
 privacy:
   _label: Privacy
-  mute:            {type: bool, default: false, help: Mic and camera off}
+  mute:            {type: bool, default: false, help: Microphone and wake word off; stays awake, music available}
   camera_allowed:  {type: bool, default: true, help: Camera may be used}
 
 sleep:
   _label: Deep sleep (Phase P)
+  active:          {type: bool, default: false, help: Deep sleep; waking preserves microphone mute}
+  state_version:   {type: int, default: 2, min: 1, max: 2, help: Privacy/sleep migration version}
   auto:            {type: bool, default: true, help: "Fall asleep by himself: after idle_min without anything happening, and always in quiet hours"}
   idle_min:        {type: int, default: 15, min: 1, max: 600, unit: min, help: "Awake and nothing happens this long = asleep (no conversation, command, touch or mission)"}
   night_idle_min:  {type: int, default: 5, min: 1, max: 120, unit: min, help: "Same, when woken during quiet hours"}
@@ -166,6 +295,7 @@ sleep:
   wake_touch:      {type: choice, default: tap, options: [tap, hold], help: "What wakes him on the screen: a tap, or a finger held 1 s (if the cat keeps waking him)"}
   backlight_gpio:  {type: int, default: 0, min: 0, max: 27, help: "Pi GPIO (BCM) of the backlight switch, high = on (P5); 0 = none: the screen is only made black"}
   mcu_hz:          {type: float, default: 1.0, min: 0.2, max: 50, unit: Hz, help: "ESP32 state stream while asleep (50 Hz awake)"}
+  mcu_wake:        {type: bool, default: false, help: "P9: asleep = the Pi switches its Wi-Fi off and the ESP32 listens for the app instead (lower power). The app wakes him in a few seconds; a tap on the screen still wakes him. Off = Wi-Fi stays on"}
 
 dashboard:
   _label: Dashboard
@@ -177,12 +307,3 @@ link:
   port:            {type: str, default: /dev/serial0, restart: true, help: Serial port to the ESP32 (Pi UART on GPIO14/15)}
   baud:            {type: int, default: 921600, min: 9600, max: 2000000, restart: true, help: Must match the firmware}
   ping_hz:         {type: float, default: 2.0, min: 0.2, max: 50, unit: Hz, help: Link health pings (round-trip time shown in the dashboard)}
-music:
-  _label: Music (Spotify and radio)
-  source:          {type: choice, options: [spotify, radio], default: spotify, help: "Which music source answers play/pause/skip/volume. Changing it here (or in the app) while something plays switches over at once; saying 'zet de radio aan' or 'terug naar Spotify' changes it too"}
-  station:         {type: str, default: "", help: "The radio station that played last (set by himself; 'zet de radio aan' resumes it)"}
-  radio_volume:    {type: int, default: 50, min: 0, max: 100, unit: "%", help: "Radio volume (mpv software volume, 100 = the stream's own level)"}
-  bass:            {type: int, default: 0, min: -10, max: 8, unit: dB, help: "Radio bass (mpv equalizer). His small speaker distorts above about +6"}
-  treble:          {type: int, default: 0, min: -10, max: 8, unit: dB, help: "Radio treble (mpv equalizer)"}
-  stations:        {type: str, default: "Radio 10=http://playerservices.streamtheworld.com/api/livestream-redirect/RADIO10.mp3; Qmusic=https://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_live_96.mp3; Qmusic Non-stop=https://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_nonstop_96.mp3; NPO Sterren NL=https://icecast.omroep.nl/radio2-sterrennl-mp3", help: "Radio stations: 'Name=stream URL; Name=stream URL'. Any MP3/AAC internet stream works; he answers to the name"}
-

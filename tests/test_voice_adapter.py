@@ -16,6 +16,9 @@ import websockets
 from willie.voice.base import Tool, create
 from willie.voice.fake import FakeAdapter, tone
 from willie.voice.gemini_live import GeminiLiveAdapter
+from willie.voice.openai_realtime import OpenAIRealtimeAdapter, to_meter, upsample
+
+from test_cascade import make_cascade        # adapter C: the same contract, with fake parts
 
 RATE = 16_000
 SPEECH = tone(100, RATE, hz=300, level=0.4)        # 100 ms "voice"
@@ -124,7 +127,112 @@ class MockedGemini(GeminiLiveAdapter):
             await self.mock.stop()
 
 
-ADAPTERS = [make_fake, MockedGemini]
+# One gpt-realtime turn in the shape of the API reference (9 Oct); not measured yet.
+OPENAI_USAGE = {"input_tokens": 4000, "output_tokens": 130,
+                "input_token_details": {"text_tokens": 3700, "audio_tokens": 300, "cached_tokens": 3000,
+                                        "cached_tokens_details": {"text_tokens": 3000, "audio_tokens": 0}},
+                "output_token_details": {"text_tokens": 30, "audio_tokens": 100}}
+
+
+class MockOpenAIServer:
+    """Speaks the OpenAI Realtime wire format; a FakeAdapter decides when to answer."""
+
+    def __init__(self, **fake_kw):
+        self.fake_kw = fake_kw
+        self.session, self.auth = None, ""
+        self.texts, self.creates = [], 0
+        self.server = None
+        self.url = ""
+        self._ids = itertools.count(1)
+
+    async def start(self):
+        self.server = await websockets.serve(self._handler, "127.0.0.1", 0)
+        self.url = f"ws://127.0.0.1:{self.server.sockets[0].getsockname()[1]}"
+
+    async def stop(self):
+        self.server.close()
+        await self.server.wait_closed()
+
+    async def _handler(self, ws):
+        self.auth = ws.request.headers.get("Authorization", "")
+        model = make_fake(**self.fake_kw)
+        model.in_rate = 24_000
+        pending = {}
+
+        async def send(obj):
+            try:
+                await ws.send(json.dumps(obj))
+            except websockets.ConnectionClosed:
+                pass
+
+        def done(status="completed", output=()):
+            return send({"type": "response.done", "response": {"status": status, "output": list(output),
+                                                               "usage": OPENAI_USAGE}})
+
+        async def tool_call(name, args):
+            call_id = f"call-{next(self._ids)}"
+            pending[call_id] = answer = asyncio.get_running_loop().create_future()
+            await done(output=[{"type": "function_call", "name": name, "call_id": call_id,
+                                "arguments": json.dumps(args)}])
+            return json.loads(await answer)
+
+        def audio(pcm):
+            return send({"type": "response.output_audio.delta", "delta": base64.b64encode(pcm).decode()})
+
+        async def event(kind, detail):
+            if kind == "interrupted":
+                await send({"type": "input_audio_buffer.speech_started"})
+                await done("cancelled")
+            if kind == "turn_complete":
+                await done()
+
+        model.on_audio(audio)
+        model.on_event(event)
+        model.on_tool_call(tool_call)
+        await model.start_session("", "", [])
+        await send({"type": "session.created", "session": {}})
+        try:
+            async for raw in ws:
+                msg = json.loads(raw)
+                kind = msg["type"]
+                if kind == "session.update":
+                    self.session = msg["session"]
+                    await send({"type": "session.updated", "session": self.session})
+                elif kind == "input_audio_buffer.append":
+                    await model.send_audio(base64.b64decode(msg["audio"]))
+                elif kind == "response.cancel":
+                    await model.interrupt()
+                elif kind == "response.create":
+                    self.creates += 1
+                elif kind == "conversation.item.create" and msg["item"]["type"] == "function_call_output":
+                    pending.pop(msg["item"]["call_id"]).set_result(msg["item"]["output"])
+                elif kind == "conversation.item.create":
+                    self.texts.append(msg["item"]["content"][0]["text"])
+        except websockets.ConnectionClosed:
+            pass
+        finally:
+            await model.close()
+
+
+class MockedOpenAI(OpenAIRealtimeAdapter):
+    """The real adapter, pointed at MockOpenAIServer."""
+
+    def __init__(self, **fake_kw):
+        super().__init__(api_key="test", model="gpt-realtime-2.1")
+        self.mock = MockOpenAIServer(**fake_kw)
+
+    async def start_session(self, persona, context, tools):
+        await self.mock.start()
+        self.url = self.mock.url
+        await super().start_session(persona, context, tools)
+
+    async def close(self):
+        await super().close()
+        if self.mock.server:
+            await self.mock.stop()
+
+
+ADAPTERS = [make_fake, MockedGemini, MockedOpenAI, make_cascade]
 
 
 class Recorder:
@@ -268,9 +376,108 @@ def test_gemini_rejected_setup_raises():
     asyncio.run(run())
 
 
+def test_openai_setup_message():
+    """Persona + context become the instructions; Tools become function tools; 24 kHz both ways."""
+    async def run():
+        a = MockedOpenAI(script=[{"tool": "toon", "args": {"tekst": "hoi"}}])
+        rec = Recorder(a)
+        show = Tool("toon", "Show text", {"type": "object", "properties": {"tekst": {"type": "string"}}},
+                    handler=lambda args: {"ok": True})
+        await a.start_session("PERSONA", "CONTEXT", [show])
+        session = a.mock.session
+        assert a.mock.auth == "Bearer test" and session["type"] == "realtime"
+        assert session["instructions"].startswith("PERSONA\n\nTool rules.")
+        assert "CONTEXT\n\nSpreek altijd Nederlands" in session["instructions"]
+        assert session["instructions"].endswith("Je draait op het model gpt-realtime-2.1.")
+        assert session["tools"] == [{"type": "function", **show.declaration()}]
+        audio = session["audio"]
+        assert audio["input"]["format"] == audio["output"]["format"] == {"type": "audio/pcm", "rate": 24000}
+        assert audio["input"]["transcription"]["language"] == "nl" and audio["output"]["voice"] == "cedar"
+        assert not a.search                              # no built-in search: zoek_op stays offered
+        await say(a)
+        await wait_for(lambda: "turn_complete" in rec.events)
+        assert a.mock.creates == 1                       # tool results in -> "go on"
+        await a.send_text("[SCHERM] MEER")
+        await wait_for(lambda: a.mock.creates == 2)
+        assert a.mock.texts == ["[SCHERM] MEER"]
+        await a.close()
+    asyncio.run(run())
+
+
+def test_openai_dutch_in_english_out():
+    """voice.language nl_en: his words are transcribed as Dutch, the prompt orders English answers."""
+    async def run():
+        a = MockedOpenAI()
+        a.language = "nl_en"
+        await a.start_session("PERSONA", "CONTEXT", [])
+        session = a.mock.session
+        assert session["audio"]["input"]["transcription"]["language"] == "nl"
+        assert "ALWAYS answer in English" in session["instructions"]
+        await a.close()
+    asyncio.run(run())
+    assert GeminiLiveAdapter(api_key="x", language="nl_en").language == "nl"
+
+
+def test_openai_rate_limit_asks_again(monkeypatch):
+    """A response refused for the rate limit is asked again instead of leaving him silent."""
+    from willie.voice import openai_realtime
+    monkeypatch.setattr(openai_realtime, "LIMIT_WAIT_S", 0.01)
+
+    async def run():
+        a = OpenAIRealtimeAdapter(api_key="x")
+        rec, sent = Recorder(a), []
+
+        async def send(message):
+            sent.append(message["type"])
+        a._send = send
+        failed = {"type": "response.done", "response": {"status": "failed", "status_details": {"error": {
+            "message": "Rate limit reached for gpt-realtime-2.1-mini on tokens per min (TPM)"}}}}
+        for _ in range(openai_realtime.LIMIT_RETRIES):
+            await a._handle(failed)
+            await asyncio.sleep(0.05)
+        assert sent == ["response.create"] * openai_realtime.LIMIT_RETRIES and "error" not in rec.events
+        await a._handle(failed)                          # still refused: now it is an error
+        assert rec.events == ["error"]
+    asyncio.run(run())
+
+
+def test_openai_resamples_the_mic_to_24k():
+    first, last = upsample(SPEECH)
+    out = first + upsample(SPEECH, last)[0]
+    assert len(out) == len(SPEECH) * 2 * 3 // 2
+    assert 0.35 < max(abs(v) for v in memoryview(out).cast("h")) / 32768 <= 0.4
+
+
+def test_openai_usage_reaches_the_meter(monkeypatch):
+    from willie import usage
+    counts = usage.add({}, to_meter(OPENAI_USAGE))
+    # 700 fresh text + 3000 cached at a tenth of the text price.
+    assert counts["prompt_text"] == 1000 and counts["prompt_audio"] == 300
+    assert counts["out_text"] == 30 and counts["out_audio"] == 100
+    assert usage.family("gpt-realtime-2.1") == "realtime"
+    assert usage.usd("gpt-realtime-2.1", counts) == pytest.approx((1000 * 4 + 300 * 32 + 30 * 24 + 100 * 64) / 1e6)
+
+
+def test_openai_rejected_setup_raises():
+    async def run():
+        async def refuse(ws):
+            await ws.recv()
+            await ws.send(json.dumps({"type": "error", "error": {"message": "model not found"}}))
+        server = await websockets.serve(refuse, "127.0.0.1", 0)
+        a = OpenAIRealtimeAdapter(api_key="x", model="gpt-nope",
+                                  url=f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}")
+        with pytest.raises(RuntimeError, match="model not found"):
+            await a.start_session("p", "c", [])
+        assert not a.is_open
+        server.close()
+        await server.wait_closed()
+    asyncio.run(run())
+
+
 def test_create_from_config_name():
     assert create("fake").name == "fake"
     assert create("gemini_live", api_key="x").name == "gemini_live"
+    assert create("openai_realtime", api_key="x").name == "openai_realtime"
     with pytest.raises(ValueError):
         create("nope")
 
@@ -349,3 +556,24 @@ def test_session_usage_reaches_the_meter(monkeypatch):
     r = records[0]
     assert r["source"] == "robot" and r["model"] == "gemini-3.8-live" and r["turns"] == 1
     assert (r["prompt_text"], r["prompt_audio"], r["out_audio"], r["thoughts"]) == (3645, 222, 116, 197)
+
+
+def test_followup_window_follows_his_last_answer():
+    """T3: longer after his own question, shorter after a confirmed command."""
+    from willie.voice.gemini_live import followup_window
+    windows = (8.0, 30.0)
+    assert followup_window(20, "Is dat helder, of zal ik een stuk uitdiepen?", False, windows) == 30
+    assert followup_window(20, "Gedaan.", True, windows) == 8
+    assert followup_window(20, "Nozzle 240, bed 80.", False, windows) == 20
+    assert followup_window(20, "Ik zie een pet op tafel liggen, vlak bij wat schillen en een appel.", True, windows) == 20
+    assert followup_window(None, "Gedaan.", True, windows) is None
+
+
+def test_context_cap_leaves_room_for_the_conversation():
+    """9 Oct: the setup grew past the cap, the server dropped every turn and he forgot the question."""
+    from willie.voice.gemini_live import CHARS_PER_TOKEN, TALK_KEEP_TOKENS, TALK_ROOM_TOKENS, fit_window
+    small = {"systemInstruction": "x" * 2800}                         # ~1k tokens: the settings hold
+    assert fit_window((12000, 8000), small) == (12000, 8000)
+    big = {"systemInstruction": "x" * int(12000 * CHARS_PER_TOKEN)}   # ~12k tokens: over the cap by itself
+    trigger, target = fit_window((12000, 8000), big)
+    assert target >= 12000 + TALK_KEEP_TOKENS and trigger == target + TALK_ROOM_TOKENS

@@ -28,14 +28,17 @@ import logging
 import os
 import subprocess
 import threading
+import time
+from collections import deque
 from datetime import datetime
 
 import websockets
 
 from willie import control as core_control, usage
-from willie.audio import speech
+from willie.audio import chime, speech
 from willie.voice import tools as willie_tools
 from willie.voice.base import Tool, VoiceAdapter
+from willie.voice.guard import TurnGuard
 from willie.voice.persona import VOICE, system_prompt
 
 log = logging.getLogger("willie.voice.gemini")
@@ -77,6 +80,27 @@ MONTHS = ("januari", "februari", "maart", "april", "mei", "juni", "juli", "augus
           "september", "oktober", "november", "december")
 
 
+# The cap counts the setup too. On 9 Oct the setup alone was 10.8k tokens (33 KB of prompt and
+# tool descriptions, 3.1 characters per token) and 12k with his memory: over the 12,000 trigger
+# from the first turn, so the server cut down to 8,000 - less than the setup - and no turn was
+# left. He asked "in welke richting?" and no longer knew what the question was. So the cap always
+# leaves room for the conversation on top of the setup: about two minutes of speech (25 tokens/s).
+CHARS_PER_TOKEN = 2.8        # a little under the measured 3.1: rather a cap too wide than too tight
+TALK_KEEP_TOKENS = 3000      # what stays of the conversation after the oldest turns are dropped
+TALK_ROOM_TOKENS = 3000      # how much it may grow past that before the next drop
+
+
+def fit_window(window: tuple[int, int], setup: dict) -> tuple[int, int]:
+    """(trigger, target) from the settings, raised where the setup would not leave a conversation."""
+    trigger, target = window
+    setup_tokens = int(len(json.dumps(setup, ensure_ascii=False)) / CHARS_PER_TOKEN)
+    target = max(target, setup_tokens + TALK_KEEP_TOKENS)
+    trigger = max(trigger, target + TALK_ROOM_TOKENS)
+    if (trigger, target) != tuple(window):
+        log.info("context cap %d/%d -> %d/%d tokens: the setup alone is about %d", *window, trigger, target, setup_tokens)
+    return trigger, target
+
+
 def _get(message: dict, camel: str, snake: str):
     """The Live API has answered in both spellings on different model versions."""
     return message.get(camel) or message.get(snake)
@@ -107,7 +131,7 @@ class GeminiLiveAdapter(VoiceAdapter):
         self.keys = talk_keys() if self.api_key == talk_key() else [self.api_key]
         self.models = [(m, s) for m, s in MODELS if m == model] or ([(model, "audio")] if model else list(MODELS))
         self.voice = VOICE
-        self.language = language
+        self.language = "nl" if language == "nl_en" else language   # Dutch in / English out is OpenAI-only
         self.search = search            # Google Search grounding (built into the Live API)
         self.url = url
         self.setup_timeout = setup_timeout
@@ -190,7 +214,7 @@ class GeminiLiveAdapter(VoiceAdapter):
             # Text of both sides: the face only shows "thinking" once real words were heard
             # (not a cough or a click), the follow-up window runs on words rather than noise,
             # and the conversation goes into long-term memory (willie/brain/memory.py).
-            "inputAudioTranscription": {},
+            "inputAudioTranscription": self._transcription(model),
             "outputAudioTranscription": {},
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
@@ -221,9 +245,16 @@ class GeminiLiveAdapter(VoiceAdapter):
         if self.window:
             # L4: every turn pays for the whole context, so cap it. Past `trigger` tokens the
             # server drops the oldest turns down to `target`; the system prompt is kept.
-            trigger, target = self.window
+            trigger, target = fit_window(self.window, setup)
             setup["contextWindowCompression"] = {"triggerTokens": trigger, "slidingWindow": {"targetTokens": target}}
         return {"setup": setup}
+
+    def _transcription(self, model: str) -> dict:
+        """His words as text, pinned to the spoken language: left free, a mumble came back as
+        Polish or Korean and he answered "ik versta je niet" (9 Oct). Probed that day: both 3.x
+        models take languageCodes; 2.5, the last fallback, was not probed and stays as it was."""
+        code = LANGUAGES.get(self.language, ("", ""))[0]
+        return {"languageCodes": [code]} if code and "2.5" not in model else {}
 
     async def send_audio(self, pcm: bytes) -> None:
         if not self.is_open or self._socket is None:
@@ -443,7 +474,10 @@ class Speaker:
 # Speech vs room is now relative: the room level is the 20th percentile of the last ~5 s
 # of chunk peaks, and a chunk counts as speech when it is well above that.
 SPEECH_OVER_ROOM = 2.5
-SPEECH_MIN = 0.10            # never call anything under 10 % FS (after gain) speech
+# Never call anything under this (after gain) speech. 10 % until 6 Oct, from when the mic's drift
+# sat at 20 % FS; with the high-pass a quiet room is 2-3 % and a normal voice from a few metres
+# 5-17 %, which 10 % missed (replayed at that level: 2 of 40 sentences heard, 34 of 40 at 4 %).
+SPEECH_MIN = 0.04
 TURN_END_S = 0.8             # this much quiet after speech = his turn is over -> thinking
 VOICE_HINT_S = 0.12          # the face shows "hearing" from here, long before a burst counts as a turn
 SPEECH_MIN_S = 0.4           # shorter bursts (a cough, a click, a cup on the desk) are no turn
@@ -474,21 +508,39 @@ def _peak(chunk: bytes) -> float:
     return max(max(samples), -min(samples)) / 32768 if samples else 0.0
 
 
-class SpeechDetector:
-    """Is this chunk the user talking? Relative to the room, which it keeps measuring."""
+# The last 20 s of the mic at the fixed gain (100 ms chunks), for the local command check: it reads
+# this, not the cleaned uplink. The echo canceller and noise gate leave holes in the cleaned sound
+# ("radio aan" arrived as 38 % - 0 % - 35 % per chunk and scored 0.55, 6 Oct); Gemini copes, Vosk not.
+RECENT_MIC: deque = deque(maxlen=200)
 
-    def __init__(self, window: int = 50):
-        from collections import deque
-        self.recent = deque(maxlen=window)
+
+class SpeechDetector:
+    """Is this chunk the user talking? Relative to the room's floor, which it keeps tracking.
+
+    The floor drops at once when the room is quieter and rises only 1 % per chunk (x2.7 in 10 s):
+    a sentence does not lift it, a radio that stays on does. Until 6 Oct it was the 20th
+    percentile of the last 5 s, starting empty at every conversation - so the wake chime and the
+    first words set a "room" of 27 % FS and the rest of the first sentence was not speech."""
+
+    RISE = 1.01
+    STAY, STAY_CHUNKS = 0.5, 5      # once talking, half the level keeps it speech, for 0.5 s after the last full chunk
+
+    def __init__(self):
+        self.floor = SPEECH_MIN / SPEECH_OVER_ROOM
+        self.since = 99             # chunks since the last one that was speech
 
     def room(self) -> float:
-        if len(self.recent) < 5:
-            return SPEECH_MIN / SPEECH_OVER_ROOM
-        return sorted(self.recent)[len(self.recent) // 5]
+        return self.floor
 
     def is_speech(self, peak: float) -> bool:
-        speech = peak >= max(SPEECH_MIN, self.room() * SPEECH_OVER_ROOM)
-        self.recent.append(peak)
+        start = max(SPEECH_MIN, self.floor * SPEECH_OVER_ROOM)
+        # Soft syllables and word ends of a far voice dip under the line that starts speech; without
+        # this a question fell apart into pieces, each sent off as its own turn (6 Oct).
+        # Never under 1.6x the floor, or the room itself keeps it going (it did: 34 of 40 chunks).
+        stay = max(start * self.STAY, self.floor * 1.6)
+        speech = peak >= start or (self.since < self.STAY_CHUNKS and peak >= stay)
+        self.since = 0 if speech else self.since + 1
+        self.floor = self.floor * self.RISE if peak > self.floor else 0.7 * self.floor + 0.3 * peak
         return speech
 
 
@@ -535,6 +587,23 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
     captured, t0 = 0, float("inf")
     loud: list[bytes] = []                  # barge-in candidates while he talks
     detector = SpeechDetector()
+    # T11: voice.vad = webrtc asks a real voice detector (on the cleaned sound) instead of the
+    # loudness one; T0b: voice.keep_clips keeps what either of them took for speech.
+    from willie.audio import clips, vad as vad_module
+    vad = vad_module.configured()
+    probe = vad or (vad_module.create() if clips.keep() else None)    # both verdicts in the clips
+    utterances = clips.Utterances(gain=factor, highpass=stream.low is not None, vad="webrtc" if vad else "level")
+
+    def hears(peak: float, sound: bytes) -> bool:
+        nonlocal level
+        if time.monotonic() < chime.UNTIL:               # his own chime is not you talking
+            level = False
+            return False
+        level = detector.is_speech(peak)                 # always fed: it tracks the room for the log
+        return level and vad.is_speech(sound) if vad is not None else level    # webrtc: both must agree
+
+    level = False
+
     sent, loudest = 0, 0.0
     # T4: "Hey Willie" / "Willie" while he talks stops him. The wake model listens to the fixed-gain
     # mic; his own echo rarely sounds like his name. Off: voice.stop_word.
@@ -572,7 +641,9 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 break
             decimated = stream.decimate(raw)
             chunk = mic.s16(decimated, factor)    # fixed gain: level detector, wake word, garage gate
+            RECENT_MIC.append(chunk)
             mic.tap(chunk)
+            mic.tap_raw(raw)
             captured += len(decimated)
             t0 = min(t0, loop.time() - captured / IN_RATE)
             up = chunk
@@ -587,7 +658,7 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                 if local is None:
                     preroll.append(up)
                 else:           # T7: the one-breath command ("Hey Willie, stop") is judged locally too
-                    held_local += local.feed(up, detector.is_speech(peak), loop.time())
+                    held_local += local.feed(up, hears(peak, up), loop.time())
                 continue
             while preroll:
                 await adapter.send_audio(preroll.popleft())
@@ -610,6 +681,7 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             # than his own voice coming back through the microphone (after AEC: than
             # what is left of it).
             if speaker.speaking(loop.time()):
+                utterances.feed(decimated, False, None, speaking=True)
                 if stop_spotter is not None:
                     if not was_speaking:
                         stop_spotter.reset()
@@ -637,7 +709,9 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
                         await adapter.send_audio(held)
             was_speaking = False
             now = loop.time()
-            speech = detector.is_speech(peak)
+            speech = hears(peak, up)
+            if clips.keep():                             # cut on loudness only; the voice verdict is a note
+                utterances.feed(decimated, level, probe.is_speech(up) if probe else None)
             if gate is not None:
                 await _send_gated(adapter, gate.feed(chunk, speech, now))
             elif local is not None:
@@ -681,13 +755,24 @@ async def _microphone(adapter: VoiceAdapter, speaker: Speaker, stop: asyncio.Eve
             await process.wait()
 
 
+_went_up: list[bytes] = []      # voice.keep_clips: what a gate let through since the last end of turn
+
+
 async def _send_gated(adapter: VoiceAdapter, chunks: list[bytes]) -> None:
     """What a gate (garage voice check, local first) let through; b"" = the turn is over."""
+    from willie.audio import clips
     for out in chunks:
         if out == b"":
             await adapter.end_audio()
+            if _went_up:                 # T0b: exactly what Gemini got for this turn, to replay
+                seconds = sum(map(len, _went_up)) / 2 / IN_RATE
+                log.info("gate: %.1f s went up, end of turn sent", seconds)
+                clips.save("sent", b"".join(_went_up), seconds=round(seconds, 1))
+                _went_up.clear()
         else:
             await adapter.send_audio(out)
+            if clips.keep() and len(_went_up) < 600:
+                _went_up.append(out)
 
 
 def local_first(loop, audio, event):
@@ -708,8 +793,25 @@ def local_first(loop, audio, event):
     from willie.face.runtime import Face
     from willie.voice import local
 
+    from willie.skills import radio
+
+    def stations() -> list[str]:
+        try:
+            return list(radio.stations())
+        except Exception:
+            return []
+
     def transcribe(pcm: bytes):
-        result = huis.HUB_CALL("versta", {"pcm": base64.b64encode(pcm).decode()}, 4)
+        # T7a: with his own command sentences as the grammar the server writes one of them or
+        # nothing (Vosk, ~50 ms); nothing = not a command, so Gemini gets it.
+        # The same stretch of time from the plain mic, half a second longer at the front (the
+        # held sound starts where the loudness detector woke up, which can be mid-word), levelled.
+        plain = b"".join(RECENT_MIC)[-(len(pcm) + IN_RATE):]
+        pcm = local.levelled(plain or pcm)
+        result = huis.HUB_CALL("versta", {"pcm": base64.b64encode(pcm).decode(),
+                                          "zinnen": local.phrases(stations())}, 4)
+        from willie.audio import clips
+        clips.save("local", pcm, answer=result if isinstance(result, dict) else str(result))
         return result.get("tekst") if isinstance(result, dict) and "fout" not in result else None
 
     phrases = local.Phrases(lambda text: speech.gemini_pcm(text, os.environ.get("GEMINI_API_KEY", "")),
@@ -719,8 +821,13 @@ def local_first(loop, audio, event):
         transcribe, willie_tools.call, lambda pcm: loop.call_soon_threadsafe(audio, pcm), phrases,
         on_event=lambda kind, detail="": loop.call_soon_threadsafe(event, kind, detail),
         battery=Face._read_battery, volume=speech.volume, wrap_up=willie_tools.WRAP_UP.set,
-        noise_filter=bool(Config().get("voice.noise_filter")))
-    return local.LocalFirst(router.route)
+        # No noise filter with the grammar: "nothing written" now means "not a command", which is
+        # also what "ja", "nee" and every short question give. Dropping those lost real answers.
+        noise_filter=False, stations=stations)
+    # Only short utterances are held (voice.local_max_s): measured 4 Oct, a held 4.5 s question was
+    # answered 2.5 s after it was sent, against 0.75 s when streamed live. Past this much speech
+    # the held start goes up at once and the rest streams live, so a real question loses nothing.
+    return local.LocalFirst(router.route, max_command_s=float(Config().get("voice.local_max_s")))
 
 
 def show(args: dict, face=None) -> dict:
@@ -757,17 +864,38 @@ def show_card(args: dict, face=None) -> dict:
 CARD = Tool(
     "kaart",
     "Zet een kaart op je scherm vóór je iets uitlegt: punten of stappen (regels), vergelijk (links, rechts), "
-    "getal (waarde, regels = bijschrift) of staaf (staven, eenheid). Trefwoorden, geen zinnen; jij vertelt.",
+    "getal (waarde, regels = bijschrift), staaf (staven, eenheid), grafiek (punten in tijdsvolgorde, eenheid), "
+    "meter (meters op een schaal) of verbinding (verbindingen: van, naar, signaal). "
+    "Kies beeld boven tekst: verloop in de tijd (weer per uur, temperatuur, verbruik) = grafiek; meetwaarden "
+    "op een schaal (luchtkwaliteit, accu, vocht) = meter; hoeveelheden naast elkaar = staaf. "
+    "Verbinding tekent een pijl tussen twee aansluitingen of begrippen per pagina; nuttig voor bedrading, "
+    "signaalroutes en systeemoverzicht. Benoem exacte aansluitingen; neem elektrische pinnen en spanning "
+    "uit pinout/datasheet en teken geen gegokte aansluitingen. Voor een pinout zelf gebruik pinout, niet kaart. "
+    "Bij een vraag om details: "
+    "korte, leesbare zinnen met de echte uitleg, getallen en eenheden. De kaart heeft pagina's; "
+    "laat nuttige details niet weg. Jij licht de kaart mondeling toe.",
     {"type": "object", "properties": {
-        "soort": {"type": "string", "enum": ["punten", "stappen", "vergelijk", "getal", "staaf"]},
+        "soort": {"type": "string", "enum": ["punten", "stappen", "vergelijk", "getal", "staaf", "grafiek", "meter", "verbinding"]},
         "titel": {"type": "string"},
-        "regels": {"type": "array", "items": {"type": "string"}, "description": "Hooguit 5, elk hooguit 60 tekens."},
+        "regels": {"type": "array", "items": {"type": "string"}, "description": "Maximaal 24 korte alinea's, elk maximaal 512 tekens. Gebruik alleen wat het antwoord nodig heeft."},
         "links": {"type": "object", "properties": {"kop": {"type": "string"}, "regels": {"type": "array", "items": {"type": "string"}}},
-                  "description": "Kolom: kop + hooguit 4 korte regels."},
+                  "description": "Kolom: kop + maximaal 12 korte alinea's."},
         "rechts": {"type": "object", "properties": {"kop": {"type": "string"}, "regels": {"type": "array", "items": {"type": "string"}}}},
         "waarde": {"type": "string", "description": "Getal met eenheid."},
         "staven": {"type": "array", "items": {"type": "object", "properties": {"naam": {"type": "string"}, "waarde": {"type": "number"}}}},
         "eenheid": {"type": "string"},
+        "punten": {"type": "array", "items": {"type": "object", "properties": {
+            "naam": {"type": "string", "description": "Kort, bijv. '14u' of 'ma'."}, "waarde": {"type": "number"},
+            "icoon": {"type": "string", "enum": ["zon", "maan", "halfbewolkt", "wolk", "regen", "onweer", "sneeuw", "mist"]}},
+            "required": ["naam", "waarde"]}, "description": "grafiek: 2–24 punten; icoon alleen bij weer."},
+        "vorm": {"type": "string", "enum": ["lijn", "kolom"], "description": "grafiek: lijn (temperatuur) of kolom (regen per uur)."},
+        "meters": {"type": "array", "items": {"type": "object", "properties": {
+            "naam": {"type": "string"}, "waarde": {"type": "number"}, "min": {"type": "number"}, "max": {"type": "number"},
+            "eenheid": {"type": "string"}, "niveau": {"type": "string", "enum": ["goed", "matig", "slecht"]}},
+            "required": ["naam", "waarde", "max"]}, "description": "meter: 1–8 waarden; max = einde van de schaal, niveau kleurt hem."},
+        "verbindingen": {"type": "array", "items": {"type": "object", "properties": {
+            "van": {"type": "string"}, "naar": {"type": "string"}, "signaal": {"type": "string"}},
+            "required": ["van", "naar"]}, "description": "1–12 verbindingen. Exacte van/naar-labels max 64 tekens; signaal/toelichting max 80."},
     }, "required": ["soort", "titel"]},
 )
 
@@ -792,6 +920,7 @@ SHOW_PICTURE = Tool(
     "toon_afbeelding",
     "Zoek een foto van iets op Wikipedia en zet die op je scherm. Gebruik dit als Wouter "
     "vraagt hoe iets eruitziet of iets wil zien: een dier, een ding, een plek, een onderdeel. "
+    "Een illustratieve foto is geen pinout of bewijs van een specifieke boardvariant. Voor pinouts gebruik pinout. "
     "Niet voor dingen die voor je staan: daarvoor is kijk.",
     {"type": "object", "properties": {
         "onderwerp": {"type": "string",
@@ -885,9 +1014,11 @@ def live_context() -> str:
     body = control.context_line()          # mood + battery from the core (G2); "" if it is down
     from willie.skills import huis
     house = huis.context_line()            # L3: the home server's situation line; "" if it is gone
+    from willie import presence
+    people = presence.context_line()
     return (f"Het is nu {DAYS[now.weekday()]} {now.day} {MONTHS[now.month - 1]} {now.year}, "
             f"{now:%H:%M}.{f' Jouw toestand: {body}.' if body else ''}"
-            f"{f' Thuis nu: {house}' if house else ''}{willie_tools.remembered()}")
+            f"{f' Thuis nu: {house}' if house else ''}{f' {people}' if people else ''}{willie_tools.remembered()}")
 
 
 def configured_search() -> bool:
@@ -992,6 +1123,15 @@ def configured_standby() -> float:
         return 60.0
 
 
+def setting(key: str, default):
+    """One setting, or `default` when the settings cannot be read."""
+    try:
+        from willie.config import Config
+        return Config().get(key)
+    except Exception:
+        return default
+
+
 def configured_clean() -> dict:
     """voice.clean / denoise_db / aec / aec_delay_ms / barge_in: the live uplink's cleaning."""
     values = {"clean": True, "denoise_db": -15, "aec": True, "aec_delay_ms": 295.0, "barge_in": 50.0,
@@ -1058,9 +1198,25 @@ async def session(
     activity = [loop.time()]
     speaker = Speaker()
     native_search = configured_search()      # paid key: 3.8 searches itself, no zoek_op detour
-    adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=native_search,
-                                resume=resume is not None, resume_handle=(resume or {}).get("handle", ""),
-                                source="garage" if resume is not None else "robot")
+    if setting("voice.adapter", "gemini_live") == "cascade":
+        # Adapter C: speech-to-text, a text model and text-to-speech (willie/voice/cascade.py).
+        # `api_key` stays the Gemini one for everything around the conversation.
+        from willie.voice import cascade
+        native_search = False
+        adapter = cascade.configured(source="garage" if resume is not None else "robot")
+    elif setting("voice.adapter", "gemini_live") == "openai_realtime":
+        # D5: the same runner on OpenAI Realtime. Its key is OPENAI_API_KEY; `api_key` stays
+        # the Gemini one for everything around the conversation (zoek_op, speech, memory).
+        from willie.voice.openai_realtime import OpenAIRealtimeAdapter
+        native_search = False
+        model = str(setting("voice.model", "") or "")
+        adapter = OpenAIRealtimeAdapter(language=configured_language(), model=model if model.startswith("gpt") else "",
+                                        voice=setting("voice.openai_voice", ""), speed=setting("voice.speed", 1.0),
+                                        source="garage" if resume is not None else "robot")
+    else:
+        adapter = GeminiLiveAdapter(api_key, language=configured_language(), search=native_search,
+                                    resume=resume is not None, resume_handle=(resume or {}).get("handle", ""),
+                                    source="garage" if resume is not None else "robot")
     turns = transcript if transcript is not None else []
     # Face: "thinking" only once the server has heard words in this turn. The mic's own
     # level detector says when the turn *ends*; the transcription says it *was speech*.
@@ -1068,10 +1224,12 @@ async def session(
     # T3: what his last answer was, for the follow-up window: a question of his own waits longer,
     # a done command ("Gedaan.") shorter.
     last = {"said": "", "tool": False}
-    running = {"tools": 0}       # a tool still at work (a search, a photo) is not silence: no idle close
+    running = {"tools": 0, "unanswered": 0}   # a tool still at work is not silence: no idle close
     windows = configured_windows()
     standby = Standby()
     standby_s = configured_standby()
+    # One lookup and one screen text per question, no unsourced number on the screen (guard.py).
+    guard = TurnGuard(lambda: not (native_search and getattr(adapter, "key_kind", "") == "betaald"))
     willie_tools.WRAP_UP.clear()
     # WRAP_UP: when first seen, when his answer after it made sound, when that turn ended.
     wrap = {"asked": 0.0, "audio": 0.0, "done": 0.0}
@@ -1123,10 +1281,20 @@ async def session(
         elif kind == "dropped":                    # the noise filter: he heard a sound, not a sentence
             emit(kind, detail)
             return
+        elif kind == "passed":
+            # A short utterance with real words went up to Gemini: it is working on it, so this is
+            # not silence. At most twice without an answer: room noise that the speech model
+            # writes as words must not hold the conversation (and the music) for minutes (5 Oct).
+            if len(detail.split()) >= 2 and running["unanswered"] < 2:
+                running["unanswered"] += 1
+                activity[0] = loop.time()
+            return
         elif kind == "stop_word":
             threading.Thread(target=_chime, args=("idle",), daemon=True).start()
         elif kind == "heard":
             activity[0] = loop.time()
+            running["unanswered"] = 0
+            guard.learn(detail)
             add_turn("user", detail)
             turn["heard"] = True
             if turn["ended"]:                      # the words arrived after the quiet
@@ -1144,6 +1312,7 @@ async def session(
                 on_event(kind, detail)
             return
         elif kind == "user_speaking":
+            guard.new_turn()
             turn["heard"] = turn["ended"] = False
             last["said"], last["tool"] = "", False
         elif kind == "user_turn_end":
@@ -1208,8 +1377,13 @@ async def session(
     tools = willie_tool_list(face, web_search=not native_search or bool(os.environ.get("GEMINI_API_KEY_FREE")))
     if gate is None:
         tools.append(Tool(NOT_FOR_ME.name, NOT_FOR_ME.description, NOT_FOR_ME.parameters, handler=not_for_me))
-    if configured_lean():
+    tools = guard.wrap(tools)
+    if configured_lean() and adapter.name != "openai_realtime":
         # L2: every turn pays for the whole setup, so only the core tools go in full.
+        # Not on OpenAI (9 Oct): gpt-realtime-2.1-mini does not find the tools behind `doe`
+        # ("I can't show a picture"; volume down became pause, three times), and with every
+        # tool in full it called them right. 15.4k tokens: about $0.009 a turn on mini,
+        # a tenth of that once cached.
         from willie.voice import lean
         tools = lean.lean(tools, lean.CORE + (NOT_FOR_ME.name,)
                           + (lean.GARAGE_CORE if resume is not None else ()))
@@ -1218,8 +1392,10 @@ async def session(
             asyncio.run_coroutine_threadsafe(adapter.send_text(text), loop)
         control["say"] = say_in_session
     prompt = system_prompt(LIVE_EXTRA) + (f"\n\n{extra_prompt}" if extra_prompt else "")
+    context = live_context()
+    guard.learn(context)
     try:
-        await adapter.start_session(prompt, live_context(), tools)
+        await adapter.start_session(prompt, context, tools)
     except BaseException:
         stop.set()
         mic_task.cancel()
@@ -1253,9 +1429,14 @@ async def session(
                 continue
             if willie_tools.WRAP_UP.is_set():
                 now = loop.time()
-                wrap["asked"] = wrap["asked"] or now
-                # End once his answer after the tool call has played out (12 s at most).
-                if (wrap["done"] and not speaker.speaking(now)) or now - wrap["asked"] > WRAP_UP_MAX_S:
+                if not wrap["asked"]:
+                    wrap["asked"] = now
+                    emit("wrap_up", "asked")       # in the log: something asked this conversation to end
+                # End once his answer after the tool call has played out. The 12 s limit counts from
+                # his last sound, so a wrap-up asked from outside (the app or the screen starting
+                # music mid-answer) never cuts a sentence in half (5 Oct, Wouter).
+                quiet_since = max(wrap["asked"], speaker.busy_until)
+                if not speaker.speaking(now) and (wrap["done"] or now - quiet_since > WRAP_UP_MAX_S):
                     emit("idle", "wrap-up asked by a tool")
                     stop.set()
                     break
