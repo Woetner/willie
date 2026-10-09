@@ -615,6 +615,55 @@ def _merge_call(calls: list[dict], piece: dict) -> None:
             slot[key] = value
 
 
+class Faster:
+    """Speech at another tempo with the same pitch (WSOLA, numpy only), fed in chunks as the sound
+    comes. For the Gemini voice: its speech model has no speed setting and reads a "talk faster"
+    instruction out loud. Frames of 30 ms are laid half over each other; each next frame is
+    taken where the sound best continues the previous one, `speed` times further on."""
+    FRAME, HOP, SEEK = 720, 360, 120             # samples at 24 kHz: 30 ms, 15 ms, +-5 ms
+
+    def __init__(self, speed: float):
+        import numpy as np
+        self.np, self.step = np, self.HOP * float(speed)
+        self.window = np.hanning(self.FRAME + 1)[:-1].astype(np.float32)
+        self.sound = np.zeros(0, np.float32)     # what came in and is still needed
+        self.base = 0                            # index of sound[0] in the whole stream
+        self.frames = 0
+        self.previous = -1                       # where the last frame was taken
+        self.tail = np.zeros(self.HOP, np.float32)
+        self.odd = b""
+
+    def feed(self, pcm: bytes, last: bool = False) -> bytes:
+        np = self.np
+        pcm, self.odd = self.odd + pcm, b""
+        if len(pcm) % 2:
+            pcm, self.odd = pcm[:-1], pcm[-1:]
+        self.sound = np.concatenate((self.sound, np.frombuffer(pcm, "<i2").astype(np.float32)))
+        out = []
+        while True:
+            want = round(self.frames * self.step)
+            if want + self.SEEK + self.FRAME > self.base + len(self.sound):
+                break
+            at = want
+            if self.previous >= 0:
+                low = max(self.base, want - self.SEEK)
+                follow = self.sound[self.previous + self.HOP - self.base:self.previous + 2 * self.HOP - self.base]
+                region = self.sound[low - self.base:want + self.SEEK + self.HOP - self.base]
+                at = low + int(np.argmax(np.correlate(region, follow, "valid")))
+            frame = self.sound[at - self.base:at - self.base + self.FRAME] * self.window
+            out.append(self.tail + frame[:self.HOP])
+            self.tail, self.previous, self.frames = frame[self.HOP:], at, self.frames + 1
+            keep = min(at, round(self.frames * self.step) - self.SEEK)
+            if keep > self.base:
+                self.sound, self.base = self.sound[keep - self.base:], keep
+        if last:
+            out.append(self.tail)
+            self.tail = np.zeros(self.HOP, np.float32)
+        if not out:
+            return b""
+        return np.clip(np.concatenate(out), -32768, 32767).astype("<i2").tobytes()
+
+
 # ---- Mouth: text-to-speech, one request per piece of text, sound streamed back ----------------
 class Mouth:
     """`stream(text)` yields 24 kHz mono S16. "openai:model" and "local:model" use the
@@ -690,6 +739,11 @@ class Mouth:
                 continue
             raise StageError(f"{self.model}: HTTP {response.status}: {problem}", response.status)
         odd, used = b"", None
+        tempo = Faster(self.speed) if abs(self.speed - 1.0) > 0.02 else None      # voice.speed, pitch kept
+
+        def out(pcm: bytes) -> None:
+            for at in range(0, len(pcm), 4800):
+                put(pcm[at:at + 4800])
         for raw in response:
             line = raw.strip()
             if not line.startswith(b"data:"):
@@ -702,8 +756,9 @@ class Mouth:
                     if data:
                         pcm = odd + base64.b64decode(data)
                         pcm, odd = (pcm[:-1], pcm[-1:]) if len(pcm) % 2 else (pcm, b"")
-                        for at in range(0, len(pcm), 4800):
-                            put(pcm[at:at + 4800])
+                        out(tempo.feed(pcm) if tempo else pcm)
+        if tempo:
+            out(tempo.feed(b"", last=True))
         response.read()
         if used:
             usage.add(self.counts, used)

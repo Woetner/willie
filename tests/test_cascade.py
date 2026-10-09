@@ -604,6 +604,8 @@ def test_mouth_streams_his_gemini_voice():
         mouth = Mouth("gemini", style="Brisk.", base_url=api.url, keys=["free", "paid"])
         out = asyncio.run(collect(mouth.stream("Hallo daar.")))
         assert b"".join(out) == pcm and all(len(chunk) % 2 == 0 for chunk in out)
+        quick = Mouth("gemini", speed=1.25, base_url=api.url, keys=["paid"])
+        assert abs(len(b"".join(asyncio.run(collect(quick.stream("Hallo daar."))))) / len(pcm) - 0.8) < 0.1
         path, _, body = api.requests[-1]
         assert path == "/v1/models/gemini-3.8-flash-lite-tts:streamGenerateContent?alt=sse"
         assert body["contents"][0]["parts"][0]["text"] == "Hallo daar."          # no style: this model would read it out
@@ -614,6 +616,20 @@ def test_mouth_streams_his_gemini_voice():
         assert api.requests[-1][2]["contents"][0]["parts"][0]["text"].startswith("Zeg dit vlot")
     finally:
         api.close()
+
+
+def test_faster_keeps_the_pitch():
+    import numpy as np
+    pcm = tone(2000, 24_000, hz=220.0)
+    for speed in (1.1, 1.3, 0.9):
+        tempo = cascade.Faster(speed)
+        out = b"".join(tempo.feed(pcm[at:at + 1921]) for at in range(0, len(pcm), 1921)) + tempo.feed(b"", last=True)
+        samples = np.frombuffer(out, "<i2").astype(float)
+        assert abs(len(samples) / 24_000 - 2.0 / speed) < 0.06
+        middle = samples[4800:-4800]
+        spectrum = np.abs(np.fft.rfft(middle * np.hanning(len(middle))))
+        assert abs(np.argmax(spectrum) * 24_000 / len(middle) - 220.0) < 3          # still 220 Hz
+        assert 0.25 < np.abs(middle).max() / 32768 < 0.35                          # and as loud as it was
 
 
 def test_ears_speak_the_transcription_session():
