@@ -312,6 +312,8 @@ def test_the_mark_may_come_in_pieces():
     assert said == "Kort antwoord. " and split.notes == "\nnotitie twee"
     plain = cascade.Split()
     assert plain.feed("Zie [1") + plain.feed("] hier") + plain.flush() == "Zie [1] hier" and plain.notes is None
+    english = cascade.Split()
+    assert english.feed("More power. [SCREEEN] LED 8 W") == "More power. " and english.notes == " LED 8 W"
     end = cascade.Split()
     assert end.feed("Klaar [SCH") + end.flush() == "Klaar [SCH"
 

@@ -102,6 +102,8 @@ TALK_LESS = (
     "screen: the tools toon and kaart do not exist in this conversation, and wherever your instructions name "
     "them you write notes instead. Never say something is on the screen unless this answer has notes. "
     "Asked for a graph or comparison: the notes hold every value with its name and unit, one per line. "
+    "'Laat zien', 'show', 'in een grafiek' about facts or numbers always means notes; toon_afbeelding is only "
+    "for a photo of a thing. An answer to such a request without notes is wrong. "
     "Asked to show a given text or number ('zet 42 op je scherm'): say 'Done.' and the notes are just that text. "
     "How something looks = toon_afbeelding. Say nothing before or between tool calls, in any language; your "
     "first words come after the last tool result. No closing offers such as 'want more details?'.\n"
@@ -718,6 +720,10 @@ def clean(text: str) -> str:
     return " ".join(_MARKUP.sub(lambda found: found.group(1) or "", text).split())
 
 
+# He answers in English and then "translates" the mark too ([SCREEN], once [SCREEEN]): all of them count.
+_MARK = re.compile(r"\[\s*(?:SCHERM|SCRE+N)\s*\]", re.I)
+
+
 class Split:
     """The model's text as it comes -> the part that is spoken. What follows the [SCHERM] line is
     kept in `notes` for the screen (None = there was no such line)."""
@@ -731,14 +737,14 @@ class Split:
             self.notes += text
             return ""
         text, self._held = self._held + text, ""
-        at = text.find(MARK)
-        if at >= 0:
-            self.notes = text[at + len(MARK):]
+        found = _MARK.search(text)
+        if found:
+            self.notes = text[found.end():]
+            return text[:found.start()]
+        at = text.rfind("[")                         # an open bracket at the end may be the mark arriving
+        if at >= 0 and len(text) - at < 14 and "]" not in text[at:]:
+            self._held = text[at:]
             return text[:at]
-        for size in range(min(len(MARK) - 1, len(text)), 0, -1):
-            if MARK.startswith(text[-size:]):
-                self._held = text[-size:]
-                return text[:-size]
         return text
 
     def flush(self) -> str:
@@ -854,8 +860,10 @@ class CascadeAdapter(VoiceAdapter):
             if self.language == "nl_en" else ""
         runs_on = f"Je draait op het model {self.model} (je hoort met {getattr(self.ears, 'model', '?')})."
         self._split = bool(self.screens) and "kaart" in self.tools
-        prompt = "\n\n".join(p for p in (first, persona, DISCIPLINE, TALK_LESS if self._split else SCREEN, SPOKEN, context, runs_on,
-                                         LANGUAGES.get(self.language, "")) if p).strip()
+        # With the screen model its rule comes after everything else: the persona above still
+        # describes toon and kaart, and the last word wins.
+        prompt = "\n\n".join(p for p in (first, persona, DISCIPLINE, "" if self._split else SCREEN, SPOKEN, context, runs_on,
+                                         TALK_LESS if self._split else "", LANGUAGES.get(self.language, "")) if p).strip()
         self.messages = [{"role": "system", "content": prompt}]
         self._quiet = asyncio.Event()
         self._quiet.set()
@@ -1123,7 +1131,15 @@ class CascadeAdapter(VoiceAdapter):
             args = json.loads(function.get("arguments") or "{}")
         except ValueError:
             args = {}
-        result = await self._run_tool(function.get("name", ""), args if isinstance(args, dict) else {})
+        name, args = function.get("name", ""), args if isinstance(args, dict) else {}
+        if self._split and name in ("toon", "kaart"):
+            # He was not given these and called one anyway (the persona names them). It is what
+            # he wants on the screen, so it becomes the card instead of an error.
+            wanted = json.dumps(args, ensure_ascii=False) if name == "kaart" else str(args.get("tekst") or args)
+            self._drawing = asyncio.create_task(self._draw(self._question, wanted))
+            return {"role": "tool", "tool_call_id": call.get("id"),
+                    "content": '{"ok": true, "screen": "It is being drawn on the screen now. Say one short sentence."}'}
+        result = await self._run_tool(name, args if isinstance(args, dict) else {})
         if self.language == "nl_en":                 # Dutch tool results pulled Dutch words into his English
             result = {**result, "language": ENGLISH_RESULT} if isinstance(result, dict) \
                 else {"result": result, "language": ENGLISH_RESULT}
