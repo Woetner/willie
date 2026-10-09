@@ -98,22 +98,27 @@ TALK_LESS = (
     "from a lookup or from what you know for certain. Those notes are never spoken: a screen assistant draws "
     "them as one card (graph, bars, meter, steps, comparison, key value). When there are notes, your last spoken "
     f"sentence may point at the screen. No {MARK} part for small talk, a done command, or an answer that is "
-    "complete in one sentence. The notes are how a card gets on the screen: the tool kaart does not exist in "
-    "this conversation, and wherever your instructions name it you write notes instead. toon is only for when "
-    "Wouter asks, in those words, to put a given text or number on the screen; never for an explanation. "
+    "complete in one sentence. The notes are your ONLY way to put text, a number, a list or a graph on the "
+    "screen: the tools toon and kaart do not exist in this conversation, and wherever your instructions name "
+    "them you write notes instead. Never say something is on the screen unless this answer has notes. "
+    "Asked for a graph or comparison: the notes hold every value with its name and unit, one per line. "
+    "Asked to show a given text or number ('zet 42 op je scherm'): say 'Done.' and the notes are just that text. "
     "How something looks = toon_afbeelding. Say nothing before or between tool calls, in any language; your "
     "first words come after the last tool result. No closing offers such as 'want more details?'.\n"
     "Example. Wouter: 'Waarom heb ik een level shifter nodig tussen 5 volt encoders en een ESP32?' -> "
     "'Because the ESP32's pins only take 3.3 volts. The details are on my screen.\n"
     f"{MARK}\nLevel shifter: 5 V encoder to ESP32\n- ESP32 GPIO: 3.3 V logic, 3.6 V absolute maximum\n"
-    "- Encoder output: 5 V, damages the pin over time\n- Fix: level shifter or a 10k / 20k divider per channel'"
+    "- Encoder output: 5 V, damages the pin over time\n- Fix: level shifter or a 10k / 20k divider per channel'\n"
+    f"Example. Wouter: 'Zet tweeënveertig op je scherm.' -> 'Done.\n{MARK}\n42'"
 )
 DRAW = (
     "You draw one card on a small robot's screen (480 x 320) from the notes you are given. You do not speak: "
     "answer with exactly one kaart call. Use only facts and numbers that are in the notes, never your own. "
     "Pick the most visual kind: values over time = grafiek; several amounts side by side = staaf; a reading on "
     "a scale = meter; one key value = getal, large, with the supporting lines under it; two options = vergelijk; "
-    "a how-to = stappen; otherwise punten. Copy, do not write: no value you worked out yourself, no added advice, "
+    "a how-to = stappen; a single text or number = getal; otherwise punten. grafiek is only for one thing over "
+    "time; two things compared stay staaf or vergelijk even when the notes say graph, and every name on the card "
+    "says which thing it is ('Apple kcal', 'Pear kcal'). Copy, do not write: no value you worked out yourself, no added advice, "
     "no sentences. At most 5 lines of at most 40 characters each, and a title of at most 30."
 )
 STYLES = {
@@ -1060,9 +1065,12 @@ class CascadeAdapter(VoiceAdapter):
     async def _respond(self) -> None:
         pieces: asyncio.Queue = asyncio.Queue()
         voice = asyncio.create_task(self._speak(pieces))
-        # With a screen model the brain does not get kaart: it writes notes, and the prompt is 3 kB smaller.
-        declarations = [tool.declaration() for tool in self.tools.values() if not (self._split and tool.name == "kaart")]
-        drawing = None
+        # With a screen model the brain gets no kaart and no toon: it writes notes. With toon in
+        # reach it used that instead (plain text, a round of its own, and "it is on the screen"
+        # with no card), and the prompt is 4 kB smaller without the two.
+        declarations = [tool.declaration() for tool in self.tools.values()
+                        if not (self._split and tool.name in ("kaart", "toon"))]
+        drawing, notes = None, ""
         try:
             for _ in range(MAX_ROUNDS):
                 split, screen, text, calls = Sentences(first=not self._spoken), Split(), "", []
@@ -1080,8 +1088,11 @@ class CascadeAdapter(VoiceAdapter):
                         self._kinds[brain.model] = getattr(brain, "key_kind", "betaald")
                 for piece in [*split.feed(screen.flush()), *split.flush()]:
                     pieces.put_nowait(piece)
-                if not calls and (screen.notes or "").strip():
-                    drawing = self._drawing = asyncio.create_task(self._draw(self._question, screen.notes.strip()))
+                notes = (screen.notes or "").strip() or notes       # also when they came before a tool call
+                if not calls and notes:
+                    drawing = self._drawing = asyncio.create_task(self._draw(self._question, notes))
+                elif not calls and self._split:
+                    log.info("answer without notes: no card")
                 message = {"role": "assistant", "content": text or None}
                 if calls:
                     message["tool_calls"] = calls
@@ -1127,6 +1138,7 @@ class CascadeAdapter(VoiceAdapter):
         messages = [{"role": "system", "content": f"{DRAW} All text on the card is {language}."},
                     {"role": "user", "content": f"Question: {question}\n\nNotes:\n{notes}"}]
         calls: list[dict] = []
+        started = time.monotonic()
         try:
             await self._go()
             async for kind, value in self._chain(self.screens, lambda brain: brain.stream(messages, [card.declaration()], force="kaart")):
@@ -1138,7 +1150,9 @@ class CascadeAdapter(VoiceAdapter):
                     self._kinds[brain.model] = getattr(brain, "key_kind", "betaald")
             if calls:
                 args = json.loads((calls[0].get("function") or {}).get("arguments") or "{}")
-                await self._run_tool("kaart", args if isinstance(args, dict) else {})
+                result = await self._run_tool("kaart", args if isinstance(args, dict) else {})
+                log.info("card %s in %.1f s: %s", args.get("soort") if isinstance(args, dict) else "?",
+                         time.monotonic() - started, str(result)[:120])
             else:
                 log.warning("no card: the screen model gave no kaart call")
         except asyncio.CancelledError:
