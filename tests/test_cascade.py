@@ -306,6 +306,32 @@ def test_notes_after_the_mark_are_drawn_not_spoken():
     asyncio.run(run())
 
 
+def test_he_says_two_sentences_and_a_show_request_always_gets_a_card():
+    async def run():
+        cards = []
+        card = Tool("kaart", "Card", handler=lambda args: cards.append(args) or {"ok": True})
+        long = "Een ei heeft 72 kilocalorieen. Dat is 6,3 gram eiwit. En 4,8 gram vet. En bijna geen koolhydraten."
+        brain = FakeBrain([{"text": long}, {"text": "Gedaan."}, {"text": "Het is kwart voor twee."}])
+        screen = FakeBrain([{"tool": "kaart", "args": {"soort": "staaf"}}, {"tool": "kaart", "args": {"soort": "getal"}}], model="fake-screen")
+        a = CascadeAdapter(ears=FakeEars(["Wat zit er in een ei?", "Zet 42 op je scherm.", "Hoe laat is het?"]), brains=[brain],
+                           mouths=[FakeMouth(ms=60)], screens=[screen], noise_filter=False)
+        rec = Recorder(a)
+        await a.start_session("p", "c", [card])
+        await say(a)                                  # no notes, four sentences: two are said, all four are drawn
+        await wait_for(lambda: "turn_complete" in rec.kinds() and len(cards) == 1)
+        assert "".join(rec.details("said")) == "Een ei heeft 72 kilocalorieen. Dat is 6,3 gram eiwit. "
+        assert "4,8 gram vet" in screen.seen[0][1]["content"] and "72 kilocalorieen" in screen.seen[0][1]["content"]
+        await say(a)                                  # asked to show, answered "Gedaan." without notes: still a card
+        await wait_for(lambda: len(cards) == 2 and rec.kinds().count("turn_complete") == 2)
+        assert "Zet 42 op je scherm." in screen.seen[1][1]["content"]
+        await say(a)                                  # a plain short answer: nothing is drawn
+        await wait_for(lambda: rec.kinds().count("turn_complete") == 3)
+        await asyncio.sleep(0.05)
+        assert len(cards) == 2 and len(screen.seen) == 2
+        await a.close()
+    asyncio.run(run())
+
+
 def test_the_mark_may_come_in_pieces():
     split = cascade.Split()
     said = "".join(split.feed(piece) for piece in ("Kort antwoord. [", "SCH", "ERM]\nnotitie", " twee")) + split.flush()

@@ -724,6 +724,14 @@ def clean(text: str) -> str:
 _MARK = re.compile(r"\[\s*(?:SCHERM|SCRE+N)\s*\]", re.I)
 
 
+# The prompt alone did not hold on the robot (9 Oct: the egg question was read out in full, with
+# no notes), so two things are done in code. He speaks SPOKEN_PIECES sentences of an answer and
+# no more: what he writes after that goes to the screen instead of the speaker. And a request
+# to show something always gets a card, drawn from the answer itself when he wrote no notes.
+SPOKEN_PIECES = 2
+_SHOW = re.compile(r"\blaat\b.*\bzien\b|\b(?:toon|show|display|scherm|screen|grafiek|graph|chart|diagram|visueel|tabel)\b", re.I)
+
+
 class Split:
     """The model's text as it comes -> the part that is spoken. What follows the [SCHERM] line is
     kept in `notes` for the screen (None = there was no such line)."""
@@ -1078,7 +1086,7 @@ class CascadeAdapter(VoiceAdapter):
         # with no card), and the prompt is 4 kB smaller without the two.
         declarations = [tool.declaration() for tool in self.tools.values()
                         if not (self._split and tool.name in ("kaart", "toon"))]
-        drawing, notes = None, ""
+        drawing, notes, queued, rest = None, "", 0, ""
         try:
             for _ in range(MAX_ROUNDS):
                 split, screen, text, calls = Sentences(first=not self._spoken), Split(), "", []
@@ -1087,7 +1095,11 @@ class CascadeAdapter(VoiceAdapter):
                         self._clock.setdefault("llm", time.monotonic())
                         text += value
                         for piece in split.feed(screen.feed(value) if self._split else value):
-                            pieces.put_nowait(piece)
+                            if self._split and queued >= SPOKEN_PIECES:
+                                rest += piece + "\n"            # enough said: this is for the screen
+                            else:
+                                queued += 1
+                                pieces.put_nowait(piece)
                     elif kind == "calls":
                         calls = value
                     elif kind == "usage":
@@ -1095,8 +1107,15 @@ class CascadeAdapter(VoiceAdapter):
                         usage.add(self.usage.setdefault(brain.model, {}), value)
                         self._kinds[brain.model] = getattr(brain, "key_kind", "betaald")
                 for piece in [*split.feed(screen.flush()), *split.flush()]:
-                    pieces.put_nowait(piece)
+                    if self._split and queued >= SPOKEN_PIECES:
+                        rest += piece + "\n"
+                    else:
+                        queued += 1
+                        pieces.put_nowait(piece)
                 notes = (screen.notes or "").strip() or notes       # also when they came before a tool call
+                if not calls and not notes and self._split and (rest or _SHOW.search(self._question)):
+                    notes = clean(_MARK.sub(" ", text)) or "(nothing more than the question)"
+                    log.info("no notes from the brain: the card is drawn from his answer")
                 if not calls and notes:
                     drawing = self._drawing = asyncio.create_task(self._draw(self._question, notes))
                 elif not calls and self._split:
