@@ -590,6 +590,32 @@ def test_mouth_streams_whole_samples():
         api.close()
 
 
+def test_mouth_streams_his_gemini_voice():
+    pcm = tone(200, 24_000)
+    half = len(pcm) // 2 + 1                          # an odd cut: samples must still come out whole
+
+    def answer(path, headers, body):
+        if headers["x-goog-api-key"] == "free":
+            return 429, b'{"error": {"message": "quota"}}'
+        part = lambda data: {"candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "audio/l16; rate=24000", "data": base64.b64encode(data).decode()}}]}}]}
+        return 200, [part(pcm[:half]), {**part(pcm[half:]), "usageMetadata": {"promptTokenCount": 9, "candidatesTokensDetails": [{"modality": "AUDIO", "tokenCount": 5}]}}]
+    api = Api(answer)
+    try:
+        mouth = Mouth("gemini", style="Brisk.", base_url=api.url, keys=["free", "paid"])
+        out = asyncio.run(collect(mouth.stream("Hallo daar.")))
+        assert b"".join(out) == pcm and all(len(chunk) % 2 == 0 for chunk in out)
+        path, _, body = api.requests[-1]
+        assert path == "/v1/models/gemini-3.8-flash-lite-tts:streamGenerateContent?alt=sse"
+        assert body["contents"][0]["parts"][0]["text"] == "Hallo daar."          # no style: this model would read it out
+        assert body["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Iapetus"
+        assert mouth.counts["out_audio"] == 5 and mouth._key == 1
+        old = Mouth("gemini:gemini-3.1-flash-tts-preview", base_url=api.url, keys=["paid"])
+        asyncio.run(collect(old.stream("Hallo.")))
+        assert api.requests[-1][2]["contents"][0]["parts"][0]["text"].startswith("Zeg dit vlot")
+    finally:
+        api.close()
+
+
 def test_ears_speak_the_transcription_session():
     async def run():
         seen = {"audio": 0}

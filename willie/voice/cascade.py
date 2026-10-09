@@ -64,6 +64,8 @@ TURN = {"type": "server_vad", "silence_duration_ms": 300, "threshold": 0.5, "pre
 # (it thinks first and cannot be told not to). The second one only speaks when the first fails.
 LLM = "openai:gpt-5.4-mini@none, gemini:gemini-3.5-flash@minimal"
 TTS = "openai:gpt-4o-mini-tts, gemini"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_TTS = "gemini-3.8-flash-lite-tts"
 VOICE = "ballad"
 
 # name -> (base URL of an OpenAI-compatible API, the environment names of its keys, tried in order).
@@ -616,8 +618,8 @@ def _merge_call(calls: list[dict], piece: dict) -> None:
 # ---- Mouth: text-to-speech, one request per piece of text, sound streamed back ----------------
 class Mouth:
     """`stream(text)` yields 24 kHz mono S16. "openai:model" and "local:model" use the
-    /audio/speech call (Kokoro-FastAPI and other home servers speak it too); "gemini" is his
-    old Iapetus voice, a whole sentence at a time (1-3 s), kept as the fallback."""
+    /audio/speech call (Kokoro-FastAPI and other home servers speak it too); "gemini" or
+    "gemini:model" is his own Iapetus voice from Gemini's speech model, streamed."""
     rate = API_RATE
 
     def __init__(self, spec: str, voice: str = "", style: str = "", speed: float = 1.0, local_url: str = "",
@@ -626,10 +628,22 @@ class Mouth:
         self.voice, self.style, self.speed = voice or VOICE, style, float(speed or 1.0)
         self.seconds, self.chars = 0.0, 0
         self.http = None
+        self.counts: dict = {}           # Gemini says what it used; summed here for the meter
+        self._key = 0
         if self.provider == "gemini":
+            # His own voice (Iapetus, willie/voice/persona.py), streamed: the sound starts while
+            # the rest of the sentence is still being made.
+            from willie.audio import speech
+            from willie.voice.persona import VOICE as gemini_voice
+            self.model, self.voice = self.model or GEMINI_TTS, gemini_voice
+            # The 3.8 speech models read a style instruction out loud as part of the sentence
+            # (measured: 6.9 s of sound with it, 2.4 s without), so only the older ones get one.
+            old = "3.1" in self.model or "2.5" in self.model
+            self.style = (style if style and style not in STYLES.values() else speech.TTS_STYLE) if old else ""
             self.keys = voice_keys.talk_keys() if keys is None else keys
             if not self.keys:
                 raise ValueError("voice.tts: gemini needs GEMINI_API_KEY")
+            self.http = Http(base_url or GEMINI_URL)
             return
         if self.provider not in ("openai", "local"):
             raise ValueError(f"voice.tts: {spec!r} is not openai:model, local:model or gemini")
@@ -656,13 +670,47 @@ class Mouth:
             body["speed"] = self.speed
         return body
 
+    @property
+    def key_kind(self) -> str:
+        return voice_keys.key_kind(self.keys[self._key]) if self.provider == "gemini" else "betaald"
+
+    def _gemini(self, text: str, put) -> None:
+        body = {"contents": [{"parts": [{"text": f"{self.style} {text}".strip()}]}],
+                "generationConfig": {"responseModalities": ["AUDIO"],
+                                     "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}}}}
+        while True:
+            response = self.http.post(f"/models/{self.model}:streamGenerateContent?alt=sse",
+                                      {"x-goog-api-key": self.keys[self._key]}, body)
+            if response.status == 200:
+                break
+            problem = _error_text(response)
+            self.http.drop()
+            if response.status in (401, 403, 429) and self._key + 1 < len(self.keys):
+                self._key += 1                       # the free key is over its limit: the paid one
+                continue
+            raise StageError(f"{self.model}: HTTP {response.status}: {problem}", response.status)
+        odd, used = b"", None
+        for raw in response:
+            line = raw.strip()
+            if not line.startswith(b"data:"):
+                continue
+            chunk = json.loads(line[5:])
+            used = chunk.get("usageMetadata") or used
+            for candidate in chunk.get("candidates") or []:
+                for part in (candidate.get("content") or {}).get("parts") or []:
+                    data = (part.get("inlineData") or part.get("inline_data") or {}).get("data")
+                    if data:
+                        pcm = odd + base64.b64decode(data)
+                        pcm, odd = (pcm[:-1], pcm[-1:]) if len(pcm) % 2 else (pcm, b"")
+                        for at in range(0, len(pcm), 4800):
+                            put(pcm[at:at + 4800])
+        response.read()
+        if used:
+            usage.add(self.counts, used)
+
     def _work(self, text: str, put) -> None:
-        if self.http is None:                        # Gemini: the whole sentence comes back at once
-            from willie.audio import speech
-            pcm = speech.gemini_pcm(text, self.keys[0])
-            for at in range(0, len(pcm), 4800):
-                put(pcm[at:at + 4800])
-            return
+        if self.provider == "gemini":
+            return self._gemini(text, put)
         headers = {"Authorization": f"Bearer {self.keys[0]}"} if self.keys else {}
         response = self.http.post("/audio/speech", headers, self._body(text))
         if response.status != 200:
@@ -684,7 +732,7 @@ class Mouth:
 
     async def stream(self, text: str):
         self.chars += len(text)
-        async for pcm in in_thread(lambda put: self._work(text, put), self.http.drop if self.http else lambda: None):
+        async for pcm in in_thread(lambda put: self._work(text, put), self.http.drop):
             self.seconds += len(pcm) / 2 / self.rate
             yield pcm
 
@@ -949,8 +997,12 @@ class CascadeAdapter(VoiceAdapter):
 
     def _meter_mouths(self) -> None:
         for mouth in self.mouths:
-            # Gemini's speech reports itself (willie/audio/speech.py).
-            if getattr(mouth, "provider", "") == "gemini" or not hasattr(mouth, "meter"):
+            if not hasattr(mouth, "meter"):
+                continue
+            if getattr(mouth, "counts", None):           # Gemini: its own token counts
+                usage.report(self.source, mouth.model, mouth.key_kind, mouth.counts)
+                mouth.counts = {}
+                mouth.meter()
                 continue
             spoken = mouth.meter()
             if spoken:
