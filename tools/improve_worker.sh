@@ -17,6 +17,7 @@ PI="${PI:-willie.local}"
 PI_DIR="${PI_DIR:-willie}"
 QUEUE=".local/improve_queue.jsonl"
 RESULTS=".local/improve_results.jsonl"
+WORK=".local/improve_bezig.json"            # the one request being worked on right now (verbeteringen_status)
 QUESTIONS=".local/claude_questions.jsonl"   # vraag_claude
 ANSWERS=".local/claude_answers.jsonl"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,6 +31,19 @@ report() {  # report <status> <text>
   line="$(python3 "$REPO/tools/improve_report.py" "$1" "$2")"
   ssh "$PI" "printf '%s\n' $(printf '%q' "$line") >> $PI_DIR/$RESULTS" 2>/dev/null || true
   echo "   -> $1: $2"
+}
+
+bezig() {  # bezig <task> <fase> <started-epoch> - live progress for verbeteringen_status
+  local line
+  line="$(python3 -c '
+import json, sys
+print(json.dumps({"opdracht": sys.argv[1], "fase": sys.argv[2], "sinds": float(sys.argv[3])}, ensure_ascii=False))
+' "$1" "$2" "$3")"
+  ssh -n "$PI" "printf '%s' $(printf '%q' "$line") > $PI_DIR/$WORK" 2>/dev/null || true
+}
+
+klaar_bezig() {  # the request is no longer running (done, failed, or nothing to do)
+  ssh -n "$PI" "rm -f $PI_DIR/$WORK" 2>/dev/null || true
 }
 
 health_ok() {
@@ -60,15 +74,17 @@ deploy_tree() {  # deploy_tree <path> [units]
 
 run_one() {
   local task="$1" plan="$2" risk="$3"
-  local stamp slug branch tree
+  local stamp slug branch tree started
   stamp="$(date +%Y%m%d-%H%M%S)"
+  started="$(date +%s)"
   slug="$(printf '%s' "$task" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | cut -c1-40 | sed 's/-$//')"
   branch="willie/auto-$stamp-$slug"
   tree="$WORKTREES/$stamp"
 
   echo "== [$risk] $task"
+  bezig "$task" "branch wordt gemaakt" "$started"
   git -C "$REPO" fetch --quiet origin 2>/dev/null
-  git -C "$REPO" worktree add --quiet -b "$branch" "$tree" main || { report mislukt "kon geen branch maken"; return; }
+  git -C "$REPO" worktree add --quiet -b "$branch" "$tree" main || { klaar_bezig; report mislukt "kon geen branch maken"; return; }
 
   local prompt
   prompt="$(cat "$REPO/tools/improve_prompt.txt")"
@@ -79,6 +95,7 @@ run_one() {
   # Keep what the agent said: without it a run that changes nothing is a mystery.
   local agentlog="$REPO/.local/logs/$stamp.log"
   mkdir -p "$REPO/.local/logs"
+  bezig "$task" "Claude werkt aan de aanpassing" "$started"
   # acceptEdits, because nobody is here to answer a permission prompt: a headless
   # run that asks for write access just stops and reports "nothing changed".
   # It is confined to a throwaway worktree, and its work still has to survive the
@@ -95,6 +112,7 @@ run_one() {
     git -C "$tree" add -A && git -C "$tree" commit -qm "willie: $task"
   fi
   if ! git -C "$tree" log --oneline main..HEAD 2>/dev/null | grep -q .; then
+    klaar_bezig
     report niets "er viel niets te veranderen, of de opdracht was te vaag"
     echo "   agent said: $(tail -c 400 "$agentlog" 2>/dev/null | tr '\n' ' ')"
     git -C "$REPO" worktree remove --force "$tree" 2>/dev/null
@@ -106,7 +124,9 @@ run_one() {
   fi
 
   # Does it at least parse? Cheapest possible test before it touches the robot.
+  bezig "$task" "wordt getest" "$started"
   if ! ( cd "$tree" && python3 -m compileall -q willie tools >/dev/null 2>&1 ); then
+    klaar_bezig
     report mislukt "de code compileert niet, niets geinstalleerd"
     return
   fi
@@ -123,8 +143,10 @@ run_one() {
     echo "   touches systemd - units will be reinstalled"
   fi
 
+  bezig "$task" "wordt geinstalleerd op de robot" "$started"
   if deploy_tree "$tree" "$units" && health_ok; then
     git -C "$tree" push -q -u origin "$branch" 2>/dev/null
+    klaar_bezig
     if [ -n "$units" ]; then
       report klaar "$plan (systemd opnieuw geinstalleerd)"
     else
@@ -132,7 +154,9 @@ run_one() {
     fi
   else
     echo "   health check failed - rolling back"
+    bezig "$task" "werkte niet, wordt teruggedraaid" "$started"
     deploy_tree "$backup" "$units"
+    klaar_bezig
     if health_ok; then
       report teruggedraaid "het werkte niet, ik heb de oude versie teruggezet"
     else

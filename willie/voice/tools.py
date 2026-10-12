@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from willie.brain import memory
@@ -115,8 +116,10 @@ DECLARATIONS = [
     {
         "name": "verbeteringen_status",
         "description": (
-            "Kijk hoe het met je eigen verbeteringen staat: wat er loopt, wat er klaar is, "
-            "wat er mislukt is. Gebruik dit als Wouter vraagt of het al gelukt is."
+            "Kijk hoe het met je eigen verbeteringen staat: welke aanpassing nu loopt en in "
+            "welke fase (branch, aan het werk, wordt getest, wordt geinstalleerd), wat er nog "
+            "in de wachtrij staat, en wat de laatste klaar of mislukt is. Gebruik dit als "
+            "Wouter vraagt of het al gelukt is of hoe ver iets is."
         ),
         "parameters": {"type": "object", "properties": {}},
     },
@@ -310,6 +313,12 @@ QUEUE_FILE = Path(os.environ.get("WILLIE_IMPROVE_QUEUE", REPO / ".local" / "impr
 RESULT_FILE = Path(os.environ.get("WILLIE_IMPROVE_RESULTS", REPO / ".local" / "improve_results.jsonl"))
 
 
+# Written by the Mac worker (tools/improve_worker.sh) while it is actually working on a
+# queued request, so the status shows the live phase instead of just "in the queue" until
+# it is done. One entry at a time (the worker runs one request after another).
+WORK_FILE = Path(os.environ.get("WILLIE_IMPROVE_WORK", REPO / ".local" / "improve_bezig.json"))
+
+
 def verbeter_jezelf(opdracht: str, plan: str = "", risico: str = "laag", bevestigd: bool = False) -> dict:
     """Queue an approved code change for the worker on the Mac.
 
@@ -339,9 +348,27 @@ def verbeter_jezelf(opdracht: str, plan: str = "", risico: str = "laag", bevesti
 
 
 def verbeteringen_status() -> dict:
-    wachtrij = 0
+    bezig = None
+    if WORK_FILE.exists():
+        try:
+            data = json.loads(WORK_FILE.read_text(encoding="utf-8"))
+            bezig = {
+                "opdracht": data.get("opdracht", ""),
+                "fase": data.get("fase", "bezig"),
+                "sinds_minuten": round(max(0.0, time.time() - float(data.get("sinds", time.time()))) / 60, 1),
+            }
+        except (OSError, ValueError, TypeError):
+            bezig = None
+    wachtrij = []
     if QUEUE_FILE.exists():
-        wachtrij = sum(1 for line in QUEUE_FILE.read_text(encoding="utf-8").splitlines() if line.strip())
+        for line in QUEUE_FILE.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            wachtrij.append({"opdracht": entry.get("opdracht", ""), "risico": entry.get("risico", "laag")})
     klaar = []
     if RESULT_FILE.exists():
         for line in RESULT_FILE.read_text(encoding="utf-8").splitlines()[-3:]:
@@ -349,7 +376,11 @@ def verbeteringen_status() -> dict:
                 klaar.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-    return {"in_wachtrij": wachtrij, "laatste": klaar or "nog niets afgerond"}
+    return {
+        "nu_bezig": bezig,
+        "wacht_nog_in_de_wachtrij": wachtrij,
+        "laatste": klaar or "nog niets afgerond",
+    }
 
 
 # Read-only, and never these: the API keys live in .env, and the wake-word and
